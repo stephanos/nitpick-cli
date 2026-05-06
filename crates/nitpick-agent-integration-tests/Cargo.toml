@@ -1,0 +1,13 @@
+[package]
+name = "nitpick-agent-integration-tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+nitpick-agent-core.workspace = true
+nitpick-agent-github = { path = "../nitpick-agent-github" }
+nitpick-agent-host = { path = "../nitpick-agent-host" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

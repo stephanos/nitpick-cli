@@ -1,0 +1,15 @@
+[package]
+name = "nitpick-agent-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nitpick-agent"
+path = "src/main.rs"
+
+[dependencies]
+nitpick-agent-client = { path = "../nitpick-agent-client" }
+nitpick-agent-core.workspace = true
+nitpick-agent-github = { path = "../nitpick-agent-github" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

@@ -1,0 +1,60 @@
+[tools]
+rust = { version = "1.94.1", profile = "default" }
+swift = "6.3.1"
+
+[settings]
+experimental = true
+
+[tasks.setup]
+description = "Install development tooling"
+run = "mise install"
+
+[tasks.fmt]
+description = "Format the codebase"
+run = "cargo fmt --all"
+
+[tasks.check]
+description = "Type check all targets"
+run = "cargo check --workspace --all-targets --all-features"
+
+[tasks.lint]
+description = "Run clippy"
+run = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+
+[tasks.test]
+description = "Run the Rust test suite"
+run = "cargo test --workspace --all-targets --all-features"
+
+[tasks.test-macos]
+description = "Run the Swift macOS app tests"
+run = "mise exec -- swift test --package-path macos"
+
+[tasks.build]
+description = "Build the Rust workspace in release mode"
+run = "cargo build --release --workspace"
+
+[tasks.macos-app]
+description = "Build Nitpick Agent.app"
+run = "macos/scripts/build-app.sh"
+
+[tasks.macos-appcast]
+description = "Build Nitpick Agent.app and generate a signed Sparkle appcast"
+run = "macos/scripts/generate-appcast.sh"
+
+[tasks.install]
+description = "Install and launch Nitpick Agent.app; the app installs the CLI on startup"
+run = "scripts/install.sh"
+
+[tasks.quick]
+description = "Quick check: format + lint + type check"
+depends = ["fmt", "lint", "check"]
+
+[tasks.verify]
+description = "Full verify: format check + lint + test + app build"
+run = [
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+  "cargo test --workspace --all-targets --all-features",
+  "mise exec -- swift test --package-path macos",
+  "macos/scripts/build-app.sh",
+]

@@ -1,0 +1,133 @@
+use std::sync::{Arc, Mutex};
+
+use nitpick_agent_core::{
+    ActivityKind, ActivityOutput, ActivityStatus, AgentProvider, AgentResult, AgentRuntime,
+    AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, MemoryActivityStore,
+    ReviewComment, ReviewInput, ReviewJourney, ReviewOutput, ReviewSubject,
+};
+
+#[derive(Default)]
+struct RecordingProvider {
+    calls: Mutex<Vec<&'static str>>,
+}
+
+impl RecordingProvider {
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls.lock().expect("calls lock").clone()
+    }
+}
+
+impl AgentProvider for RecordingProvider {
+    fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
+        self.calls.lock().expect("calls lock").push("review");
+        session.provider_session_id = Some("provider-review-session".into());
+
+        Ok(ReviewOutput {
+            summary: format!("reviewed {}", input.subject.repository),
+            comments: vec![ReviewComment {
+                path: "src/lib.rs".into(),
+                line: 12,
+                body: "Prefer a local artifact before syncing.".into(),
+            }],
+            journey: ReviewJourney {
+                summary: "read the diff".into(),
+                steps: Vec::new(),
+            },
+        })
+    }
+
+    fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
+        self.calls.lock().expect("calls lock").push("chat");
+        session.provider_session_id = Some("provider-chat-session".into());
+
+        Ok(format!("answered {}", input.prompt))
+    }
+}
+
+#[test]
+fn review_activity_runs_provider_and_persists_completion() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider.clone(), store.clone());
+
+    let activity = runtime
+        .start_review(ReviewInput {
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                title: "Improve review agent".into(),
+                author: "stephan".into(),
+            },
+            diff: "diff --git a/lib.rs b/lib.rs".into(),
+            ..ReviewInput::default()
+        })
+        .expect("review activity starts");
+
+    assert_eq!(provider.calls(), ["review"]);
+    assert_eq!(activity.kind, ActivityKind::Review);
+    assert_eq!(activity.status, ActivityStatus::Completed);
+    assert_eq!(
+        activity.session.provider_session_id.as_deref(),
+        Some("provider-review-session")
+    );
+    assert!(matches!(
+        activity.output,
+        Some(ActivityOutput::Review(ReviewOutput { ref summary, .. }))
+            if summary == "reviewed acme/platform"
+    ));
+
+    let persisted = store.get(&activity.id).expect("persisted activity");
+    assert_eq!(persisted, activity);
+
+    let artifacts = store
+        .list_artifacts_for(&activity.id)
+        .expect("local artifacts");
+    assert_eq!(artifacts.len(), 2);
+    assert_eq!(artifacts[0].activity_id, activity.id);
+    assert_eq!(artifacts[0].kind, ArtifactKind::ReviewSummary);
+    assert_eq!(artifacts[0].sync_state, ArtifactSyncState::LocalOnly);
+    assert_eq!(
+        artifacts[0].content,
+        ArtifactContent::ReviewSummary("reviewed acme/platform".into())
+    );
+    assert_eq!(artifacts[1].kind, ArtifactKind::ReviewComment);
+    assert_eq!(artifacts[1].sync_state, ArtifactSyncState::LocalOnly);
+}
+
+#[test]
+fn chat_activity_uses_the_same_activity_model() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider.clone(), store.clone());
+
+    let activity = runtime
+        .start_chat(ChatInput {
+            prompt: "what changed?".into(),
+            context: "full pull request".into(),
+            ..ChatInput::default()
+        })
+        .expect("chat activity starts");
+
+    assert_eq!(provider.calls(), ["chat"]);
+    assert_eq!(activity.kind, ActivityKind::Chat);
+    assert_eq!(activity.status, ActivityStatus::Completed);
+    assert_eq!(
+        activity.output,
+        Some(ActivityOutput::Chat("answered what changed?".into()))
+    );
+    assert_eq!(
+        activity.session.provider_session_id.as_deref(),
+        Some("provider-chat-session")
+    );
+
+    let artifacts = store
+        .list_artifacts_for(&activity.id)
+        .expect("local artifacts");
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0].kind, ArtifactKind::ChatResponse);
+    assert_eq!(artifacts[0].sync_state, ArtifactSyncState::LocalOnly);
+    assert_eq!(
+        artifacts[0].content,
+        ArtifactContent::ChatResponse("answered what changed?".into())
+    );
+}

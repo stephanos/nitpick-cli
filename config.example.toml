@@ -1,0 +1,10 @@
+[agent]
+provider = "claude"
+# model = "claude-opus-4-6"
+# command = "claude"
+github_command = "gh"
+
+# To use Codex instead:
+# provider = "codex"
+# model = "gpt-5.3-codex"
+# command = "codex"
