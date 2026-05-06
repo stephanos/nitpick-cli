@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput, ReviewSubject};
 use nitpick_agent_github::DiscoveredPullRequest;
 
@@ -221,6 +222,79 @@ pub fn chat_input(prompt: String, repo_dir: std::path::PathBuf, context: String)
         repo_dir,
         prompt,
         context,
+    }
+}
+
+pub fn run_cli_command(
+    command: CliCommand,
+    host_addr: &str,
+    repo_dir: std::path::PathBuf,
+    diff: String,
+    context: String,
+) -> Result<String, String> {
+    let client = HostClient::new(host_addr);
+    match command {
+        CliCommand::Help => Ok(help_text(env!("CARGO_PKG_VERSION"))),
+        CliCommand::Version => Ok(format!("nitpick-agent {}", env!("CARGO_PKG_VERSION"))),
+        CliCommand::Status => match client.status() {
+            Ok(status) => Ok(format_host_status(&host_status(status))),
+            Err(error) if error.starts_with("nitpick-agent-host unavailable") => Ok(format!(
+                "nitpick-agent-host: not connected\naddress: {host_addr}"
+            )),
+            Err(error) => Err(error),
+        },
+        CliCommand::ReviewRequests { only_new } => Ok(format_review_requests(
+            &client.github_review_requests(only_new)?,
+        )),
+        CliCommand::Activities => Ok(format_activities(&client.activities()?)),
+        CliCommand::Artifacts { activity_id } => {
+            Ok(format_artifacts(&client.activity_artifacts(&activity_id)?))
+        }
+        CliCommand::Artifact { artifact_id } => {
+            Ok(format_artifact(&client.artifact(&artifact_id)?))
+        }
+        CliCommand::ArtifactSync {
+            artifact_id,
+            destination,
+            target,
+        } => Ok(format_artifact(&client.sync_artifact(
+            &artifact_id,
+            &destination,
+            target.as_deref(),
+        )?)),
+        CliCommand::SyncPending { destination } => Ok(format_artifacts(
+            &client.pending_sync_artifacts(destination.as_deref())?,
+        )),
+        CliCommand::Review { subject } => {
+            let activity = client.review(&review_input(subject, repo_dir, diff))?;
+            let output = format_activity(&activity);
+            if let Some(error) = activity.error {
+                return Err(error);
+            }
+            Ok(output)
+        }
+        CliCommand::Chat { prompt } => {
+            let activity = client.chat(&chat_input(prompt, repo_dir, context))?;
+            let output = format_activity(&activity);
+            if let Some(error) = activity.error {
+                return Err(error);
+            }
+            Ok(output)
+        }
+    }
+}
+
+fn host_status(status: nitpick_agent_client::HostStatus) -> HostStatus {
+    HostStatus {
+        activity_count: status.activity_count,
+        running_activity_count: status.running_activity_count,
+        completed_activity_count: status.completed_activity_count,
+        error_activity_count: status.error_activity_count,
+        artifact_count: status.artifact_count,
+        local_only_artifact_count: status.local_only_artifact_count,
+        pending_sync_artifact_count: status.pending_sync_artifact_count,
+        provider: status.provider,
+        model: status.model,
     }
 }
 

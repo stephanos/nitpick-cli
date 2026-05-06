@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use nitpick_agent_host::Clock;
+use nitpick_agent_core::Clock;
 
 pub struct ManualClock {
     now_unix: Mutex<u64>,

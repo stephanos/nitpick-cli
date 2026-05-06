@@ -6,7 +6,6 @@ use std::{
     process::{Command, Stdio},
     str::FromStr,
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use nitpick_agent_core::{
@@ -224,13 +223,6 @@ pub struct ProcessedReview {
 }
 
 impl ProcessedReview {
-    pub fn from_pull_request(
-        pull_request: &DiscoveredPullRequest,
-        activity_id: Option<String>,
-    ) -> Self {
-        Self::from_pull_request_at(pull_request, activity_id, unix_now())
-    }
-
     pub fn from_pull_request_at(
         pull_request: &DiscoveredPullRequest,
         activity_id: Option<String>,
@@ -261,14 +253,6 @@ pub trait ProcessedReviewStore: Send + Sync {
         Ok(self
             .get_processed(pull_request)?
             .is_none_or(|processed| processed.head_sha != pull_request.head_sha))
-    }
-
-    fn mark_processed(
-        &self,
-        pull_request: &DiscoveredPullRequest,
-        activity_id: Option<String>,
-    ) -> AgentResult<()> {
-        self.mark_processed_at(pull_request, activity_id, unix_now())
     }
 
     fn mark_processed_at(
@@ -418,12 +402,6 @@ fn read_processed_review(path: &Path) -> AgentResult<ProcessedReview> {
         .map_err(|error| AgentError::new(format!("read processed review: {error}")))?;
     serde_json::from_slice(&bytes)
         .map_err(|error| AgentError::new(format!("parse {}: {error}", path.display())))
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }
 
 impl ArtifactSyncDestination for GitHubCliSyncDestination {

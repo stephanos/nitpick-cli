@@ -1,5 +1,6 @@
 mod activity;
 mod artifact;
+mod clock;
 mod command_provider;
 mod error;
 mod model;
@@ -11,6 +12,7 @@ mod sync;
 
 pub use activity::{Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus};
 pub use artifact::{Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState};
+pub use clock::{Clock, SystemClock};
 pub use command_provider::CommandAgentProvider;
 pub use error::{AgentError, AgentResult};
 pub use model::{

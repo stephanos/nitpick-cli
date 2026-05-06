@@ -15,7 +15,8 @@ use axum::{
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactId, ArtifactSyncDestination,
-    ArtifactSyncState, ChatInput, CommandAgentProvider, ReviewInput, ReviewSubject, SessionStatus,
+    ArtifactSyncState, ChatInput, Clock, CommandAgentProvider, ReviewInput, ReviewSubject,
+    SessionStatus, SystemClock,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliSyncDestination,
@@ -23,9 +24,6 @@ use nitpick_agent_github::{
     ReviewRequestDiscovery,
 };
 use serde::{Deserialize, Serialize};
-
-mod clock;
-pub use clock::{Clock, SystemClock};
 
 #[derive(Clone)]
 pub struct HostDaemon {
@@ -296,6 +294,9 @@ impl HostDaemon {
         let mut enqueued_count = 0;
         for pull_request in pull_requests {
             let activity = self.start_review(review_input_for_pull_request(&pull_request))?;
+            if activity.status != ActivityStatus::Completed {
+                continue;
+            }
             self.processed_reviews.mark_processed_at(
                 &pull_request,
                 Some(activity.id.to_string()),

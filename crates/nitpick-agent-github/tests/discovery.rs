@@ -69,7 +69,7 @@ fn memory_processed_review_store_filters_already_reviewed_heads() {
     };
 
     store
-        .mark_processed(&current, Some("activity-1".into()))
+        .mark_processed_at(&current, Some("activity-1".into()), 1_000)
         .expect("mark processed");
 
     assert!(!store.needs_review(&current).expect("current processed"));
@@ -88,7 +88,7 @@ fn filesystem_processed_review_store_survives_reopen() {
     };
 
     store
-        .mark_processed(&pull_request, Some("activity-1".into()))
+        .mark_processed_at(&pull_request, Some("activity-1".into()), 1_000)
         .expect("mark processed");
 
     let reopened = FsProcessedReviewStore::new(dir.path()).expect("reopen store");

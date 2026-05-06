@@ -5,9 +5,13 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+axum.workspace = true
 nitpick-agent-core.workspace = true
+nitpick-agent-client = { path = "../nitpick-agent-client" }
+nitpick-agent-cli = { path = "../nitpick-agent-cli" }
 nitpick-agent-github = { path = "../nitpick-agent-github" }
 nitpick-agent-host = { path = "../nitpick-agent-host" }
+tempfile = "3.27.0"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tokio.workspace = true

@@ -46,14 +46,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let openItem = NSMenuItem(
-            title: "Open Dashboard",
-            action: #selector(openDashboard),
-            keyEquivalent: ""
-        )
-        openItem.target = self
-        menu.addItem(openItem)
-
         let statusMenuItem = NSMenuItem(title: "Status: Starting", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         self.statusMenuItem = statusMenuItem
@@ -128,12 +120,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func checkForUpdates(_ sender: Any?) {
         updaterController?.checkForUpdates(sender)
-    }
-
-    @objc private func openDashboard() {
-        if let url = URL(string: "http://127.0.0.1:19823/") {
-            NSWorkspace.shared.open(url)
-        }
     }
 
     private func configureStatusItemButton() {

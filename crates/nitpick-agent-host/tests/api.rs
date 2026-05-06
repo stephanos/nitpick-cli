@@ -420,7 +420,7 @@ exit 1
     permissions.set_mode(0o755);
     fs::set_permissions(&gh, permissions).expect("chmod");
     let processed = Arc::new(nitpick_agent_github::MemoryProcessedReviewStore::default());
-    nitpick_agent_github::ProcessedReviewStore::mark_processed(
+    nitpick_agent_github::ProcessedReviewStore::mark_processed_at(
         processed.as_ref(),
         &nitpick_agent_github::DiscoveredPullRequest {
             owner: "acme".into(),
@@ -429,6 +429,7 @@ exit 1
             head_sha: "abc123".into(),
         },
         Some("activity-1".into()),
+        1_000,
     )
     .expect("mark processed");
     let app = api_router(HostDaemon::with_config_and_processed_reviews(
