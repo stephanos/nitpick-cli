@@ -5,7 +5,7 @@ use std::{
 };
 
 use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput, ReviewRequest};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct HostStatus {
@@ -95,6 +95,10 @@ impl HostClient {
         self.post_json("/chats", input)
     }
 
+    pub fn cleanup_checkouts(&self) -> Result<CleanupCheckoutsResult, String> {
+        self.post_json("/maintenance/cleanup-checkouts", &serde_json::json!({}))
+    }
+
     fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
         let body = request_host(&self.addr, "GET", path, None)?;
         serde_json::from_str(&body).map_err(|error| error.to_string())
@@ -109,6 +113,12 @@ impl HostClient {
         let response = request_host(&self.addr, "POST", path, Some(&body))?;
         serde_json::from_str(&response).map_err(|error| error.to_string())
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CleanupCheckoutsResult {
+    pub removed_count: usize,
+    pub cleaned: Vec<String>,
 }
 
 #[derive(serde::Serialize)]

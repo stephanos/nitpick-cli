@@ -34,6 +34,7 @@ pub enum CliCommand {
     SyncPending {
         destination: Option<String>,
     },
+    CleanupCheckouts,
 }
 
 pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand, String> {
@@ -76,6 +77,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
         Some("sync-pending") => Ok(CliCommand::SyncPending {
             destination: args.next(),
         }),
+        Some("cleanup-checkouts") => Ok(CliCommand::CleanupCheckouts),
         Some("review") => {
             let subject = args
                 .next()
@@ -94,7 +96,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick-agent {version}\n\nUsage: nitpick-agent <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick-agent {version}\n\nUsage: nitpick-agent <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -202,6 +204,17 @@ pub fn format_review_requests(requests: &[ReviewRequest]) -> String {
         .join("\n")
 }
 
+pub fn format_cleanup_checkouts(result: &nitpick_agent_client::CleanupCheckoutsResult) -> String {
+    if result.removed_count == 0 {
+        return "no checkouts cleaned up".into();
+    }
+    format!(
+        "cleaned up {} checkout(s)\n{}",
+        result.removed_count,
+        result.cleaned.join("\n")
+    )
+}
+
 pub fn host_status_url(addr: &str) -> String {
     format!("http://{addr}/status")
 }
@@ -270,6 +283,7 @@ pub fn run_cli_command(
         CliCommand::SyncPending { destination } => Ok(format_artifacts(
             &client.pending_sync_artifacts(destination.as_deref())?,
         )),
+        CliCommand::CleanupCheckouts => Ok(format_cleanup_checkouts(&client.cleanup_checkouts()?)),
         CliCommand::Review { subject } => {
             let activity = client.review(&review_input(subject, repo_dir, diff))?;
             let output = format_activity(&activity);
@@ -451,6 +465,31 @@ mod tests {
         let command = parse_command(["sync-pending".to_owned()]).expect("command");
 
         assert_eq!(command, CliCommand::SyncPending { destination: None });
+    }
+
+    #[test]
+    fn parses_cleanup_checkouts_command() {
+        let command = parse_command(["cleanup-checkouts".to_owned()]).expect("command");
+
+        assert_eq!(command, CliCommand::CleanupCheckouts);
+    }
+
+    #[test]
+    fn formats_cleanup_checkouts_result() {
+        assert_eq!(
+            super::format_cleanup_checkouts(&nitpick_agent_client::CleanupCheckoutsResult {
+                removed_count: 1,
+                cleaned: vec!["acme/platform#42".into()],
+            }),
+            "cleaned up 1 checkout(s)\nacme/platform#42"
+        );
+        assert_eq!(
+            super::format_cleanup_checkouts(&nitpick_agent_client::CleanupCheckoutsResult {
+                removed_count: 0,
+                cleaned: Vec::new(),
+            }),
+            "no checkouts cleaned up"
+        );
     }
 
     #[test]

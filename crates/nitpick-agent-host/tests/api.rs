@@ -344,6 +344,66 @@ async fn pending_sync_endpoint_lists_pending_artifacts_for_destination() {
 }
 
 #[tokio::test]
+async fn cleanup_checkouts_endpoint_removes_closed_checkouts_and_records_activity() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkout_root = dir.path().join("checkouts");
+    fs::create_dir_all(checkout_root.join("acme/platform/pr-42/.git")).expect("closed checkout");
+    fs::create_dir_all(checkout_root.join("octo/widgets/pr-7/.git")).expect("open checkout");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1 $2" = "pr view" ] && [ "$3" = "42" ]; then
+  printf '{"title":"Closed PR","author":{"login":"stephan"},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}'
+  exit 0
+fi
+if [ "$1 $2" = "pr view" ] && [ "$3" = "7" ]; then
+  printf '{"title":"Open PR","author":{"login":"octo"},"url":"https://github.com/octo/widgets/pull/7","headRefOid":"def456","headRefName":"open-branch","state":"OPEN","mergedAt":null}'
+  exit 0
+fi
+exit 1
+"#,
+    )
+    .expect("write fake gh");
+    let mut permissions = fs::metadata(&gh).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh, permissions).expect("chmod");
+    let store = Arc::new(MemoryActivityStore::default());
+    let app = api_router(HostDaemon::with_config(
+        store.clone(),
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            checkout_dir: Some(checkout_root.display().to_string()),
+            ..AgentConfig::default()
+        },
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/maintenance/cleanup-checkouts")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["removed_count"], 1);
+    assert_eq!(body["cleaned"][0], "acme/platform#42");
+    assert!(!checkout_root.join("acme/platform/pr-42").exists());
+    assert!(checkout_root.join("octo/widgets/pr-7").exists());
+    let activities = store.list().expect("activities");
+    assert_eq!(activities.len(), 1);
+    assert_eq!(
+        activities[0].label.as_deref(),
+        Some("acme/platform#42 cleaned up")
+    );
+}
+
+#[tokio::test]
 async fn github_review_requests_endpoint_lists_requested_reviews() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");

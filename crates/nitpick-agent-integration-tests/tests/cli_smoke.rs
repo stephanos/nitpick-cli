@@ -49,12 +49,22 @@ async fn cli_commands_talk_to_the_host_api() {
     let activities = run_cli_command(
         CliCommand::Activities,
         &host_addr,
-        repo_dir,
+        repo_dir.clone(),
         String::new(),
         String::new(),
     )
     .expect("activities command");
     assert!(activities.contains("activity-1: Completed"));
+
+    let cleanup = run_cli_command(
+        CliCommand::CleanupCheckouts,
+        &host_addr,
+        repo_dir,
+        String::new(),
+        String::new(),
+    )
+    .expect("cleanup command");
+    assert_eq!(cleanup, "no checkouts cleaned up");
 }
 
 async fn serve_host(daemon: HostDaemon) -> String {

@@ -28,6 +28,7 @@ and stores local source-of-truth data under:
 ```
 
 Override these with `NITPICK_AGENT_CONFIG` and `NITPICK_AGENT_DATA_DIR`.
+GitHub PR checkouts are retained under the data directory at `checkouts/` by default, and can be moved with `NITPICK_AGENT_CHECKOUT_DIR`.
 
 The host API listens on `127.0.0.1:19783` by default when started with:
 
@@ -51,6 +52,7 @@ nitpick-agent artifact artifact-1
 nitpick-agent artifact-sync artifact-1 github
 nitpick-agent artifact-sync artifact-1 github acme/platform#42
 nitpick-agent sync-pending github
+nitpick-agent cleanup-checkouts
 ```
 
 The daemon can watch review sources and create local review activities automatically. GitHub is the first source adapter; additional source-code providers should plug into the same review-source API. Processed review heads are stored locally, so a review request is not reviewed again until its head SHA changes.

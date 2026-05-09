@@ -64,10 +64,19 @@ public struct MenuSnapshot: Equatable {
     }
 
     private func activityTitle(_ activity: ActivitySnapshot) -> String {
-        "\(relativeTime(activity.updatedAtUnix).padding(toLength: 8, withPad: " ", startingAt: 0)) \(activityVerb(activity)) \(activity.label ?? fallbackLabel(activity))"
+        let verb = activityVerb(activity)
+        let label = activity.label ?? fallbackLabel(activity)
+        if verb.isEmpty {
+            return "\(relativeTime(activity.updatedAtUnix).padding(toLength: 8, withPad: " ", startingAt: 0)) \(label)"
+        }
+        return "\(relativeTime(activity.updatedAtUnix).padding(toLength: 8, withPad: " ", startingAt: 0)) \(verb) \(label)"
     }
 
     private func activityVerb(_ activity: ActivitySnapshot) -> String {
+        if activity.status == "Completed", activity.label?.hasSuffix(" cleaned up") == true {
+            return ""
+        }
+
         switch activity.status {
         case "Running":
             return "started"

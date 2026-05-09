@@ -70,6 +70,7 @@ impl Activity {
 pub enum ActivityKind {
     Review,
     Chat,
+    Maintenance,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

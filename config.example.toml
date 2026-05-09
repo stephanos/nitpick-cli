@@ -3,6 +3,7 @@ provider = "claude"
 # model = "claude-opus-4-6"
 # command = "claude"
 github_command = "gh"
+# checkout_dir = "/Users/you/.local/share/nitpick-agent/checkouts"
 
 # To use Codex instead:
 # provider = "codex"

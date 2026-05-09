@@ -20,6 +20,7 @@ provider = "codex"
 model = "gpt-5.3-codex"
 command = "/opt/bin/codex"
 github_command = "/opt/bin/gh"
+checkout_dir = "/var/tmp/nitpick-checkouts"
 "#,
     )
     .expect("config parses");
@@ -28,6 +29,10 @@ github_command = "/opt/bin/gh"
     assert_eq!(config.model.as_deref(), Some("gpt-5.3-codex"));
     assert_eq!(config.command.as_deref(), Some("/opt/bin/codex"));
     assert_eq!(config.github_command.as_deref(), Some("/opt/bin/gh"));
+    assert_eq!(
+        config.checkout_dir.as_deref(),
+        Some("/var/tmp/nitpick-checkouts")
+    );
 }
 
 #[test]

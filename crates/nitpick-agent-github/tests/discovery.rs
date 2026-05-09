@@ -1,7 +1,9 @@
 use std::{fs, os::unix::fs::PermissionsExt};
 
 use nitpick_agent_core::{ProcessedReviewStore, ReviewRequest};
-use nitpick_agent_github::{DiscoveredPullRequest, FsProcessedReviewStore, GitHubCliDiscovery};
+use nitpick_agent_github::{
+    DiscoveredPullRequest, FsProcessedReviewStore, GitHubCliDiscovery, PullRequestState,
+};
 
 #[test]
 fn github_cli_discovery_lists_requested_reviews() {
@@ -57,24 +59,45 @@ exit 1
 fn github_cli_discovery_builds_review_input_from_pr_metadata_and_diff() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
+    let git = dir.path().join("git");
+    let checkout_root = dir.path().join("checkouts");
+    let log = dir.path().join("commands.log");
     fs::write(
         &gh,
-        r#"#!/bin/sh
+        format!(
+            r#"#!/bin/sh
+echo "gh $*" >> '{}'
 if [ "$1 $2" = "pr view" ]; then
-  printf '{"title":"Add watcher","author":{"login":"stephan"},"headRefOid":"abc123"}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr diff" ]; then
   printf 'diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n'
   exit 0
 fi
+if [ "$1 $2" = "repo clone" ]; then
+  mkdir -p "$4/.git"
+  exit 0
+fi
 exit 1
 "#,
+            log.display()
+        ),
     )
     .expect("write fake gh");
-    let mut permissions = fs::metadata(&gh).expect("metadata").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&gh, permissions).expect("chmod");
+    fs::write(
+        &git,
+        format!(
+            r#"#!/bin/sh
+echo "git $*" >> '{}'
+exit 0
+"#,
+            log.display()
+        ),
+    )
+    .expect("write fake git");
+    make_executable(&gh);
+    make_executable(&git);
     let pull_request = DiscoveredPullRequest {
         owner: "acme".into(),
         repo: "platform".into(),
@@ -82,20 +105,219 @@ exit 1
         head_sha: "abc123".into(),
     };
 
-    let input = GitHubCliDiscovery::new(&gh)
+    let input = GitHubCliDiscovery::with_checkout_commands(&gh, &git, &checkout_root)
         .review_input(&pull_request)
         .expect("review input");
+    let checkout_dir = checkout_root.join("acme/platform/pr-42");
 
     assert_eq!(input.subject.repository, "acme/platform");
     assert_eq!(input.subject.number, Some(42));
     assert_eq!(input.subject.title, "Add watcher");
     assert_eq!(input.subject.author, "stephan");
+    assert_eq!(input.repo_dir, checkout_dir);
     assert_eq!(
         input.diff,
         "diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n"
     );
     assert!(input.instructions.contains("acme/platform#42"));
+    assert!(
+        input
+            .instructions
+            .contains("https://github.com/acme/platform/pull/42")
+    );
     assert!(input.instructions.contains("abc123"));
+    assert!(input.instructions.contains("feature/watcher"));
+    assert!(input.instructions.contains("open"));
+    assert_eq!(
+        fs::read_to_string(log).expect("command log"),
+        format!(
+            "gh pr view 42 --repo acme/platform --json title,author,url,headRefOid,headRefName,state,mergedAt\n\
+gh pr diff 42 --repo acme/platform\n\
+gh repo clone acme/platform {} -- --quiet\n\
+git -C {} fetch origin feature/watcher --quiet\n\
+git -C {} checkout -B feature/watcher origin/feature/watcher --quiet\n",
+            checkout_dir.display(),
+            checkout_dir.display(),
+            checkout_dir.display(),
+        )
+    );
+}
+
+#[test]
+fn github_cli_discovery_parses_pull_request_state_metadata() {
+    let cases = [
+        ("OPEN", "null", PullRequestState::Open),
+        ("CLOSED", "null", PullRequestState::Closed),
+        (
+            "CLOSED",
+            r#""2026-05-09T12:34:56Z""#,
+            PullRequestState::Merged,
+        ),
+    ];
+
+    for (raw_state, merged_at, expected_state) in cases {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let gh = dir.path().join("gh");
+        fs::write(
+            &gh,
+            format!(
+                r#"#!/bin/sh
+if [ "$1 $2" = "pr view" ]; then
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"{}","mergedAt":{}}}'
+  exit 0
+fi
+exit 1
+"#,
+                raw_state, merged_at
+            ),
+        )
+        .expect("write fake gh");
+        make_executable(&gh);
+        let pull_request = DiscoveredPullRequest {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+            head_sha: "abc123".into(),
+        };
+
+        let details = GitHubCliDiscovery::new(&gh)
+            .pull_request_details(&pull_request)
+            .expect("details");
+
+        assert_eq!(details.state, expected_state);
+        assert_eq!(details.url, "https://github.com/acme/platform/pull/42");
+        assert_eq!(details.head_sha, "abc123");
+        assert_eq!(details.head_ref_name, "feature/watcher");
+    }
+}
+
+#[test]
+fn github_cli_discovery_removes_closed_or_merged_checkouts_but_keeps_open_ones() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkout_root = dir.path().join("checkouts");
+    let discovery = GitHubCliDiscovery::with_checkout_commands(
+        dir.path().join("gh"),
+        dir.path().join("git"),
+        &checkout_root,
+    );
+    let pull_request = DiscoveredPullRequest {
+        owner: "acme".into(),
+        repo: "platform".into(),
+        number: 42,
+        head_sha: "abc123".into(),
+    };
+    let checkout_dir = checkout_root.join("acme/platform/pr-42");
+    fs::create_dir_all(checkout_dir.join(".git")).expect("checkout");
+
+    let removed = discovery
+        .cleanup_checkout_for(
+            &pull_request,
+            &pull_request_details_for_state(PullRequestState::Open),
+        )
+        .expect("open cleanup");
+
+    assert!(!removed);
+    assert!(checkout_dir.exists());
+
+    let removed = discovery
+        .cleanup_checkout_for(
+            &pull_request,
+            &pull_request_details_for_state(PullRequestState::Closed),
+        )
+        .expect("closed cleanup");
+
+    assert!(removed);
+    assert!(!checkout_dir.exists());
+
+    fs::create_dir_all(checkout_dir.join(".git")).expect("checkout");
+    let removed = discovery
+        .cleanup_checkout_for(
+            &pull_request,
+            &pull_request_details_for_state(PullRequestState::Merged),
+        )
+        .expect("merged cleanup");
+
+    assert!(removed);
+    assert!(!checkout_dir.exists());
+}
+
+#[test]
+fn github_cli_discovery_treats_missing_closed_checkout_as_noop() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkout_root = dir.path().join("checkouts");
+    let discovery = GitHubCliDiscovery::with_checkout_commands(
+        dir.path().join("gh"),
+        dir.path().join("git"),
+        &checkout_root,
+    );
+    let pull_request = DiscoveredPullRequest {
+        owner: "acme".into(),
+        repo: "platform".into(),
+        number: 42,
+        head_sha: "abc123".into(),
+    };
+
+    let removed = discovery
+        .cleanup_checkout_for(
+            &pull_request,
+            &pull_request_details_for_state(PullRequestState::Closed),
+        )
+        .expect("missing cleanup");
+
+    assert!(!removed);
+}
+
+#[test]
+fn github_cli_discovery_lists_checkout_prs_from_checkout_root() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkout_root = dir.path().join("checkouts");
+    fs::create_dir_all(checkout_root.join("acme/platform/pr-42/.git")).expect("checkout");
+    fs::create_dir_all(checkout_root.join("acme/platform/not-a-pr")).expect("ignored");
+    fs::create_dir_all(checkout_root.join("octo/widgets/pr-7/.git")).expect("checkout");
+    let discovery = GitHubCliDiscovery::with_checkout_commands(
+        dir.path().join("gh"),
+        dir.path().join("git"),
+        &checkout_root,
+    );
+
+    let checkouts = discovery.list_checkouts().expect("checkouts");
+
+    assert_eq!(
+        checkouts,
+        vec![
+            DiscoveredPullRequest {
+                owner: "acme".into(),
+                repo: "platform".into(),
+                number: 42,
+                head_sha: String::new(),
+            },
+            DiscoveredPullRequest {
+                owner: "octo".into(),
+                repo: "widgets".into(),
+                number: 7,
+                head_sha: String::new(),
+            },
+        ]
+    );
+}
+
+fn pull_request_details_for_state(
+    state: PullRequestState,
+) -> nitpick_agent_github::PullRequestDetails {
+    nitpick_agent_github::PullRequestDetails {
+        title: "Add watcher".into(),
+        author: "stephan".into(),
+        url: "https://github.com/acme/platform/pull/42".into(),
+        head_sha: "abc123".into(),
+        head_ref_name: "feature/watcher".into(),
+        state,
+    }
+}
+
+fn make_executable(path: &std::path::Path) {
+    let mut permissions = fs::metadata(path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod");
 }
 
 #[test]

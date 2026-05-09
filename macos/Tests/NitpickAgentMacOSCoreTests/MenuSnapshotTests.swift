@@ -100,4 +100,24 @@ final class MenuSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.recentActivityTitles[1], "10s ago  finished review on org/repo#120")
         XCTAssertEqual(snapshot.recentActivityTitles[2], "1m ago   failed chat")
     }
+
+    func testCompletedCleanupActivityUsesLabelAsEventText() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 1,
+            activities: [
+                ActivitySnapshot(
+                    id: "activity-1",
+                    kind: "Maintenance",
+                    status: "Completed",
+                    label: "acme/platform#42 cleaned up",
+                    createdAtUnix: 990,
+                    updatedAtUnix: 990
+                ),
+            ],
+            currentUnix: 1_000
+        )
+
+        XCTAssertEqual(snapshot.recentActivityTitles[0], "10s ago  acme/platform#42 cleaned up")
+    }
 }

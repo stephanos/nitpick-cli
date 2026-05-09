@@ -4,6 +4,7 @@ use nitpick_agent_core::{
     ActivityKind, ActivityStatus, ActivityStore, AgentProviderKind, ArtifactContent, ArtifactKind,
     ArtifactSyncState, FsActivityStore, MemoryActivityStore, SessionStatus,
 };
+use nitpick_agent_github::PullRequestRef;
 use nitpick_agent_host::{HostDaemon, HostStatus};
 
 #[test]
@@ -114,5 +115,34 @@ fn daemon_marks_interrupted_running_activities_as_errors() {
     assert_eq!(
         recovered.error,
         Some("host restarted before activity completed".into())
+    );
+}
+
+#[test]
+fn daemon_records_completed_checkout_cleanup_activity() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let daemon = HostDaemon::new(store.clone());
+    let pull_request = PullRequestRef {
+        owner: "acme".into(),
+        repo: "platform".into(),
+        number: 42,
+    };
+
+    let activity = daemon
+        .record_checkout_cleanup_activity(&pull_request)
+        .expect("cleanup activity");
+
+    assert_eq!(activity.status, ActivityStatus::Completed);
+    assert_eq!(
+        activity.label.as_deref(),
+        Some("acme/platform#42 cleaned up")
+    );
+    assert_eq!(
+        store
+            .get(&activity.id)
+            .expect("persisted activity")
+            .label
+            .as_deref(),
+        Some("acme/platform#42 cleaned up")
     );
 }

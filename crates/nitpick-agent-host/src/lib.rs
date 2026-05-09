@@ -13,7 +13,7 @@ use axum::{
     routing::{get, post},
 };
 use nitpick_agent_core::{
-    Activity, ActivityId, ActivityStatus, ActivityStore, AgentError, AgentProvider,
+    Activity, ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactId, ArtifactSyncDestination,
     ArtifactSyncState, ChatInput, Clock, CommandAgentProvider, MemoryProcessedReviewStore,
     ProcessedReviewStore, ReviewInput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
@@ -174,6 +174,48 @@ impl HostDaemon {
         }
 
         Ok(recovered_count)
+    }
+
+    pub fn record_checkout_cleanup_activity(
+        &self,
+        pull_request: &PullRequestRef,
+    ) -> AgentResult<Activity> {
+        let mut activity = self.store.create(ActivityKind::Maintenance)?;
+        activity.status = ActivityStatus::Completed;
+        activity.label = Some(format!(
+            "{}/{}#{} cleaned up",
+            pull_request.owner, pull_request.repo, pull_request.number
+        ));
+        activity.touch();
+        self.store.save(&activity)?;
+        Ok(activity)
+    }
+
+    pub fn cleanup_checkouts(&self) -> AgentResult<CleanupCheckoutsResult> {
+        let github = self.config.github_discovery_client();
+        let mut cleaned = Vec::new();
+
+        for pull_request in github.list_checkouts()? {
+            let details = github.pull_request_details(&pull_request)?;
+            if !github.cleanup_checkout_for(&pull_request, &details)? {
+                continue;
+            }
+            let reference = PullRequestRef {
+                owner: pull_request.owner,
+                repo: pull_request.repo,
+                number: pull_request.number,
+            };
+            self.record_checkout_cleanup_activity(&reference)?;
+            cleaned.push(format!(
+                "{}/{}#{}",
+                reference.owner, reference.repo, reference.number
+            ));
+        }
+
+        Ok(CleanupCheckoutsResult {
+            removed_count: cleaned.len(),
+            cleaned,
+        })
     }
 
     pub fn list_activities(&self) -> AgentResult<Vec<Activity>> {
@@ -459,6 +501,12 @@ pub struct HostStatus {
     pub review_source_last_poll_summary: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupCheckoutsResult {
+    pub removed_count: usize,
+    pub cleaned: Vec<String>,
+}
+
 pub fn api_router(daemon: HostDaemon) -> Router {
     Router::new()
         .route("/status", get(status))
@@ -471,6 +519,7 @@ pub fn api_router(daemon: HostDaemon) -> Router {
         .route("/artifacts/{id}", get(artifact))
         .route("/artifacts/{id}/sync-state", post(artifact_sync_state))
         .route("/artifacts/{id}/sync", post(artifact_sync))
+        .route("/maintenance/cleanup-checkouts", post(cleanup_checkouts))
         .route("/reviews", post(review))
         .route("/chats", post(chat))
         .with_state(daemon)
@@ -594,6 +643,12 @@ async fn artifact_sync(
     }
 }
 
+async fn cleanup_checkouts(
+    State(daemon): State<HostDaemon>,
+) -> Result<Json<CleanupCheckoutsResult>, ApiError> {
+    Ok(Json(daemon.cleanup_checkouts()?))
+}
+
 #[derive(Deserialize)]
 struct ArtifactSyncInput {
     destination: String,
@@ -638,6 +693,7 @@ pub struct AgentConfig {
     pub model: Option<String>,
     pub command: Option<String>,
     pub github_command: Option<String>,
+    pub checkout_dir: Option<String>,
     pub github_discovery: GitHubDiscoveryConfig,
 }
 
@@ -662,6 +718,10 @@ impl AgentConfig {
             .github_command
             .map(|command| command.trim().to_owned())
             .filter(|command| !command.is_empty());
+        let checkout_dir = agent
+            .checkout_dir
+            .map(|path| path.trim().to_owned())
+            .filter(|path| !path.is_empty());
         let source_github_discovery = raw
             .sources
             .and_then(|sources| sources.github)
@@ -678,6 +738,7 @@ impl AgentConfig {
             model,
             command,
             github_command,
+            checkout_dir,
             github_discovery,
         })
     }
@@ -720,9 +781,18 @@ impl AgentConfig {
     }
 
     fn review_source(&self) -> Arc<dyn ReviewSource> {
-        Arc::new(GitHubCliDiscovery::new(
-            self.github_command.as_deref().unwrap_or("gh"),
-        ))
+        Arc::new(self.github_discovery_client())
+    }
+
+    fn github_discovery_client(&self) -> GitHubCliDiscovery {
+        match &self.checkout_dir {
+            Some(checkout_dir) => GitHubCliDiscovery::with_checkout_commands(
+                self.github_command.as_deref().unwrap_or("gh"),
+                "git",
+                checkout_dir,
+            ),
+            None => GitHubCliDiscovery::new(self.github_command.as_deref().unwrap_or("gh")),
+        }
     }
 
     fn sync_destination(
@@ -795,6 +865,7 @@ struct RawAgentConfig {
     model: Option<String>,
     command: Option<String>,
     github_command: Option<String>,
+    checkout_dir: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
