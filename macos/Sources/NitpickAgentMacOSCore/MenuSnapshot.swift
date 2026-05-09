@@ -7,6 +7,8 @@ public struct MenuSnapshot: Equatable {
     public var artifactCount: Int
     public var localOnlyArtifactCount: Int
     public var pendingSyncArtifactCount: Int
+    public var reviewSourceEnabled: Bool
+    public var reviewSourceLastPollSummary: String?
     public var activities: [ActivitySnapshot]
     public var currentUnix: UInt64
 
@@ -17,6 +19,8 @@ public struct MenuSnapshot: Equatable {
         artifactCount: Int = 0,
         localOnlyArtifactCount: Int = 0,
         pendingSyncArtifactCount: Int = 0,
+        reviewSourceEnabled: Bool = false,
+        reviewSourceLastPollSummary: String? = nil,
         activities: [ActivitySnapshot] = [],
         currentUnix: UInt64 = UInt64(Date().timeIntervalSince1970)
     ) {
@@ -26,6 +30,8 @@ public struct MenuSnapshot: Equatable {
         self.artifactCount = artifactCount
         self.localOnlyArtifactCount = localOnlyArtifactCount
         self.pendingSyncArtifactCount = pendingSyncArtifactCount
+        self.reviewSourceEnabled = reviewSourceEnabled
+        self.reviewSourceLastPollSummary = reviewSourceLastPollSummary
         self.activities = activities
         self.currentUnix = currentUnix
     }
@@ -33,6 +39,9 @@ public struct MenuSnapshot: Equatable {
     public var statusTitle: String {
         guard hostIsRunning else {
             return "Status: Host stopped"
+        }
+        if reviewSourceEnabled, let reviewSourceLastPollSummary, isReviewSourceError(reviewSourceLastPollSummary) {
+            return "Status: \(reviewSourceLastPollSummary)"
         }
         if runningActivityCount == 1 {
             return artifactSuffix("Status: 1 running")
@@ -131,5 +140,11 @@ public struct MenuSnapshot: Equatable {
         }
 
         return "\(title), \(parts.joined(separator: ", "))"
+    }
+
+    private func isReviewSourceError(_ summary: String) -> Bool {
+        summary.hasPrefix("github unavailable:")
+            || summary.hasPrefix("review source failed:")
+            || summary.contains("failed:")
     }
 }

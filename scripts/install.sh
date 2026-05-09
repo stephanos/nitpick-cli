@@ -42,4 +42,4 @@ if [[ "$launched" == "1" ]]; then
 else
   echo "Skipped launch because NITPICK_INSTALL_SKIP_LAUNCH=1."
 fi
-echo "The app installs the nitpick-agent CLI into ~/.local/bin when it starts."
+echo "The app installs the nitpick CLI into ~/.local/bin when it starts."

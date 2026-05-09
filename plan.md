@@ -17,6 +17,7 @@ Current gap:
 
 - `reviewd` polls GitHub for `user-review-requested:@me`.
 - `nitpick-agent` can discover requested reviews, but the replacement workflow still needs to be verified end to end against the old behavior.
+- `nitpick-agent` now records scheduled GitHub discovery failures in host status so the menu bar can surface missing `gh` or other review-source errors.
 
 ## 2. Processed PR Tracking
 
@@ -67,7 +68,8 @@ Current gap:
 
 - `reviewd` clones, fetches, and checks out PR branches under `/tmp/reviewd`.
 - `nitpick-agent` now uses durable checkout storage and has a GitHub cleanup API for closed or merged PR checkouts.
-- `nitpick-agent cleanup-checkouts` now runs an explicit host maintenance pass over known PR checkouts and records completed cleanup activities.
+- `nitpick cleanup-checkouts` now runs an explicit host maintenance pass over known PR checkouts and records completed cleanup activities.
+- The scheduled review-source poller now runs checkout cleanup after due polls for the normal GitHub-backed daemon.
 
 References:
 

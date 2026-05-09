@@ -8,7 +8,7 @@ final class CommandLineInstallerTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString)
         let bundledDirectory = root.appendingPathComponent("bundle")
         let installDirectory = root.appendingPathComponent("bin")
-        let bundledCli = bundledDirectory.appendingPathComponent("nitpick-agent")
+        let bundledCli = bundledDirectory.appendingPathComponent("nitpick")
 
         try FileManager.default.createDirectory(
             at: bundledDirectory,
@@ -30,6 +30,7 @@ final class CommandLineInstallerTests: XCTestCase {
 
         let installedURL = try installer.install()
 
+        XCTAssertEqual(installedURL.lastPathComponent, "nitpick")
         var isDirectory: ObjCBool = false
         XCTAssertTrue(FileManager.default.fileExists(atPath: installedURL.path, isDirectory: &isDirectory))
         XCTAssertFalse(isDirectory.boolValue)

@@ -14,7 +14,9 @@ use nitpick_agent_core::{
     MemoryActivityStore, ProcessedReviewStore, ReviewInput, ReviewOutput, ReviewRequest,
     ReviewSubject,
 };
-use nitpick_agent_host::{AgentConfig, HostDaemon, api_router};
+use nitpick_agent_host::{
+    AgentConfig, GitHubDiscoveryConfig, HostDaemon, ReviewSourcePoller, api_router,
+};
 use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 use tower::ServiceExt;
@@ -400,6 +402,68 @@ exit 1
     assert_eq!(
         activities[0].label.as_deref(),
         Some("acme/platform#42 cleaned up")
+    );
+}
+
+#[test]
+fn review_source_poller_runs_checkout_cleanup_after_due_poll() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkout_root = dir.path().join("checkouts");
+    fs::create_dir_all(checkout_root.join("acme/platform/pr-42/.git")).expect("closed checkout");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1 $2 $3" = "search prs user-review-requested:@me" ]; then
+  printf '[]'
+  exit 0
+fi
+if [ "$1 $2" = "pr view" ] && [ "$3" = "42" ]; then
+  printf '{"title":"Closed PR","author":{"login":"stephan"},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}'
+  exit 0
+fi
+exit 1
+"#,
+    )
+    .expect("write fake gh");
+    let mut permissions = fs::metadata(&gh).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh, permissions).expect("chmod");
+    let store = Arc::new(MemoryActivityStore::default());
+    let daemon = HostDaemon::with_config(
+        store.clone(),
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            checkout_dir: Some(checkout_root.display().to_string()),
+            github_discovery: GitHubDiscoveryConfig {
+                enabled: true,
+                auto_review: false,
+                interval_seconds: 300,
+                ..GitHubDiscoveryConfig::default()
+            },
+            ..AgentConfig::default()
+        },
+    );
+
+    let result = ReviewSourcePoller::new(daemon.clone())
+        .tick()
+        .expect("tick");
+
+    assert_eq!(result.discovered_count, 0);
+    assert_eq!(result.enqueued_count, 0);
+    assert_eq!(result.cleanup_removed_count, 1);
+    assert!(!checkout_root.join("acme/platform/pr-42").exists());
+    assert_eq!(
+        store.list().expect("activities")[0].label.as_deref(),
+        Some("acme/platform#42 cleaned up")
+    );
+    assert_eq!(
+        daemon
+            .status()
+            .expect("status")
+            .review_source_last_poll_summary
+            .as_deref(),
+        Some("reviewed 0 of 0 PRs, cleaned up 1 checkout(s)")
     );
 }
 

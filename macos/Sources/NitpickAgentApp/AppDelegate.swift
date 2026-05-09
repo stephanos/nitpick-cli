@@ -144,6 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             artifactCount: latestHostStatus?.artifactCount ?? 0,
             localOnlyArtifactCount: latestHostStatus?.localOnlyArtifactCount ?? 0,
             pendingSyncArtifactCount: latestHostStatus?.pendingSyncArtifactCount ?? 0,
+            reviewSourceEnabled: latestHostStatus?.reviewSourceEnabled ?? false,
+            reviewSourceLastPollSummary: latestHostStatus?.reviewSourceLastPollSummary,
             activities: latestActivities
         )
         statusMenuItem?.title = snapshot.statusTitle
@@ -259,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installCommandLineTool() {
-        guard let executableURL = bundledExecutableURL(named: "nitpick-agent") else {
+        guard let executableURL = bundledExecutableURL(named: "nitpick") else {
             return
         }
 

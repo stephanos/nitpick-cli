@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "nitpick-agent"
+name = "nitpick"
 path = "src/main.rs"
 
 [dependencies]

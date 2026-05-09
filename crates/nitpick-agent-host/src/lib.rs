@@ -32,6 +32,7 @@ pub struct HostDaemon {
     provider: Arc<dyn AgentProvider>,
     review_source: Arc<dyn ReviewSource>,
     clock: Arc<dyn Clock>,
+    automatic_checkout_cleanup: bool,
     last_review_source_poll_unix: Arc<Mutex<Option<u64>>>,
     last_review_source_poll_summary: Arc<Mutex<Option<String>>>,
 }
@@ -51,6 +52,7 @@ impl HostDaemon {
             provider,
             review_source,
             clock: Arc::new(SystemClock),
+            automatic_checkout_cleanup: true,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
@@ -70,6 +72,7 @@ impl HostDaemon {
             provider,
             review_source,
             clock: Arc::new(SystemClock),
+            automatic_checkout_cleanup: true,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
@@ -85,6 +88,7 @@ impl HostDaemon {
             provider,
             review_source,
             clock: Arc::new(SystemClock),
+            automatic_checkout_cleanup: true,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
@@ -105,6 +109,7 @@ impl HostDaemon {
             provider,
             review_source,
             clock,
+            automatic_checkout_cleanup: false,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
@@ -350,6 +355,8 @@ impl HostDaemon {
             let result = ReviewSourcePollResult {
                 discovered_count,
                 enqueued_count: 0,
+                cleanup_removed_count: 0,
+                cleanup_error: None,
                 skipped_reason: None,
             };
             self.record_review_source_poll_result(now, &result)?;
@@ -373,6 +380,8 @@ impl HostDaemon {
         let result = ReviewSourcePollResult {
             discovered_count,
             enqueued_count,
+            cleanup_removed_count: 0,
+            cleanup_error: None,
             skipped_reason: None,
         };
         self.record_review_source_poll_result(now, &result)?;
@@ -432,12 +441,34 @@ impl HostDaemon {
             Some(result.summary());
         Ok(())
     }
+
+    fn record_review_source_poll_error(&self, now: u64, error: &str) -> AgentResult<()> {
+        *self
+            .last_review_source_poll_unix
+            .lock()
+            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? = Some(now);
+        *self
+            .last_review_source_poll_summary
+            .lock()
+            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? =
+            Some(review_source_error_summary(error));
+        Ok(())
+    }
+}
+
+fn review_source_error_summary(error: &str) -> String {
+    if error.contains("failed to start GitHub CLI") {
+        return format!("github unavailable: {error}");
+    }
+    format!("review source failed: {error}")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewSourcePollResult {
     pub discovered_count: usize,
     pub enqueued_count: usize,
+    pub cleanup_removed_count: usize,
+    pub cleanup_error: Option<String>,
     pub skipped_reason: Option<String>,
 }
 
@@ -446,12 +477,14 @@ impl ReviewSourcePollResult {
         Self {
             discovered_count: 0,
             enqueued_count: 0,
+            cleanup_removed_count: 0,
+            cleanup_error: None,
             skipped_reason: Some(reason.into()),
         }
     }
 
     pub fn summary(&self) -> String {
-        match self.skipped_reason.as_deref() {
+        let mut summary = match self.skipped_reason.as_deref() {
             Some("disabled") => "disabled".into(),
             Some("interval") => "waiting for interval".into(),
             Some(reason) => format!("skipped: {reason}"),
@@ -459,7 +492,17 @@ impl ReviewSourcePollResult {
                 "reviewed {} of {} PRs",
                 self.enqueued_count, self.discovered_count
             ),
+        };
+        if self.cleanup_removed_count > 0 {
+            summary.push_str(&format!(
+                ", cleaned up {} checkout(s)",
+                self.cleanup_removed_count
+            ));
         }
+        if let Some(error) = &self.cleanup_error {
+            summary.push_str(&format!(", cleanup failed: {error}"));
+        }
+        summary
     }
 }
 
@@ -474,7 +517,28 @@ impl ReviewSourcePoller {
     }
 
     pub fn tick(&self) -> AgentResult<ReviewSourcePollResult> {
-        self.daemon.poll_review_requests()
+        let mut result = match self.daemon.poll_review_requests() {
+            Ok(result) => result,
+            Err(error) => {
+                let now = self.daemon.clock.now_unix();
+                self.daemon
+                    .record_review_source_poll_error(now, error.message())?;
+                return Err(error);
+            }
+        };
+        if result.skipped_reason.is_none() && self.daemon.automatic_checkout_cleanup {
+            match self.daemon.cleanup_checkouts() {
+                Ok(cleanup) => {
+                    result.cleanup_removed_count = cleanup.removed_count;
+                }
+                Err(error) => {
+                    result.cleanup_error = Some(error.to_string());
+                }
+            }
+            let now = self.daemon.clock.now_unix();
+            self.daemon.record_review_source_poll_result(now, &result)?;
+        }
+        Ok(result)
     }
 }
 

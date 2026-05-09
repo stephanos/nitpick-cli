@@ -20,7 +20,7 @@ mise exec -- swift build --package-path "$MACOS_DIR" -c release --product Nitpic
 /usr/bin/ditto "$MACOS_DIR/Bundle/Info.plist" "$CONTENTS_DIR/Info.plist"
 /usr/bin/ditto "$MACOS_DIR/.build/release/NitpickAgentApp" "$MACOS_CONTENTS_DIR/$APP_NAME"
 /usr/bin/install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_CONTENTS_DIR/$APP_NAME" 2>/dev/null || true
-/usr/bin/ditto "$ROOT_DIR/target/release/nitpick-agent" "$MACOS_CONTENTS_DIR/nitpick-agent"
+/usr/bin/ditto "$ROOT_DIR/target/release/nitpick" "$MACOS_CONTENTS_DIR/nitpick"
 /usr/bin/ditto "$ROOT_DIR/target/release/nitpick-agent-host" "$MACOS_CONTENTS_DIR/nitpick-agent-host"
 /usr/bin/ditto "$MACOS_DIR/Resources" "$RESOURCES_DIR"
 

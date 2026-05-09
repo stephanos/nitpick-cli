@@ -46,27 +46,27 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
         Some("review-requests") => match args.next().as_deref() {
             None => Ok(CliCommand::ReviewRequests { only_new: false }),
             Some("--new") => Ok(CliCommand::ReviewRequests { only_new: true }),
-            Some(_) => Err("usage: nitpick-agent review-requests [--new]".into()),
+            Some(_) => Err("usage: nitpick review-requests [--new]".into()),
         },
         Some("activities") => Ok(CliCommand::Activities),
         Some("artifacts") => {
             let activity_id = args
                 .next()
-                .ok_or_else(|| "usage: nitpick-agent artifacts <activity-id>".to_owned())?;
+                .ok_or_else(|| "usage: nitpick artifacts <activity-id>".to_owned())?;
             Ok(CliCommand::Artifacts { activity_id })
         }
         Some("artifact") => {
             let artifact_id = args
                 .next()
-                .ok_or_else(|| "usage: nitpick-agent artifact <artifact-id>".to_owned())?;
+                .ok_or_else(|| "usage: nitpick artifact <artifact-id>".to_owned())?;
             Ok(CliCommand::Artifact { artifact_id })
         }
         Some("artifact-sync") => {
             let artifact_id = args.next().ok_or_else(|| {
-                "usage: nitpick-agent artifact-sync <artifact-id> <destination>".to_owned()
+                "usage: nitpick artifact-sync <artifact-id> <destination>".to_owned()
             })?;
             let destination = args.next().ok_or_else(|| {
-                "usage: nitpick-agent artifact-sync <artifact-id> <destination>".to_owned()
+                "usage: nitpick artifact-sync <artifact-id> <destination>".to_owned()
             })?;
             Ok(CliCommand::ArtifactSync {
                 artifact_id,
@@ -81,13 +81,13 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
         Some("review") => {
             let subject = args
                 .next()
-                .ok_or_else(|| "usage: nitpick-agent review <subject>".to_owned())?;
+                .ok_or_else(|| "usage: nitpick review <subject>".to_owned())?;
             Ok(CliCommand::Review { subject })
         }
         Some("chat") => {
             let prompt = args
                 .next()
-                .ok_or_else(|| "usage: nitpick-agent chat <prompt>".to_owned())?;
+                .ok_or_else(|| "usage: nitpick chat <prompt>".to_owned())?;
             Ok(CliCommand::Chat { prompt })
         }
         Some(command) => Err(format!("unknown command `{command}`")),
@@ -96,7 +96,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick-agent {version}\n\nUsage: nitpick-agent <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -253,7 +253,7 @@ pub fn run_cli_command(
     let client = HostClient::new(host_addr);
     match command {
         CliCommand::Help => Ok(help_text(env!("CARGO_PKG_VERSION"))),
-        CliCommand::Version => Ok(format!("nitpick-agent {}", env!("CARGO_PKG_VERSION"))),
+        CliCommand::Version => Ok(format!("nitpick {}", env!("CARGO_PKG_VERSION"))),
         CliCommand::Status => match client.status() {
             Ok(status) => Ok(format_host_status(&host_status(status))),
             Err(error) if error.starts_with("nitpick-agent-host unavailable") => Ok(format!(
@@ -343,7 +343,7 @@ mod tests {
     fn rejects_review_without_subject() {
         let error = parse_command(["review".to_owned()]).expect_err("command fails");
 
-        assert_eq!(error, "usage: nitpick-agent review <subject>");
+        assert_eq!(error, "usage: nitpick review <subject>");
     }
 
     #[test]
@@ -392,7 +392,7 @@ mod tests {
     fn rejects_artifacts_without_activity_id() {
         let error = parse_command(["artifacts".to_owned()]).expect_err("command fails");
 
-        assert_eq!(error, "usage: nitpick-agent artifacts <activity-id>");
+        assert_eq!(error, "usage: nitpick artifacts <activity-id>");
     }
 
     #[test]

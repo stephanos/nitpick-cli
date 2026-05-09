@@ -78,6 +78,27 @@ fn github_polling_tick_runs_one_due_poll_and_reports_status() {
 }
 
 #[test]
+fn github_polling_tick_records_review_source_errors_in_status() {
+    let discovery = Arc::new(StubDiscovery::new(vec![]));
+    discovery.set_error("failed to start GitHub CLI `gh`: No such file or directory");
+    let harness = TestHarness::new(github_auto_review_config(), discovery);
+    let poller = nitpick_agent_host::ReviewSourcePoller::new(harness.daemon.clone());
+
+    let error = poller.tick().expect_err("tick fails");
+
+    assert_eq!(
+        error.message(),
+        "failed to start GitHub CLI `gh`: No such file or directory"
+    );
+    let status = harness.daemon.status().expect("status");
+    assert_eq!(status.review_source_last_poll_unix, Some(1_000));
+    assert_eq!(
+        status.review_source_last_poll_summary.as_deref(),
+        Some("github unavailable: failed to start GitHub CLI `gh`: No such file or directory")
+    );
+}
+
+#[test]
 fn github_polling_skips_until_interval_passes_and_rereviews_changed_heads() {
     let discovery = Arc::new(StubDiscovery::new(vec![pull_request("sha-one")]));
     let harness = TestHarness::new(github_auto_review_config(), discovery.clone());

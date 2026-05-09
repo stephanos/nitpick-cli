@@ -41,18 +41,18 @@ Override the bind address with `NITPICK_AGENT_HOST_ADDR`.
 The CLI reads host status from the same local API:
 
 ```bash
-nitpick-agent status
-nitpick-agent review acme/platform#42
-nitpick-agent review-requests
-nitpick-agent review-requests --new
-nitpick-agent chat "summarize this repo"
-nitpick-agent activities
-nitpick-agent artifacts activity-1
-nitpick-agent artifact artifact-1
-nitpick-agent artifact-sync artifact-1 github
-nitpick-agent artifact-sync artifact-1 github acme/platform#42
-nitpick-agent sync-pending github
-nitpick-agent cleanup-checkouts
+nitpick status
+nitpick review acme/platform#42
+nitpick review-requests
+nitpick review-requests --new
+nitpick chat "summarize this repo"
+nitpick activities
+nitpick artifacts activity-1
+nitpick artifact artifact-1
+nitpick artifact-sync artifact-1 github
+nitpick artifact-sync artifact-1 github acme/platform#42
+nitpick sync-pending github
+nitpick cleanup-checkouts
 ```
 
 The daemon can watch review sources and create local review activities automatically. GitHub is the first source adapter; additional source-code providers should plug into the same review-source API. Processed review heads are stored locally, so a review request is not reviewed again until its head SHA changes.
@@ -98,12 +98,12 @@ mise run macos-app
 mise run macos-appcast
 mise run install
 mise run verify
-mise exec -- cargo run -p nitpick-agent-cli -- --help
+mise exec -- cargo run -p nitpick-agent-cli --bin nitpick -- --help
 ```
 
 `mise run macos-app` writes `target/macos/Nitpick Agent.app`. `mise run macos-appcast` signs a Sparkle appcast with the private EdDSA key from Keychain account `nitpick-agent` locally. In GitHub Actions, the release workflow reads the private key from the repository secret `SPARKLE_PRIVATE_ED_KEY`.
 
-`mise run install` installs `Nitpick Agent.app` into `/Applications` and launches it. When the app starts, it installs the bundled `nitpick-agent` CLI as `~/.local/bin/nitpick-agent`.
+`mise run install` installs `Nitpick Agent.app` into `/Applications` and launches it. When the app starts, it installs the bundled CLI as `~/.local/bin/nitpick`.
 
 ## GitHub CI
 

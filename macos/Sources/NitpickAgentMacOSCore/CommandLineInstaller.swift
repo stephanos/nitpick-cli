@@ -10,7 +10,7 @@ public struct CommandLineInstaller {
         installDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local")
             .appendingPathComponent("bin"),
-        executableName: String = "nitpick-agent"
+        executableName: String = "nitpick"
     ) {
         self.bundledExecutableURL = bundledExecutableURL
         self.installDirectoryURL = installDirectoryURL
