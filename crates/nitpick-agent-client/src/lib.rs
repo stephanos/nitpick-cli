@@ -4,8 +4,7 @@ use std::{
     time::Duration,
 };
 
-use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput};
-use nitpick_agent_github::DiscoveredPullRequest;
+use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput, ReviewRequest};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -19,9 +18,10 @@ pub struct HostStatus {
     pub pending_sync_artifact_count: usize,
     pub provider: String,
     pub model: Option<String>,
-    pub github_discovery_enabled: bool,
-    pub github_last_poll_unix: Option<u64>,
-    pub github_last_poll_summary: Option<String>,
+    pub review_source_name: String,
+    pub review_source_enabled: bool,
+    pub review_source_last_poll_unix: Option<u64>,
+    pub review_source_last_poll_summary: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,14 +64,11 @@ impl HostClient {
         }
     }
 
-    pub fn github_review_requests(
-        &self,
-        only_new: bool,
-    ) -> Result<Vec<DiscoveredPullRequest>, String> {
+    pub fn review_requests(&self, only_new: bool) -> Result<Vec<ReviewRequest>, String> {
         if only_new {
-            self.get_json("/github/review-requests?filter=new")
+            self.get_json("/review-requests?filter=new")
         } else {
-            self.get_json("/github/review-requests")
+            self.get_json("/review-requests")
         }
     }
 

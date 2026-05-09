@@ -1,10 +1,11 @@
 use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
 
 use nitpick_agent_client::HostClient;
+use nitpick_agent_core::FsProcessedReviewStore;
 use nitpick_agent_core::{
-    ActivityKind, ActivityStatus, ActivityStore, ArtifactSyncState, FsActivityStore, SessionStatus,
+    ActivityKind, ActivityStatus, ActivityStore, ArtifactSyncState, FsActivityStore, ReviewRequest,
+    SessionStatus,
 };
-use nitpick_agent_github::FsProcessedReviewStore;
 use nitpick_agent_host::{AgentConfig, HostDaemon, api_router};
 use nitpick_agent_integration_tests::support::{
     ManualClock, RecordingProvider, StubDiscovery, github_auto_review_config, pull_request,
@@ -28,16 +29,20 @@ async fn host_api_exposes_discovery_polling_activities_artifacts_and_pending_syn
     );
     let client = serve_host(daemon.clone()).await;
 
-    let requests = client
-        .github_review_requests(true)
-        .expect("new review requests");
-    assert_eq!(requests, vec![pull_request("sha-one")]);
+    let requests = client.review_requests(true).expect("new review requests");
+    assert_eq!(
+        requests,
+        vec![ReviewRequest {
+            source: "github".into(),
+            repository: "stephanos/nitpick-agent".into(),
+            number: Some(42),
+            id: "42".into(),
+            head_sha: "sha-one".into(),
+        }]
+    );
 
     assert_eq!(
-        daemon
-            .poll_github_review_requests()
-            .expect("poll")
-            .enqueued_count,
+        daemon.poll_review_requests().expect("poll").enqueued_count,
         1
     );
 
@@ -84,7 +89,7 @@ async fn local_artifact_sync_lifecycle_marks_pending_then_synced() {
     );
     let client = serve_host(daemon.clone()).await;
 
-    daemon.poll_github_review_requests().expect("poll");
+    daemon.poll_review_requests().expect("poll");
     let activity = client
         .activities()
         .expect("activities")

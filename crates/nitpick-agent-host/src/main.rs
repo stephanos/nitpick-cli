@@ -2,9 +2,8 @@ use std::{
     env, net::SocketAddr, path::PathBuf, process::ExitCode, sync::Arc, thread, time::Duration,
 };
 
-use nitpick_agent_core::FsActivityStore;
-use nitpick_agent_github::FsProcessedReviewStore;
-use nitpick_agent_host::{AgentConfig, GitHubReviewPoller, HostDaemon, api_router};
+use nitpick_agent_core::{FsActivityStore, FsProcessedReviewStore};
+use nitpick_agent_host::{AgentConfig, HostDaemon, ReviewSourcePoller, api_router};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -74,7 +73,7 @@ async fn run_daemon() -> ExitCode {
     );
     println!("config: {}", config_path.display());
     println!("data: {}", data_dir.display());
-    spawn_github_review_poller(daemon.clone());
+    spawn_review_source_poller(daemon.clone());
 
     match axum::serve(listener, api_router(daemon)).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -90,8 +89,9 @@ fn build_daemon() -> Result<(HostDaemon, PathBuf, PathBuf), String> {
     let config = AgentConfig::load_or_default(&config_path).map_err(|error| error.to_string())?;
     let data_dir = data_dir();
     let store = FsActivityStore::new(&data_dir).map_err(|error| error.to_string())?;
-    let processed_reviews = FsProcessedReviewStore::new(data_dir.join("github/processed-reviews"))
-        .map_err(|error| error.to_string())?;
+    let processed_reviews =
+        FsProcessedReviewStore::new(data_dir.join("review-sources/processed-reviews"))
+            .map_err(|error| error.to_string())?;
     let daemon = HostDaemon::with_config_and_processed_reviews(
         Arc::new(store),
         config,
@@ -103,7 +103,7 @@ fn build_daemon() -> Result<(HostDaemon, PathBuf, PathBuf), String> {
     Ok((daemon, config_path, data_dir))
 }
 
-fn spawn_github_review_poller(daemon: HostDaemon) {
+fn spawn_review_source_poller(daemon: HostDaemon) {
     let interval_seconds = daemon.config().github_discovery.interval_seconds;
     if !daemon.config().github_discovery.enabled {
         return;
@@ -111,8 +111,8 @@ fn spawn_github_review_poller(daemon: HostDaemon) {
 
     thread::spawn(move || {
         loop {
-            if let Err(error) = GitHubReviewPoller::new(daemon.clone()).tick() {
-                eprintln!("GitHub review discovery failed: {error}");
+            if let Err(error) = ReviewSourcePoller::new(daemon.clone()).tick() {
+                eprintln!("review source discovery failed: {error}");
             }
             thread::sleep(Duration::from_secs(interval_seconds));
         }

@@ -1,18 +1,18 @@
 use std::{
-    collections::BTreeMap,
-    fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
-    sync::Mutex,
 };
 
 use nitpick_agent_core::{
     AgentError, AgentResult, Artifact, ArtifactContent, ArtifactSyncDestination,
-    ArtifactSyncOutcome, ArtifactSyncState, ReviewInput, ReviewSubject,
+    ArtifactSyncOutcome, ArtifactSyncState, ReviewInput, ReviewRequest, ReviewSource,
+    ReviewSubject,
 };
 use serde::{Deserialize, Serialize};
+
+pub use nitpick_agent_core::{FsProcessedReviewStore, MemoryProcessedReviewStore};
 
 pub struct GitHubDryRunSyncDestination;
 
@@ -53,6 +53,24 @@ pub struct DiscoveredPullRequest {
     pub head_sha: String,
 }
 
+impl DiscoveredPullRequest {
+    pub fn repository(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
+    }
+}
+
+impl From<DiscoveredPullRequest> for ReviewRequest {
+    fn from(pull_request: DiscoveredPullRequest) -> Self {
+        Self {
+            source: "github".into(),
+            repository: pull_request.repository(),
+            number: Some(pull_request.number),
+            id: pull_request.number.to_string(),
+            head_sha: pull_request.head_sha,
+        }
+    }
+}
+
 pub struct GitHubCliDiscovery {
     command: PathBuf,
 }
@@ -76,6 +94,39 @@ impl GitHubCliDiscovery {
 
     pub fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput> {
         <Self as ReviewRequestDiscovery>::review_input(self, pull_request)
+    }
+}
+
+impl ReviewSource for GitHubCliDiscovery {
+    fn name(&self) -> &'static str {
+        "github"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        <Self as ReviewRequestDiscovery>::requested_reviews(self)
+            .map(|requests| requests.into_iter().map(ReviewRequest::from).collect())
+    }
+
+    fn review_input(&self, request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        let Some(number) = request.number else {
+            return Err(AgentError::new(format!(
+                "GitHub review request `{}` is missing a pull request number",
+                request.display_reference()
+            )));
+        };
+        let (owner, repo) = request.repository.split_once('/').ok_or_else(|| {
+            AgentError::new(format!(
+                "invalid GitHub repository name `{}`",
+                request.repository
+            ))
+        })?;
+        let pull_request = DiscoveredPullRequest {
+            owner: owner.into(),
+            repo: repo.into(),
+            number,
+            head_sha: request.head_sha.clone(),
+        };
+        <Self as ReviewRequestDiscovery>::review_input(self, &pull_request)
     }
 }
 
@@ -322,198 +373,6 @@ fn github_cli_status_error(output: &std::process::Output) -> AgentError {
             format!(": {stderr}")
         }
     ))
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProcessedReview {
-    pub owner: String,
-    pub repo: String,
-    pub number: u64,
-    pub head_sha: String,
-    pub activity_id: Option<String>,
-    pub reviewed_at_unix: u64,
-}
-
-impl ProcessedReview {
-    pub fn from_pull_request_at(
-        pull_request: &DiscoveredPullRequest,
-        activity_id: Option<String>,
-        reviewed_at_unix: u64,
-    ) -> Self {
-        Self {
-            owner: pull_request.owner.clone(),
-            repo: pull_request.repo.clone(),
-            number: pull_request.number,
-            head_sha: pull_request.head_sha.clone(),
-            activity_id,
-            reviewed_at_unix,
-        }
-    }
-}
-
-pub trait ProcessedReviewStore: Send + Sync {
-    fn get_processed(
-        &self,
-        pull_request: &DiscoveredPullRequest,
-    ) -> AgentResult<Option<ProcessedReview>>;
-
-    fn save_processed(&self, review: &ProcessedReview) -> AgentResult<()>;
-
-    fn list_processed(&self) -> AgentResult<Vec<ProcessedReview>>;
-
-    fn needs_review(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<bool> {
-        Ok(self
-            .get_processed(pull_request)?
-            .is_none_or(|processed| processed.head_sha != pull_request.head_sha))
-    }
-
-    fn mark_processed_at(
-        &self,
-        pull_request: &DiscoveredPullRequest,
-        activity_id: Option<String>,
-        reviewed_at_unix: u64,
-    ) -> AgentResult<()> {
-        self.save_processed(&ProcessedReview::from_pull_request_at(
-            pull_request,
-            activity_id,
-            reviewed_at_unix,
-        ))
-    }
-}
-
-#[derive(Default)]
-pub struct MemoryProcessedReviewStore {
-    reviews: Mutex<BTreeMap<String, ProcessedReview>>,
-}
-
-impl ProcessedReviewStore for MemoryProcessedReviewStore {
-    fn get_processed(
-        &self,
-        pull_request: &DiscoveredPullRequest,
-    ) -> AgentResult<Option<ProcessedReview>> {
-        let reviews = self
-            .reviews
-            .lock()
-            .map_err(|_| AgentError::new("processed review store lock poisoned"))?;
-        Ok(reviews.get(&processed_key(pull_request)).cloned())
-    }
-
-    fn save_processed(&self, review: &ProcessedReview) -> AgentResult<()> {
-        let mut reviews = self
-            .reviews
-            .lock()
-            .map_err(|_| AgentError::new("processed review store lock poisoned"))?;
-        reviews.insert(processed_review_key(review), review.clone());
-        Ok(())
-    }
-
-    fn list_processed(&self) -> AgentResult<Vec<ProcessedReview>> {
-        let reviews = self
-            .reviews
-            .lock()
-            .map_err(|_| AgentError::new("processed review store lock poisoned"))?;
-        Ok(reviews.values().cloned().collect())
-    }
-}
-
-pub struct FsProcessedReviewStore {
-    base: PathBuf,
-}
-
-impl FsProcessedReviewStore {
-    pub fn new(base: impl AsRef<Path>) -> AgentResult<Self> {
-        let base = base.as_ref().to_path_buf();
-        fs::create_dir_all(&base)
-            .map_err(|error| AgentError::new(format!("create processed review dir: {error}")))?;
-        Ok(Self { base })
-    }
-}
-
-impl ProcessedReviewStore for FsProcessedReviewStore {
-    fn get_processed(
-        &self,
-        pull_request: &DiscoveredPullRequest,
-    ) -> AgentResult<Option<ProcessedReview>> {
-        let path = self
-            .base
-            .join(format!("{}.json", processed_key(pull_request)));
-        if !path.exists() {
-            return Ok(None);
-        }
-        Ok(Some(read_processed_review(&path)?))
-    }
-
-    fn save_processed(&self, review: &ProcessedReview) -> AgentResult<()> {
-        write_processed_review(
-            &self
-                .base
-                .join(format!("{}.json", processed_review_key(review))),
-            review,
-        )
-    }
-
-    fn list_processed(&self) -> AgentResult<Vec<ProcessedReview>> {
-        let mut paths = fs::read_dir(&self.base)
-            .map_err(|error| AgentError::new(format!("read processed review dir: {error}")))?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                AgentError::new(format!("read processed review dir entry: {error}"))
-            })?;
-        paths.sort();
-
-        let mut reviews = Vec::new();
-        for path in paths {
-            if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-                reviews.push(read_processed_review(&path)?);
-            }
-        }
-        Ok(reviews)
-    }
-}
-
-fn processed_key(pull_request: &DiscoveredPullRequest) -> String {
-    sanitize_key(&format!(
-        "{}__{}__{}",
-        pull_request.owner, pull_request.repo, pull_request.number
-    ))
-}
-
-fn processed_review_key(review: &ProcessedReview) -> String {
-    sanitize_key(&format!(
-        "{}__{}__{}",
-        review.owner, review.repo, review.number
-    ))
-}
-
-fn sanitize_key(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-fn write_processed_review(path: &Path, review: &ProcessedReview) -> AgentResult<()> {
-    let tmp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(review)
-        .map_err(|error| AgentError::new(format!("serialize processed review: {error}")))?;
-    fs::write(&tmp, bytes)
-        .map_err(|error| AgentError::new(format!("write processed review temp file: {error}")))?;
-    fs::rename(&tmp, path)
-        .map_err(|error| AgentError::new(format!("replace processed review: {error}")))
-}
-
-fn read_processed_review(path: &Path) -> AgentResult<ProcessedReview> {
-    let bytes = fs::read(path)
-        .map_err(|error| AgentError::new(format!("read processed review: {error}")))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| AgentError::new(format!("parse {}: {error}", path.display())))
 }
 
 impl ArtifactSyncDestination for GitHubCliSyncDestination {

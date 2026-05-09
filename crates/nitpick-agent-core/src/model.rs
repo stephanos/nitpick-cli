@@ -19,6 +19,25 @@ pub struct ReviewSubject {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    pub source: String,
+    pub repository: String,
+    pub number: Option<u64>,
+    pub id: String,
+    pub head_sha: String,
+}
+
+impl ReviewRequest {
+    pub fn display_reference(&self) -> String {
+        match self.number {
+            Some(number) => format!("{}#{}", self.repository, number),
+            None if self.id.is_empty() => self.repository.clone(),
+            None => format!("{}#{}", self.repository, self.id),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewOutput {
     pub summary: String,
     pub comments: Vec<ReviewComment>,

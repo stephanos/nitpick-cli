@@ -8,3 +8,10 @@ github_command = "gh"
 # provider = "codex"
 # model = "gpt-5.3-codex"
 # command = "codex"
+
+[sources.github.discovery]
+enabled = false
+auto_review = false
+interval_seconds = 300
+allowlist = []
+denylist = []

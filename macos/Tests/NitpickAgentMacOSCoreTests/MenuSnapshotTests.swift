@@ -38,17 +38,6 @@ final class MenuSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.statusTitle, "Status: 2 activities, 3 local, 1 pending")
     }
 
-    func testGitHubWatcherTitle() {
-        let snapshot = MenuSnapshot(
-            hostIsRunning: true,
-            activityCount: 0,
-            githubDiscoveryEnabled: true,
-            githubLastPollSummary: "reviewed 1 of 1 PRs"
-        )
-
-        XCTAssertEqual(snapshot.githubTitle, "GitHub: Watching, reviewed 1 of 1 PRs")
-    }
-
     func testRecentActivityTitlesAreLatestFirstWithRelativeTime() {
         let snapshot = MenuSnapshot(
             hostIsRunning: true,

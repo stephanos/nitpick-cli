@@ -15,13 +15,12 @@ use axum::{
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactId, ArtifactSyncDestination,
-    ArtifactSyncState, ChatInput, Clock, CommandAgentProvider, ReviewInput, SessionStatus,
-    SystemClock,
+    ArtifactSyncState, ChatInput, Clock, CommandAgentProvider, MemoryProcessedReviewStore,
+    ProcessedReviewStore, ReviewInput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliSyncDestination,
-    GitHubDryRunSyncDestination, MemoryProcessedReviewStore, ProcessedReviewStore, PullRequestRef,
-    ReviewRequestDiscovery,
+    GitHubDryRunSyncDestination, PullRequestRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,10 +30,10 @@ pub struct HostDaemon {
     store: Arc<dyn ActivityStore>,
     processed_reviews: Arc<dyn ProcessedReviewStore>,
     provider: Arc<dyn AgentProvider>,
-    discovery: Arc<dyn ReviewRequestDiscovery>,
+    review_source: Arc<dyn ReviewSource>,
     clock: Arc<dyn Clock>,
-    last_github_poll_unix: Arc<Mutex<Option<u64>>>,
-    last_github_poll_summary: Arc<Mutex<Option<String>>>,
+    last_review_source_poll_unix: Arc<Mutex<Option<u64>>>,
+    last_review_source_poll_summary: Arc<Mutex<Option<String>>>,
 }
 
 impl HostDaemon {
@@ -44,16 +43,16 @@ impl HostDaemon {
 
     pub fn with_config(store: Arc<dyn ActivityStore>, config: AgentConfig) -> Self {
         let provider = config.provider();
-        let discovery = config.discovery();
+        let review_source = config.review_source();
         Self {
             config,
             store,
             processed_reviews: Arc::new(MemoryProcessedReviewStore::default()),
             provider,
-            discovery,
+            review_source,
             clock: Arc::new(SystemClock),
-            last_github_poll_unix: Arc::new(Mutex::new(None)),
-            last_github_poll_summary: Arc::new(Mutex::new(None)),
+            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
+            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -63,31 +62,31 @@ impl HostDaemon {
         processed_reviews: Arc<dyn ProcessedReviewStore>,
     ) -> Self {
         let provider = config.provider();
-        let discovery = config.discovery();
+        let review_source = config.review_source();
         Self {
             config,
             store,
             processed_reviews,
             provider,
-            discovery,
+            review_source,
             clock: Arc::new(SystemClock),
-            last_github_poll_unix: Arc::new(Mutex::new(None)),
-            last_github_poll_summary: Arc::new(Mutex::new(None)),
+            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
+            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn with_provider(store: Arc<dyn ActivityStore>, provider: Arc<dyn AgentProvider>) -> Self {
         let config = AgentConfig::default();
-        let discovery = config.discovery();
+        let review_source = config.review_source();
         Self {
             config,
             store,
             processed_reviews: Arc::new(MemoryProcessedReviewStore::default()),
             provider,
-            discovery,
+            review_source,
             clock: Arc::new(SystemClock),
-            last_github_poll_unix: Arc::new(Mutex::new(None)),
-            last_github_poll_summary: Arc::new(Mutex::new(None)),
+            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
+            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -96,7 +95,7 @@ impl HostDaemon {
         config: AgentConfig,
         processed_reviews: Arc<dyn ProcessedReviewStore>,
         provider: Arc<dyn AgentProvider>,
-        discovery: Arc<dyn ReviewRequestDiscovery>,
+        review_source: Arc<dyn ReviewSource>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
@@ -104,10 +103,10 @@ impl HostDaemon {
             store,
             processed_reviews,
             provider,
-            discovery,
+            review_source,
             clock,
-            last_github_poll_unix: Arc::new(Mutex::new(None)),
-            last_github_poll_summary: Arc::new(Mutex::new(None)),
+            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
+            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -139,15 +138,16 @@ impl HostDaemon {
                 .count(),
             provider: self.config.provider.clone(),
             model: self.config.model.clone(),
-            github_discovery_enabled: self.config.github_discovery.enabled,
-            github_last_poll_unix: *self
-                .last_github_poll_unix
+            review_source_name: self.config.review_source_name(),
+            review_source_enabled: self.config.github_discovery.enabled,
+            review_source_last_poll_unix: *self
+                .last_review_source_poll_unix
                 .lock()
-                .map_err(|_| AgentError::new("github poll state lock poisoned"))?,
-            github_last_poll_summary: self
-                .last_github_poll_summary
+                .map_err(|_| AgentError::new("review source poll state lock poisoned"))?,
+            review_source_last_poll_summary: self
+                .last_review_source_poll_summary
                 .lock()
-                .map_err(|_| AgentError::new("github poll state lock poisoned"))?
+                .map_err(|_| AgentError::new("review source poll state lock poisoned"))?
                 .clone(),
         })
     }
@@ -237,45 +237,37 @@ impl HostDaemon {
         let Some(artifact) = self.get_artifact(id)? else {
             return Ok(None);
         };
-        let sync_state = match destination {
-            "github" => match target {
-                Some(target) => {
-                    let target = target.parse::<PullRequestRef>().map_err(|error| {
-                        AgentError::new(format!("invalid GitHub sync target: {error}"))
-                    })?;
-                    GitHubCliSyncDestination::new(
-                        target,
-                        self.config.github_command.as_deref().unwrap_or("gh"),
-                    )
-                    .sync(&artifact)?
-                    .sync_state
-                }
-                None => GitHubDryRunSyncDestination.sync(&artifact)?.sync_state,
-            },
-            destination => {
-                return Err(AgentError::new(format!(
-                    "unknown sync destination `{destination}`"
-                )));
-            }
-        };
+        let sync_state = self
+            .config
+            .sync_destination(destination, target)?
+            .sync(&artifact)?
+            .sync_state;
         Ok(Some(self.store.update_artifact_sync_state(id, sync_state)?))
     }
 
-    pub fn discover_github_review_requests(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
-        self.discovery.requested_reviews()
+    pub fn discover_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
+        self.review_source.requested_reviews()
     }
 
-    pub fn discover_new_github_review_requests(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
-        self.discover_github_review_requests()?
+    #[deprecated(note = "use discover_review_requests")]
+    pub fn discover_github_review_requests(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
+        self.discover_review_requests()?
             .into_iter()
-            .filter(|pull_request| {
+            .map(github_pull_request_from_review_request)
+            .collect()
+    }
+
+    pub fn discover_new_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
+        self.discover_review_requests()?
+            .into_iter()
+            .filter(|request| {
                 self.config
                     .github_discovery
-                    .allows_repository(&format!("{}/{}", pull_request.owner, pull_request.repo))
+                    .allows_repository(&request.repository)
             })
             .filter_map(
-                |pull_request| match self.processed_reviews.needs_review(&pull_request) {
-                    Ok(true) => Some(Ok(pull_request)),
+                |request| match self.processed_reviews.needs_review(&request) {
+                    Ok(true) => Some(Ok(request)),
                     Ok(false) => None,
                     Err(error) => Some(Err(error)),
                 },
@@ -283,58 +275,71 @@ impl HostDaemon {
             .collect()
     }
 
-    pub fn poll_github_review_requests(&self) -> AgentResult<GitHubReviewPollResult> {
+    #[deprecated(note = "use discover_new_review_requests")]
+    pub fn discover_new_github_review_requests(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
+        self.discover_new_review_requests()?
+            .into_iter()
+            .map(github_pull_request_from_review_request)
+            .collect()
+    }
+
+    pub fn poll_review_requests(&self) -> AgentResult<ReviewSourcePollResult> {
         if !self.config.github_discovery.enabled {
-            return Ok(GitHubReviewPollResult::skipped("disabled"));
+            return Ok(ReviewSourcePollResult::skipped("disabled"));
         }
 
         let now = self.clock.now_unix();
         {
             let mut last_poll = self
-                .last_github_poll_unix
+                .last_review_source_poll_unix
                 .lock()
-                .map_err(|_| AgentError::new("github poll state lock poisoned"))?;
+                .map_err(|_| AgentError::new("review source poll state lock poisoned"))?;
             if let Some(last_poll) = *last_poll
                 && now.saturating_sub(last_poll) < self.config.github_discovery.interval_seconds
             {
-                return Ok(GitHubReviewPollResult::skipped("interval"));
+                return Ok(ReviewSourcePollResult::skipped("interval"));
             }
             *last_poll = Some(now);
         }
 
-        let pull_requests = self.discover_new_github_review_requests()?;
-        let discovered_count = pull_requests.len();
+        let requests = self.discover_new_review_requests()?;
+        let discovered_count = requests.len();
         if !self.config.github_discovery.auto_review {
-            let result = GitHubReviewPollResult {
+            let result = ReviewSourcePollResult {
                 discovered_count,
                 enqueued_count: 0,
                 skipped_reason: None,
             };
-            self.record_github_poll_result(now, &result)?;
+            self.record_review_source_poll_result(now, &result)?;
             return Ok(result);
         }
 
         let mut enqueued_count = 0;
-        for pull_request in pull_requests {
-            let activity = self.start_review(self.discovery.review_input(&pull_request)?)?;
+        for request in requests {
+            let activity = self.start_review(self.review_source.review_input(&request)?)?;
             if activity.status != ActivityStatus::Completed {
                 continue;
             }
             self.processed_reviews.mark_processed_at(
-                &pull_request,
+                &request,
                 Some(activity.id.to_string()),
                 now,
             )?;
             enqueued_count += 1;
         }
 
-        let result = GitHubReviewPollResult {
+        let result = ReviewSourcePollResult {
             discovered_count,
             enqueued_count,
             skipped_reason: None,
         };
-        self.record_github_poll_result(now, &result)?;
+        self.record_review_source_poll_result(now, &result)?;
         Ok(result)
+    }
+
+    #[deprecated(note = "use poll_review_requests")]
+    pub fn poll_github_review_requests(&self) -> AgentResult<ReviewSourcePollResult> {
+        self.poll_review_requests()
     }
 
     pub fn start_review(&self, input: ReviewInput) -> AgentResult<Activity> {
@@ -369,32 +374,32 @@ impl HostDaemon {
         AgentRuntime::new(self.provider.clone(), self.store.clone())
     }
 
-    fn record_github_poll_result(
+    fn record_review_source_poll_result(
         &self,
         now: u64,
-        result: &GitHubReviewPollResult,
+        result: &ReviewSourcePollResult,
     ) -> AgentResult<()> {
         *self
-            .last_github_poll_unix
+            .last_review_source_poll_unix
             .lock()
-            .map_err(|_| AgentError::new("github poll state lock poisoned"))? = Some(now);
+            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? = Some(now);
         *self
-            .last_github_poll_summary
+            .last_review_source_poll_summary
             .lock()
-            .map_err(|_| AgentError::new("github poll state lock poisoned"))? =
+            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? =
             Some(result.summary());
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GitHubReviewPollResult {
+pub struct ReviewSourcePollResult {
     pub discovered_count: usize,
     pub enqueued_count: usize,
     pub skipped_reason: Option<String>,
 }
 
-impl GitHubReviewPollResult {
+impl ReviewSourcePollResult {
     fn skipped(reason: impl Into<String>) -> Self {
         Self {
             discovered_count: 0,
@@ -417,19 +422,25 @@ impl GitHubReviewPollResult {
 }
 
 #[derive(Clone)]
-pub struct GitHubReviewPoller {
+pub struct ReviewSourcePoller {
     daemon: HostDaemon,
 }
 
-impl GitHubReviewPoller {
+impl ReviewSourcePoller {
     pub fn new(daemon: HostDaemon) -> Self {
         Self { daemon }
     }
 
-    pub fn tick(&self) -> AgentResult<GitHubReviewPollResult> {
-        self.daemon.poll_github_review_requests()
+    pub fn tick(&self) -> AgentResult<ReviewSourcePollResult> {
+        self.daemon.poll_review_requests()
     }
 }
+
+#[deprecated(note = "use ReviewSourcePollResult")]
+pub type GitHubReviewPollResult = ReviewSourcePollResult;
+
+#[deprecated(note = "use ReviewSourcePoller")]
+pub type GitHubReviewPoller = ReviewSourcePoller;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct HostStatus {
@@ -442,9 +453,10 @@ pub struct HostStatus {
     pub pending_sync_artifact_count: usize,
     pub provider: AgentProviderKind,
     pub model: Option<String>,
-    pub github_discovery_enabled: bool,
-    pub github_last_poll_unix: Option<u64>,
-    pub github_last_poll_summary: Option<String>,
+    pub review_source_name: String,
+    pub review_source_enabled: bool,
+    pub review_source_last_poll_unix: Option<u64>,
+    pub review_source_last_poll_summary: Option<String>,
 }
 
 pub fn api_router(daemon: HostDaemon) -> Router {
@@ -454,6 +466,7 @@ pub fn api_router(daemon: HostDaemon) -> Router {
         .route("/activities/{id}", get(activity))
         .route("/activities/{id}/artifacts", get(activity_artifacts))
         .route("/sync/pending", get(pending_sync_artifacts))
+        .route("/review-requests", get(review_requests))
         .route("/github/review-requests", get(github_review_requests))
         .route("/artifacts/{id}", get(artifact))
         .route("/artifacts/{id}/sync-state", post(artifact_sync_state))
@@ -505,12 +518,33 @@ async fn github_review_requests(
     State(daemon): State<HostDaemon>,
     Query(query): Query<ReviewRequestsQuery>,
 ) -> Result<Json<Vec<DiscoveredPullRequest>>, ApiError> {
+    let requests = match query.filter.as_deref() {
+        Some("new") => daemon.discover_new_review_requests()?,
+        Some(filter) => {
+            return Err(
+                AgentError::new(format!("unknown review request filter `{filter}`")).into(),
+            );
+        }
+        None => daemon.discover_review_requests()?,
+    };
+    Ok(Json(
+        requests
+            .into_iter()
+            .map(github_pull_request_from_review_request)
+            .collect::<AgentResult<Vec<_>>>()?,
+    ))
+}
+
+async fn review_requests(
+    State(daemon): State<HostDaemon>,
+    Query(query): Query<ReviewRequestsQuery>,
+) -> Result<Json<Vec<ReviewRequest>>, ApiError> {
     match query.filter.as_deref() {
-        Some("new") => Ok(Json(daemon.discover_new_github_review_requests()?)),
+        Some("new") => Ok(Json(daemon.discover_new_review_requests()?)),
         Some(filter) => {
             Err(AgentError::new(format!("unknown review request filter `{filter}`")).into())
         }
-        None => Ok(Json(daemon.discover_github_review_requests()?)),
+        None => Ok(Json(daemon.discover_review_requests()?)),
     }
 }
 
@@ -628,9 +662,13 @@ impl AgentConfig {
             .github_command
             .map(|command| command.trim().to_owned())
             .filter(|command| !command.is_empty());
-        let github_discovery = raw
-            .github
-            .and_then(|github| github.discovery)
+        let source_github_discovery = raw
+            .sources
+            .and_then(|sources| sources.github)
+            .and_then(|github| github.discovery);
+        let legacy_github_discovery = raw.github.and_then(|github| github.discovery);
+        let github_discovery = source_github_discovery
+            .or(legacy_github_discovery)
             .map(GitHubDiscoveryConfig::from_raw)
             .transpose()?
             .unwrap_or_default();
@@ -681,16 +719,73 @@ impl AgentConfig {
         }
     }
 
-    fn discovery(&self) -> Arc<dyn ReviewRequestDiscovery> {
+    fn review_source(&self) -> Arc<dyn ReviewSource> {
         Arc::new(GitHubCliDiscovery::new(
             self.github_command.as_deref().unwrap_or("gh"),
         ))
     }
+
+    fn sync_destination(
+        &self,
+        destination: &str,
+        target: Option<&str>,
+    ) -> AgentResult<Box<dyn ArtifactSyncDestination>> {
+        match destination {
+            "github" => match target {
+                Some(target) => {
+                    let target = target.parse::<PullRequestRef>().map_err(|error| {
+                        AgentError::new(format!("invalid GitHub sync target: {error}"))
+                    })?;
+                    Ok(Box::new(GitHubCliSyncDestination::new(
+                        target,
+                        self.github_command.as_deref().unwrap_or("gh"),
+                    )))
+                }
+                None => Ok(Box::new(GitHubDryRunSyncDestination)),
+            },
+            destination => Err(AgentError::new(format!(
+                "unknown sync destination `{destination}`"
+            ))),
+        }
+    }
+
+    pub fn review_source_name(&self) -> String {
+        "github".into()
+    }
+}
+
+fn github_pull_request_from_review_request(
+    request: ReviewRequest,
+) -> AgentResult<DiscoveredPullRequest> {
+    let Some(number) = request.number else {
+        return Err(AgentError::new(format!(
+            "review request `{}` is missing a pull request number",
+            request.display_reference()
+        )));
+    };
+    let (owner, repo) = request.repository.split_once('/').ok_or_else(|| {
+        AgentError::new(format!(
+            "invalid GitHub repository name `{}`",
+            request.repository
+        ))
+    })?;
+    Ok(DiscoveredPullRequest {
+        owner: owner.into(),
+        repo: repo.into(),
+        number,
+        head_sha: request.head_sha,
+    })
 }
 
 #[derive(Deserialize)]
 struct RawConfig {
     agent: Option<RawAgentConfig>,
+    sources: Option<RawSourcesConfig>,
+    github: Option<RawGitHubConfig>,
+}
+
+#[derive(Deserialize)]
+struct RawSourcesConfig {
     github: Option<RawGitHubConfig>,
 }
 

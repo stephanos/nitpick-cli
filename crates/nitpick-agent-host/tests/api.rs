@@ -11,7 +11,8 @@ use axum::{
 use nitpick_agent_core::{
     ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentProvider, AgentProviderKind,
     AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput,
-    MemoryActivityStore, ReviewInput, ReviewOutput, ReviewSubject,
+    MemoryActivityStore, ProcessedReviewStore, ReviewInput, ReviewOutput, ReviewRequest,
+    ReviewSubject,
 };
 use nitpick_agent_host::{AgentConfig, HostDaemon, api_router};
 use serde_json::Value;
@@ -419,13 +420,14 @@ exit 1
     let mut permissions = fs::metadata(&gh).expect("metadata").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&gh, permissions).expect("chmod");
-    let processed = Arc::new(nitpick_agent_github::MemoryProcessedReviewStore::default());
-    nitpick_agent_github::ProcessedReviewStore::mark_processed_at(
+    let processed = Arc::new(nitpick_agent_core::MemoryProcessedReviewStore::default());
+    ProcessedReviewStore::mark_processed_at(
         processed.as_ref(),
-        &nitpick_agent_github::DiscoveredPullRequest {
-            owner: "acme".into(),
-            repo: "platform".into(),
-            number: 42,
+        &ReviewRequest {
+            source: "github".into(),
+            repository: "acme/platform".into(),
+            number: Some(42),
+            id: "42".into(),
             head_sha: "abc123".into(),
         },
         Some("activity-1".into()),

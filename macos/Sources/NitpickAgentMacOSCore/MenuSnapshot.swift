@@ -7,8 +7,6 @@ public struct MenuSnapshot: Equatable {
     public var artifactCount: Int
     public var localOnlyArtifactCount: Int
     public var pendingSyncArtifactCount: Int
-    public var githubDiscoveryEnabled: Bool
-    public var githubLastPollSummary: String?
     public var activities: [ActivitySnapshot]
     public var currentUnix: UInt64
 
@@ -19,8 +17,6 @@ public struct MenuSnapshot: Equatable {
         artifactCount: Int = 0,
         localOnlyArtifactCount: Int = 0,
         pendingSyncArtifactCount: Int = 0,
-        githubDiscoveryEnabled: Bool = false,
-        githubLastPollSummary: String? = nil,
         activities: [ActivitySnapshot] = [],
         currentUnix: UInt64 = UInt64(Date().timeIntervalSince1970)
     ) {
@@ -30,8 +26,6 @@ public struct MenuSnapshot: Equatable {
         self.artifactCount = artifactCount
         self.localOnlyArtifactCount = localOnlyArtifactCount
         self.pendingSyncArtifactCount = pendingSyncArtifactCount
-        self.githubDiscoveryEnabled = githubDiscoveryEnabled
-        self.githubLastPollSummary = githubLastPollSummary
         self.activities = activities
         self.currentUnix = currentUnix
     }
@@ -55,19 +49,6 @@ public struct MenuSnapshot: Equatable {
         default:
             return artifactSuffix("Status: \(activityCount) activities")
         }
-    }
-
-    public var githubTitle: String {
-        guard hostIsRunning else {
-            return "GitHub: Host stopped"
-        }
-        guard githubDiscoveryEnabled else {
-            return "GitHub: Not watching"
-        }
-        if let githubLastPollSummary, !githubLastPollSummary.isEmpty {
-            return "GitHub: Watching, \(githubLastPollSummary)"
-        }
-        return "GitHub: Watching"
     }
 
     public var recentActivityTitles: [String] {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nitpick_agent_cli::{CliCommand, run_cli_command};
 use nitpick_agent_core::FsActivityStore;
-use nitpick_agent_github::FsProcessedReviewStore;
+use nitpick_agent_core::FsProcessedReviewStore;
 use nitpick_agent_host::{HostDaemon, api_router};
 use nitpick_agent_integration_tests::support::{
     ManualClock, RecordingProvider, StubDiscovery, github_auto_review_config, pull_request,
@@ -42,9 +42,9 @@ async fn cli_commands_talk_to_the_host_api() {
         String::new(),
     )
     .expect("review requests command");
-    assert_eq!(requests, "stephanos/nitpick-agent#42");
+    assert_eq!(requests, "github stephanos/nitpick-agent#42");
 
-    daemon.poll_github_review_requests().expect("poll");
+    daemon.poll_review_requests().expect("poll");
 
     let activities = run_cli_command(
         CliCommand::Activities,

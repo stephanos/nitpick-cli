@@ -57,6 +57,32 @@ denylist = ["*/archive-*", "evil/*"]
 }
 
 #[test]
+fn parses_github_discovery_config_from_sources_toml() {
+    let config = AgentConfig::from_toml(
+        r#"
+[sources.github.discovery]
+enabled = true
+auto_review = true
+interval_seconds = 120
+allowlist = ["stephanos/*"]
+denylist = ["*/archive-*"]
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(
+        config.github_discovery,
+        GitHubDiscoveryConfig {
+            enabled: true,
+            auto_review: true,
+            interval_seconds: 120,
+            allowlist: vec!["stephanos/*".into()],
+            denylist: vec!["*/archive-*".into()],
+        }
+    );
+}
+
+#[test]
 fn github_discovery_config_matches_allowlist_and_denylist_patterns() {
     let config = GitHubDiscoveryConfig {
         enabled: true,
@@ -100,9 +126,10 @@ fn host_status_reports_configured_agent() {
             pending_sync_artifact_count: 0,
             provider: AgentProviderKind::Codex,
             model: Some("gpt-5.3-codex".into()),
-            github_discovery_enabled: false,
-            github_last_poll_unix: None,
-            github_last_poll_summary: None,
+            review_source_name: "github".into(),
+            review_source_enabled: false,
+            review_source_last_poll_unix: None,
+            review_source_last_poll_summary: None,
         }
     );
 }

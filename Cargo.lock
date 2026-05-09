@@ -361,7 +361,6 @@ name = "nitpick-agent-client"
 version = "0.1.0"
 dependencies = [
  "nitpick-agent-core",
- "nitpick-agent-github",
  "serde",
  "serde_json",
 ]

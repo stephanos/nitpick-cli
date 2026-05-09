@@ -1,8 +1,7 @@
 use std::{fs, os::unix::fs::PermissionsExt};
 
-use nitpick_agent_github::{
-    DiscoveredPullRequest, FsProcessedReviewStore, GitHubCliDiscovery, ProcessedReviewStore,
-};
+use nitpick_agent_core::{ProcessedReviewStore, ReviewRequest};
+use nitpick_agent_github::{DiscoveredPullRequest, FsProcessedReviewStore, GitHubCliDiscovery};
 
 #[test]
 fn github_cli_discovery_lists_requested_reviews() {
@@ -101,14 +100,15 @@ exit 1
 
 #[test]
 fn memory_processed_review_store_filters_already_reviewed_heads() {
-    let store = nitpick_agent_github::MemoryProcessedReviewStore::default();
-    let current = DiscoveredPullRequest {
-        owner: "acme".into(),
-        repo: "platform".into(),
-        number: 42,
+    let store = nitpick_agent_core::MemoryProcessedReviewStore::default();
+    let current = ReviewRequest {
+        source: "github".into(),
+        repository: "acme/platform".into(),
+        number: Some(42),
+        id: "42".into(),
         head_sha: "abc123".into(),
     };
-    let changed = DiscoveredPullRequest {
+    let changed = ReviewRequest {
         head_sha: "def456".into(),
         ..current.clone()
     };
@@ -125,10 +125,11 @@ fn memory_processed_review_store_filters_already_reviewed_heads() {
 fn filesystem_processed_review_store_survives_reopen() {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = FsProcessedReviewStore::new(dir.path()).expect("store");
-    let pull_request = DiscoveredPullRequest {
-        owner: "acme".into(),
-        repo: "platform".into(),
-        number: 42,
+    let pull_request = ReviewRequest {
+        source: "github".into(),
+        repository: "acme/platform".into(),
+        number: Some(42),
+        id: "42".into(),
         head_sha: "abc123".into(),
     };
 
@@ -141,7 +142,7 @@ fn filesystem_processed_review_store_survives_reopen() {
         .get_processed(&pull_request)
         .expect("get processed")
         .expect("processed review exists");
-    assert_eq!(processed.head_sha, "abc123");
+    assert_eq!(processed.request.head_sha, "abc123");
     assert_eq!(processed.activity_id, Some("activity-1".into()));
     assert!(!reopened.needs_review(&pull_request).expect("same sha"));
 }

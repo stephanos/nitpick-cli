@@ -5,6 +5,5 @@ edition.workspace = true
 
 [dependencies]
 nitpick-agent-core.workspace = true
-nitpick-agent-github = { path = "../nitpick-agent-github" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

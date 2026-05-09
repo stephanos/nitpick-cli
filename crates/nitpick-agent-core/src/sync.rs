@@ -6,7 +6,7 @@ pub struct ArtifactSyncOutcome {
     pub remote_id: Option<String>,
 }
 
-pub trait ArtifactSyncDestination {
+pub trait ArtifactSyncDestination: Send + Sync {
     fn name(&self) -> &'static str;
 
     fn sync(&self, artifact: &Artifact) -> AgentResult<ArtifactSyncOutcome>;

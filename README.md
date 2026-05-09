@@ -53,18 +53,20 @@ nitpick-agent artifact-sync artifact-1 github acme/platform#42
 nitpick-agent sync-pending github
 ```
 
-The daemon can watch GitHub for pull requests requesting your review and create local review activities automatically. It stores processed PR heads locally, so a PR is not reviewed again until its head SHA changes.
+The daemon can watch review sources and create local review activities automatically. GitHub is the first source adapter; additional source-code providers should plug into the same review-source API. Processed review heads are stored locally, so a review request is not reviewed again until its head SHA changes.
 
 ```toml
-[github.discovery]
+[sources.github.discovery]
 enabled = true
 auto_review = true
 interval_seconds = 300
 ```
 
+The older `[github.discovery]` config shape is still accepted for compatibility.
+
 `artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text.
 
-Provider execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. GitHub posting uses `gh` by default; override it with `github_command`.
+Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. GitHub posting uses `gh` by default; override it with `github_command`.
 
 ## Layout
 

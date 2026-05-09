@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use nitpick_agent_core::FsProcessedReviewStore;
 use nitpick_agent_core::{ActivityStore, FsActivityStore};
-use nitpick_agent_github::FsProcessedReviewStore;
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon};
 use tempfile::TempDir;
 

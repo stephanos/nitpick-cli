@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use nitpick_agent_core::FsProcessedReviewStore;
+use nitpick_agent_core::ProcessedReviewStore;
 use nitpick_agent_core::{ActivityKind, ActivityStatus, ActivityStore, FsActivityStore};
-use nitpick_agent_github::{FsProcessedReviewStore, ProcessedReviewStore};
 use nitpick_agent_host::{GitHubDiscoveryConfig, HostDaemon};
 use nitpick_agent_integration_tests::support::{
     ManualClock, RecordingProvider, StubDiscovery, TestHarness, github_auto_review_config,
-    github_disabled_config, github_discovery_only_config, pull_request,
+    github_disabled_config, github_discovery_only_config, pull_request, review_request,
 };
 
 #[test]
@@ -17,7 +18,7 @@ fn github_polling_creates_local_review_and_marks_pr_head_processed() {
 
     let result = harness
         .daemon
-        .poll_github_review_requests()
+        .poll_review_requests()
         .expect("poll succeeds");
 
     assert_eq!(result.discovered_count, 1);
@@ -37,7 +38,7 @@ fn github_polling_creates_local_review_and_marks_pr_head_processed() {
     assert!(
         !harness
             .processed
-            .needs_review(&pull_request("sha-one"))
+            .needs_review(&review_request("sha-one"))
             .expect("processed state")
     );
     assert_eq!(
@@ -61,17 +62,17 @@ fn github_polling_tick_runs_one_due_poll_and_reports_status() {
         github_auto_review_config(),
         Arc::new(StubDiscovery::new(vec![pull_request("sha-one")])),
     );
-    let poller = nitpick_agent_host::GitHubReviewPoller::new(harness.daemon.clone());
+    let poller = nitpick_agent_host::ReviewSourcePoller::new(harness.daemon.clone());
 
     let result = poller.tick().expect("tick");
 
     assert_eq!(result.discovered_count, 1);
     assert_eq!(result.enqueued_count, 1);
     let status = harness.daemon.status().expect("status");
-    assert!(status.github_discovery_enabled);
-    assert_eq!(status.github_last_poll_unix, Some(1_000));
+    assert!(status.review_source_enabled);
+    assert_eq!(status.review_source_last_poll_unix, Some(1_000));
     assert_eq!(
-        status.github_last_poll_summary.as_deref(),
+        status.review_source_last_poll_summary.as_deref(),
         Some("reviewed 1 of 1 PRs")
     );
 }
@@ -84,7 +85,7 @@ fn github_polling_skips_until_interval_passes_and_rereviews_changed_heads() {
     assert_eq!(
         harness
             .daemon
-            .poll_github_review_requests()
+            .poll_review_requests()
             .expect("first poll")
             .enqueued_count,
         1
@@ -94,7 +95,7 @@ fn github_polling_skips_until_interval_passes_and_rereviews_changed_heads() {
     assert_eq!(
         harness
             .daemon
-            .poll_github_review_requests()
+            .poll_review_requests()
             .expect("too early")
             .skipped_reason
             .as_deref(),
@@ -106,7 +107,7 @@ fn github_polling_skips_until_interval_passes_and_rereviews_changed_heads() {
     assert_eq!(
         harness
             .daemon
-            .poll_github_review_requests()
+            .poll_review_requests()
             .expect("second poll")
             .enqueued_count,
         1
@@ -121,7 +122,7 @@ fn github_polling_respects_disabled_and_discovery_only_config() {
 
     let disabled_result = disabled
         .daemon
-        .poll_github_review_requests()
+        .poll_review_requests()
         .expect("disabled poll");
 
     assert_eq!(disabled_result.skipped_reason.as_deref(), Some("disabled"));
@@ -133,7 +134,7 @@ fn github_polling_respects_disabled_and_discovery_only_config() {
 
     let discovery_only_result = discovery_only
         .daemon
-        .poll_github_review_requests()
+        .poll_review_requests()
         .expect("discovery-only poll");
 
     assert_eq!(discovery_only_result.discovered_count, 1);
@@ -143,7 +144,7 @@ fn github_polling_respects_disabled_and_discovery_only_config() {
     assert!(
         discovery_only
             .processed
-            .needs_review(&pull_request("sha-one"))
+            .needs_review(&review_request("sha-one"))
             .expect("not marked processed")
     );
 }
@@ -168,7 +169,7 @@ fn github_polling_skips_already_processed_prs_after_store_reopen() {
     );
     assert_eq!(
         daemon
-            .poll_github_review_requests()
+            .poll_review_requests()
             .expect("first poll")
             .enqueued_count,
         1
@@ -189,9 +190,7 @@ fn github_polling_skips_already_processed_prs_after_store_reopen() {
         clock,
     );
 
-    let result = reopened_daemon
-        .poll_github_review_requests()
-        .expect("reopen poll");
+    let result = reopened_daemon.poll_review_requests().expect("reopen poll");
 
     assert_eq!(result.discovered_count, 0);
     assert_eq!(result.enqueued_count, 0);
@@ -209,7 +208,7 @@ fn github_polling_does_not_mark_failed_reviews_processed() {
     assert_eq!(
         harness
             .daemon
-            .poll_github_review_requests()
+            .poll_review_requests()
             .expect("poll")
             .enqueued_count,
         0
@@ -221,7 +220,7 @@ fn github_polling_does_not_mark_failed_reviews_processed() {
     assert!(
         harness
             .processed
-            .needs_review(&pull_request("sha-one"))
+            .needs_review(&review_request("sha-one"))
             .expect("failed review not processed")
     );
 }
@@ -241,7 +240,7 @@ fn github_polling_reviews_multiple_prs_and_only_rereviews_changed_heads() {
     assert_eq!(
         harness
             .daemon
-            .poll_github_review_requests()
+            .poll_review_requests()
             .expect("first poll")
             .enqueued_count,
         2
@@ -250,13 +249,13 @@ fn github_polling_reviews_multiple_prs_and_only_rereviews_changed_heads() {
     assert!(
         !harness
             .processed
-            .needs_review(&first)
+            .needs_review(&first.clone().into())
             .expect("first processed")
     );
     assert!(
         !harness
             .processed
-            .needs_review(&second)
+            .needs_review(&second.clone().into())
             .expect("second processed")
     );
 
@@ -270,7 +269,7 @@ fn github_polling_reviews_multiple_prs_and_only_rereviews_changed_heads() {
     assert_eq!(
         harness
             .daemon
-            .poll_github_review_requests()
+            .poll_review_requests()
             .expect("second poll")
             .enqueued_count,
         1
@@ -312,7 +311,7 @@ fn github_polling_filters_discovered_prs_with_allowlist_and_denylist() {
 
     let result = harness
         .daemon
-        .poll_github_review_requests()
+        .poll_review_requests()
         .expect("filtered poll");
 
     assert_eq!(result.discovered_count, 1);
@@ -321,5 +320,10 @@ fn github_polling_filters_discovered_prs_with_allowlist_and_denylist() {
         harness.provider.reviewed_subjects(),
         ["stephanos/nitpick-agent#42"]
     );
-    assert!(!harness.processed.needs_review(&allowed).expect("processed"));
+    assert!(
+        !harness
+            .processed
+            .needs_review(&allowed.into())
+            .expect("processed")
+    );
 }

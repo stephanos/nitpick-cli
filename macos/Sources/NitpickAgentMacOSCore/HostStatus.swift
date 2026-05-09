@@ -8,9 +8,10 @@ public struct HostStatus: Decodable, Equatable {
     public var pendingSyncArtifactCount: Int
     public var provider: String
     public var model: String?
-    public var githubDiscoveryEnabled: Bool
-    public var githubLastPollUnix: UInt64?
-    public var githubLastPollSummary: String?
+    public var reviewSourceName: String
+    public var reviewSourceEnabled: Bool
+    public var reviewSourceLastPollUnix: UInt64?
+    public var reviewSourceLastPollSummary: String?
 
     private enum CodingKeys: String, CodingKey {
         case activityCount = "activity_count"
@@ -22,8 +23,9 @@ public struct HostStatus: Decodable, Equatable {
         case pendingSyncArtifactCount = "pending_sync_artifact_count"
         case provider
         case model
-        case githubDiscoveryEnabled = "github_discovery_enabled"
-        case githubLastPollUnix = "github_last_poll_unix"
-        case githubLastPollSummary = "github_last_poll_summary"
+        case reviewSourceName = "review_source_name"
+        case reviewSourceEnabled = "review_source_enabled"
+        case reviewSourceLastPollUnix = "review_source_last_poll_unix"
+        case reviewSourceLastPollSummary = "review_source_last_poll_summary"
     }
 }

@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 
-use nitpick_agent_core::{AgentError, AgentResult, ReviewInput, ReviewSubject};
+use nitpick_agent_core::{
+    AgentError, AgentResult, ReviewInput, ReviewRequest, ReviewSource, ReviewSubject,
+};
 use nitpick_agent_github::{DiscoveredPullRequest, ReviewRequestDiscovery};
 
 pub fn pull_request(head_sha: &str) -> DiscoveredPullRequest {
@@ -10,6 +12,10 @@ pub fn pull_request(head_sha: &str) -> DiscoveredPullRequest {
         number: 42,
         head_sha: head_sha.into(),
     }
+}
+
+pub fn review_request(head_sha: &str) -> ReviewRequest {
+    ReviewRequest::from(pull_request(head_sha))
 }
 
 pub struct StubDiscovery {
@@ -65,5 +71,33 @@ impl ReviewRequestDiscovery for StubDiscovery {
             },
             diff: format!("diff for {}", pull_request.head_sha),
         })
+    }
+}
+
+impl ReviewSource for StubDiscovery {
+    fn name(&self) -> &'static str {
+        "github"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        <Self as ReviewRequestDiscovery>::requested_reviews(self)
+            .map(|requests| requests.into_iter().map(ReviewRequest::from).collect())
+    }
+
+    fn review_input(&self, request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        let Some(number) = request.number else {
+            return Err(AgentError::new("stub review request missing number"));
+        };
+        let (owner, repo) = request
+            .repository
+            .split_once('/')
+            .ok_or_else(|| AgentError::new("stub review request missing repository owner"))?;
+        let pull_request = DiscoveredPullRequest {
+            owner: owner.into(),
+            repo: repo.into(),
+            number,
+            head_sha: request.head_sha.clone(),
+        };
+        <Self as ReviewRequestDiscovery>::review_input(self, &pull_request)
     }
 }

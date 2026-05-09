@@ -11,7 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
-    private var githubMenuItem: NSMenuItem?
     private var openAtLoginMenuItem: NSMenuItem?
     private var openAtLoginMessageItem: NSMenuItem?
     private var activityMenuItems: [NSMenuItem] = []
@@ -59,21 +58,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem.isEnabled = false
         self.statusMenuItem = statusMenuItem
         menu.addItem(statusMenuItem)
-
-        let githubMenuItem = NSMenuItem(title: "GitHub: Starting", action: nil, keyEquivalent: "")
-        githubMenuItem.isEnabled = false
-        self.githubMenuItem = githubMenuItem
-        menu.addItem(githubMenuItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let restartItem = NSMenuItem(
-            title: "Restart Host",
-            action: #selector(restartHost),
-            keyEquivalent: ""
-        )
-        restartItem.target = self
-        menu.addItem(restartItem)
 
         let configItem = NSMenuItem(
             title: "Open Config",
@@ -160,12 +144,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             artifactCount: latestHostStatus?.artifactCount ?? 0,
             localOnlyArtifactCount: latestHostStatus?.localOnlyArtifactCount ?? 0,
             pendingSyncArtifactCount: latestHostStatus?.pendingSyncArtifactCount ?? 0,
-            githubDiscoveryEnabled: latestHostStatus?.githubDiscoveryEnabled ?? false,
-            githubLastPollSummary: latestHostStatus?.githubLastPollSummary,
             activities: latestActivities
         )
         statusMenuItem?.title = snapshot.statusTitle
-        githubMenuItem?.title = snapshot.githubTitle
         updateActivityItems(snapshot.recentActivityTitles)
         updateOpenAtLoginItems()
         statusItem?.button?.toolTip = snapshot.statusTitle
@@ -187,12 +168,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 attributes: [.font: font]
             )
         }
-    }
-
-    @objc private func restartHost() {
-        host.stop()
-        host.start()
-        refreshMenu()
     }
 
     @objc private func checkForUpdates(_ sender: Any?) {

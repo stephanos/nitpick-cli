@@ -1,8 +1,9 @@
 use serde::Deserialize;
 
 use nitpick_agent_client::HostClient;
-use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput, ReviewSubject};
-use nitpick_agent_github::DiscoveredPullRequest;
+use nitpick_agent_core::{
+    Activity, Artifact, ChatInput, ReviewInput, ReviewRequest, ReviewSubject,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
@@ -93,7 +94,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick-agent {version}\n\nUsage: nitpick-agent <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  review-requests [--new]                            List GitHub PRs requesting your review\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick-agent {version}\n\nUsage: nitpick-agent <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -108,9 +109,10 @@ pub struct HostStatus {
     pub pending_sync_artifact_count: usize,
     pub provider: String,
     pub model: Option<String>,
-    pub github_discovery_enabled: bool,
-    pub github_last_poll_unix: Option<u64>,
-    pub github_last_poll_summary: Option<String>,
+    pub review_source_name: String,
+    pub review_source_enabled: bool,
+    pub review_source_last_poll_unix: Option<u64>,
+    pub review_source_last_poll_summary: Option<String>,
 }
 
 pub fn format_host_status(status: &HostStatus) -> String {
@@ -188,14 +190,14 @@ pub fn format_artifact(artifact: &Artifact) -> String {
     )
 }
 
-pub fn format_review_requests(requests: &[DiscoveredPullRequest]) -> String {
+pub fn format_review_requests(requests: &[ReviewRequest]) -> String {
     if requests.is_empty() {
-        return "no GitHub review requests".into();
+        return "no review requests".into();
     }
 
     requests
         .iter()
-        .map(|request| format!("{}/{}#{}", request.owner, request.repo, request.number))
+        .map(|request| format!("{} {}", request.source, request.display_reference()))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -246,9 +248,9 @@ pub fn run_cli_command(
             )),
             Err(error) => Err(error),
         },
-        CliCommand::ReviewRequests { only_new } => Ok(format_review_requests(
-            &client.github_review_requests(only_new)?,
-        )),
+        CliCommand::ReviewRequests { only_new } => {
+            Ok(format_review_requests(&client.review_requests(only_new)?))
+        }
         CliCommand::Activities => Ok(format_activities(&client.activities()?)),
         CliCommand::Artifacts { activity_id } => {
             Ok(format_artifacts(&client.activity_artifacts(&activity_id)?))
@@ -298,16 +300,17 @@ fn host_status(status: nitpick_agent_client::HostStatus) -> HostStatus {
         pending_sync_artifact_count: status.pending_sync_artifact_count,
         provider: status.provider,
         model: status.model,
-        github_discovery_enabled: status.github_discovery_enabled,
-        github_last_poll_unix: status.github_last_poll_unix,
-        github_last_poll_summary: status.github_last_poll_summary,
+        review_source_name: status.review_source_name,
+        review_source_enabled: status.review_source_enabled,
+        review_source_last_poll_unix: status.review_source_last_poll_unix,
+        review_source_last_poll_summary: status.review_source_last_poll_summary,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{CliCommand, HostStatus, format_host_status, parse_command};
-    use nitpick_agent_github::DiscoveredPullRequest;
+    use nitpick_agent_core::ReviewRequest;
 
     #[test]
     fn parses_review_command_subject() {
@@ -462,9 +465,10 @@ mod tests {
             pending_sync_artifact_count: 1,
             provider: "claude".into(),
             model: Some("sonnet".into()),
-            github_discovery_enabled: true,
-            github_last_poll_unix: Some(1_000),
-            github_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
+            review_source_name: "github".into(),
+            review_source_enabled: true,
+            review_source_last_poll_unix: Some(1_000),
+            review_source_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
         };
 
         assert_eq!(
@@ -476,7 +480,7 @@ mod tests {
     #[test]
     fn parses_host_status_json() {
         let status = super::parse_host_status_json(
-            r#"{"activity_count":2,"running_activity_count":1,"completed_activity_count":1,"error_activity_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"github_discovery_enabled":true,"github_last_poll_unix":1000,"github_last_poll_summary":"reviewed 1 of 1 PRs"}"#,
+            r#"{"activity_count":2,"running_activity_count":1,"completed_activity_count":1,"error_activity_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"review_source_name":"github","review_source_enabled":true,"review_source_last_poll_unix":1000,"review_source_last_poll_summary":"reviewed 1 of 1 PRs"}"#,
         )
         .expect("status parses");
 
@@ -492,9 +496,10 @@ mod tests {
                 pending_sync_artifact_count: 1,
                 provider: "claude".into(),
                 model: None,
-                github_discovery_enabled: true,
-                github_last_poll_unix: Some(1_000),
-                github_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
+                review_source_name: "github".into(),
+                review_source_enabled: true,
+                review_source_last_poll_unix: Some(1_000),
+                review_source_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
             }
         );
     }
@@ -529,14 +534,18 @@ mod tests {
 
     #[test]
     fn formats_review_requests() {
-        let requests = vec![DiscoveredPullRequest {
-            owner: "acme".into(),
-            repo: "platform".into(),
-            number: 42,
+        let requests = vec![ReviewRequest {
+            source: "github".into(),
+            repository: "acme/platform".into(),
+            number: Some(42),
+            id: "42".into(),
             head_sha: "abc123".into(),
         }];
 
-        assert_eq!(super::format_review_requests(&requests), "acme/platform#42");
+        assert_eq!(
+            super::format_review_requests(&requests),
+            "github acme/platform#42"
+        );
     }
 
     #[test]
