@@ -6,16 +6,20 @@ import Sparkle
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let identity = MenuBarIdentity()
     private let configFile = ConfigFile()
+    private let loginItemManager = LoginItemManager()
     private let host = HostProcess()
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
     private var githubMenuItem: NSMenuItem?
+    private var openAtLoginMenuItem: NSMenuItem?
+    private var openAtLoginMessageItem: NSMenuItem?
     private var activityMenuItems: [NSMenuItem] = []
     private var updaterController: SPUStandardUpdaterController?
     private var refreshTimer: Timer?
     private var latestHostStatus: HostStatus?
     private var latestActivities: [ActivitySnapshot] = []
+    private var openAtLoginState = OpenAtLoginViewState.make(status: .notRegistered)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -30,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureStatusItemButton()
         statusItem?.menu = makeMenu()
 
+        openAtLoginState = loginItemManager.configureOnLaunch()
         installCommandLineTool()
         host.start()
         refreshMenu()
@@ -73,18 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let configItem = NSMenuItem(
             title: "Open Config",
             action: #selector(openConfig),
-            keyEquivalent: ","
+            keyEquivalent: ""
         )
         configItem.target = self
         menu.addItem(configItem)
-
-        let updateItem = NSMenuItem(
-            title: "Check for Updates...",
-            action: #selector(checkForUpdates),
-            keyEquivalent: ""
-        )
-        updateItem.target = self
-        menu.addItem(updateItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -97,6 +94,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(NSMenuItem.separator())
+
+        let versionItem = NSMenuItem(title: appVersionTitle(), action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
+
+        let updateItem = NSMenuItem(
+            title: "Check for Updates...",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
+
+        let openAtLoginItem = NSMenuItem(
+            title: "Open at Login",
+            action: #selector(toggleOpenAtLogin),
+            keyEquivalent: ""
+        )
+        openAtLoginItem.target = self
+        self.openAtLoginMenuItem = openAtLoginItem
+        menu.addItem(openAtLoginItem)
+
+        let openAtLoginMessageItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        openAtLoginMessageItem.isEnabled = false
+        openAtLoginMessageItem.isHidden = true
+        self.openAtLoginMessageItem = openAtLoginMessageItem
+        menu.addItem(openAtLoginMessageItem)
 
         let quitItem = NSMenuItem(
             title: "Quit",
@@ -143,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem?.title = snapshot.statusTitle
         githubMenuItem?.title = snapshot.githubTitle
         updateActivityItems(snapshot.recentActivityTitles)
+        updateOpenAtLoginItems()
         statusItem?.button?.toolTip = snapshot.statusTitle
     }
 
@@ -174,6 +199,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updaterController?.checkForUpdates(sender)
     }
 
+    @objc private func toggleOpenAtLogin(_ sender: NSMenuItem) {
+        openAtLoginState = loginItemManager.setEnabled(sender.state != .on)
+        updateOpenAtLoginItems()
+    }
+
     @objc private func openConfig() {
         let directoryURL = configFile.url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(
@@ -186,6 +216,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSWorkspace.shared.open(configFile.url)
+    }
+
+    private func updateOpenAtLoginItems() {
+        switch openAtLoginState.status {
+        case .enabled:
+            openAtLoginMenuItem?.state = .on
+        case .requiresApproval:
+            openAtLoginMenuItem?.state = .mixed
+        case .notRegistered, .notFound, .unknown:
+            openAtLoginMenuItem?.state = .off
+        }
+
+        if let message = openAtLoginState.message, !message.isEmpty {
+            openAtLoginMessageItem?.title = message
+            openAtLoginMessageItem?.isHidden = false
+        } else {
+            openAtLoginMessageItem?.title = ""
+            openAtLoginMessageItem?.isHidden = true
+        }
+    }
+
+    private func appVersionTitle() -> String {
+        if let shortVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String, !shortVersion.isEmpty
+        {
+            return "Nitpick Agent v\(shortVersion)"
+        }
+
+        if let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
+            as? String, !bundleVersion.isEmpty
+        {
+            return "Nitpick Agent v\(bundleVersion)"
+        }
+
+        return "Nitpick Agent"
     }
 
     private func configureStatusItemButton() {
