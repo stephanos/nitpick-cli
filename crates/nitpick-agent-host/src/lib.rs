@@ -19,8 +19,8 @@ use nitpick_agent_core::{
     ProcessedReviewStore, ReviewInput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
 };
 use nitpick_agent_github::{
-    DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliSyncDestination,
-    GitHubDryRunSyncDestination, PullRequestRef,
+    DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
+    GitHubCliSyncDestination, GitHubDryRunSyncDestination, PullRequestRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -877,6 +877,18 @@ impl AgentConfig {
                 }
                 None => Ok(Box::new(GitHubDryRunSyncDestination)),
             },
+            "github-review" => {
+                let target = target.ok_or_else(|| {
+                    AgentError::new("github-review sync requires a pull request target")
+                })?;
+                let target = target.parse::<PullRequestRef>().map_err(|error| {
+                    AgentError::new(format!("invalid GitHub sync target: {error}"))
+                })?;
+                Ok(Box::new(GitHubCliReviewSyncDestination::new(
+                    target,
+                    self.github_command.as_deref().unwrap_or("gh"),
+                )))
+            }
             destination => Err(AgentError::new(format!(
                 "unknown sync destination `{destination}`"
             ))),

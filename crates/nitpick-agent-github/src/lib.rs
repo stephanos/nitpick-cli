@@ -46,6 +46,20 @@ impl GitHubCliSyncDestination {
     }
 }
 
+pub struct GitHubCliReviewSyncDestination {
+    target: PullRequestRef,
+    command: PathBuf,
+}
+
+impl GitHubCliReviewSyncDestination {
+    pub fn new(target: PullRequestRef, command: impl Into<PathBuf>) -> Self {
+        Self {
+            target,
+            command: command.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredPullRequest {
     pub owner: String,
@@ -68,6 +82,17 @@ impl From<DiscoveredPullRequest> for ReviewRequest {
             number: Some(pull_request.number),
             id: pull_request.number.to_string(),
             head_sha: pull_request.head_sha,
+        }
+    }
+}
+
+impl From<&PullRequestRef> for DiscoveredPullRequest {
+    fn from(pull_request: &PullRequestRef) -> Self {
+        Self {
+            owner: pull_request.owner.clone(),
+            repo: pull_request.repo.clone(),
+            number: pull_request.number,
+            head_sha: String::new(),
         }
     }
 }
@@ -149,6 +174,13 @@ impl GitHubCliDiscovery {
             &pull_request.owner,
             &pull_request.repo,
             pull_request.number,
+        )
+    }
+
+    pub fn checkout_path_for(&self, pull_request: &PullRequestRef) -> PathBuf {
+        checkout_path(
+            &self.checkout_root,
+            &DiscoveredPullRequest::from(pull_request),
         )
     }
 
@@ -735,6 +767,120 @@ impl ArtifactSyncDestination for GitHubCliSyncDestination {
             remote_id: (!remote_id.is_empty()).then_some(remote_id),
         })
     }
+}
+
+impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
+    fn name(&self) -> &'static str {
+        "github-review"
+    }
+
+    fn sync(&self, artifact: &Artifact) -> AgentResult<ArtifactSyncOutcome> {
+        match &artifact.content {
+            ArtifactContent::ReviewSummary(_) => sync_with_github_cli(
+                &self.command,
+                &[
+                    "pr",
+                    "review",
+                    &self.target.number.to_string(),
+                    "--repo",
+                    &format!("{}/{}", self.target.owner, self.target.repo),
+                    "--comment",
+                    "--body-file",
+                    "-",
+                ],
+                &github_comment_body(artifact),
+                self.name(),
+            ),
+            ArtifactContent::ReviewComment(comment) => {
+                let head_sha = pull_request_head_sha(
+                    &self.command,
+                    &self.target.owner,
+                    &self.target.repo,
+                    self.target.number,
+                )?;
+                let payload = serde_json::json!({
+                    "commit_id": head_sha,
+                    "event": "COMMENT",
+                    "comments": [{
+                        "path": comment.path,
+                        "line": comment.line,
+                        "side": "RIGHT",
+                        "body": comment.body,
+                    }],
+                });
+                sync_with_github_cli(
+                    &self.command,
+                    &[
+                        "api",
+                        &format!(
+                            "repos/{}/{}/pulls/{}/reviews",
+                            self.target.owner, self.target.repo, self.target.number
+                        ),
+                        "--method",
+                        "POST",
+                        "--input",
+                        "-",
+                    ],
+                    &payload.to_string(),
+                    self.name(),
+                )
+            }
+            ArtifactContent::ChatResponse(_) => Err(AgentError::new(
+                "github-review sync only supports review artifacts",
+            )),
+        }
+    }
+}
+
+fn sync_with_github_cli(
+    command: &Path,
+    args: &[&str],
+    body: &str,
+    destination: &str,
+) -> AgentResult<ArtifactSyncOutcome> {
+    let mut child = Command::new(command)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            AgentError::new(format!(
+                "failed to start GitHub CLI `{}`: {error}",
+                command.display()
+            ))
+        })?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| AgentError::new("GitHub CLI stdin unavailable"))?
+        .write_all(body.as_bytes())
+        .map_err(|error| AgentError::new(format!("write GitHub body: {error}")))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| AgentError::new(format!("wait for GitHub CLI: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(AgentError::new(format!(
+            "GitHub CLI failed with status {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+    let remote_id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+
+    Ok(ArtifactSyncOutcome {
+        sync_state: ArtifactSyncState::Synced {
+            destination: destination.into(),
+            remote_id: (!remote_id.is_empty()).then_some(remote_id.clone()),
+        },
+        remote_id: (!remote_id.is_empty()).then_some(remote_id),
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

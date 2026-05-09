@@ -70,6 +70,7 @@ Current gap:
 - `nitpick-agent` now uses durable checkout storage and has a GitHub cleanup API for closed or merged PR checkouts.
 - `nitpick cleanup-checkouts` now runs an explicit host maintenance pass over known PR checkouts and records completed cleanup activities.
 - The scheduled review-source poller now runs checkout cleanup after due polls for the normal GitHub-backed daemon.
+- `nitpick inspect <pr-ref>` opens an existing durable PR checkout in the user's editor for local inspection.
 
 References:
 
@@ -91,7 +92,7 @@ Requirements:
 Current gap:
 
 - `reviewd` uses explicit Claude `--session-id` and `--resume`.
-- `nitpick-agent` stores a session object, but the command provider currently pipes a prompt to `claude`/`codex` stdin without session/resume flags.
+- `nitpick-agent` now assigns stable PR review session IDs and passes them to Claude via `--session-id`; Codex keeps the stored session ID without provider-specific resume flags yet.
 
 References:
 
@@ -113,7 +114,7 @@ Requirements:
 Current gap:
 
 - `reviewd` creates pending GitHub reviews through the PR reviews API and uses review-safe `gh` wrappers.
-- `nitpick-agent` currently syncs artifacts with `gh pr comment`, which posts standalone comments instead of draft inline review comments.
+- `nitpick-agent` can sync review summary artifacts through `gh pr review --comment` with the `github-review` destination, but inline draft review comments still need file/line-aware sync.
 
 Reference:
 
@@ -175,4 +176,4 @@ Requirements:
 Current gap:
 
 - `reviewd` supports `status`, `logs [pr]`, and `resume [pr]` with tmux-backed reviewer/watcher processes.
-- `nitpick-agent` has status, activities, and artifacts, but not interactive attach/resume or per-PR process logs.
+- `nitpick-agent` has status, review-focused activity listing, checkout inspection, activities, and artifacts, but not interactive attach/resume or per-PR process logs.

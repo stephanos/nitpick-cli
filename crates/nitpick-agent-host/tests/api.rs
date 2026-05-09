@@ -298,6 +298,64 @@ async fn artifact_sync_endpoint_posts_to_github_when_target_is_provided() {
 }
 
 #[tokio::test]
+async fn artifact_sync_endpoint_posts_to_github_review_destination() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'https://github.com/acme/platform/pull/42#pullrequestreview-99\\n'\n",
+    )
+    .expect("write fake gh");
+    let mut permissions = fs::metadata(&gh).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh, permissions).expect("chmod");
+    let store = Arc::new(MemoryActivityStore::default());
+    let activity = store.create(ActivityKind::Review).expect("activity");
+    let artifact = store
+        .create_artifact(
+            activity.id,
+            ArtifactKind::ReviewSummary,
+            ArtifactContent::ReviewSummary("local summary".into()),
+        )
+        .expect("artifact");
+    let artifact_id = artifact.id.clone();
+    store.save_artifacts(&[artifact]).expect("save artifact");
+    let app = api_router(HostDaemon::with_config(
+        store.clone(),
+        AgentConfig {
+            provider: AgentProviderKind::Claude,
+            model: None,
+            command: None,
+            github_command: Some(gh.display().to_string()),
+            ..AgentConfig::default()
+        },
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            &format!("/artifacts/{artifact_id}/sync"),
+            &serde_json::json!({
+                "destination": "github-review",
+                "target": "acme/platform#42"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        store
+            .get_artifact(&artifact_id)
+            .expect("artifact")
+            .sync_state,
+        ArtifactSyncState::Synced {
+            destination: "github-review".into(),
+            remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+        }
+    );
+}
+
+#[tokio::test]
 async fn pending_sync_endpoint_lists_pending_artifacts_for_destination() {
     let store = Arc::new(MemoryActivityStore::default());
     let activity = store.create(ActivityKind::Review).expect("activity");

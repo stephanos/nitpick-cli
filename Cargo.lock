@@ -354,6 +354,7 @@ dependencies = [
  "nitpick-agent-github",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

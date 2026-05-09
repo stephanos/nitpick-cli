@@ -43,13 +43,17 @@ The CLI reads host status from the same local API:
 ```bash
 nitpick status
 nitpick review acme/platform#42
+nitpick inspect acme/platform#42
 nitpick review-requests
 nitpick review-requests --new
 nitpick chat "summarize this repo"
+nitpick reviews
+nitpick reviews --all
 nitpick activities
 nitpick artifacts activity-1
 nitpick artifact artifact-1
 nitpick artifact-sync artifact-1 github
+nitpick artifact-sync artifact-1 github-review acme/platform#42
 nitpick artifact-sync artifact-1 github acme/platform#42
 nitpick sync-pending github
 nitpick cleanup-checkouts
@@ -66,9 +70,9 @@ interval_seconds = 300
 
 The older `[github.discovery]` config shape is still accepted for compatibility.
 
-`artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text.
+`artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to post a review summary artifact through `gh pr review --comment`.
 
-Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. GitHub posting uses `gh` by default; override it with `github_command`.
+Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. GitHub posting uses `gh` by default; override it with `github_command`.
 
 ## Layout
 

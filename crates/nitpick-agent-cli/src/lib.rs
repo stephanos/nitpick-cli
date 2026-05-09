@@ -1,9 +1,12 @@
 use serde::Deserialize;
+use std::{path::Path, process::Command};
 
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, Artifact, ChatInput, ReviewInput, ReviewRequest, ReviewSubject,
+    Activity, ActivityKind, ActivityStatus, Artifact, ChatInput, ReviewInput, ReviewRequest,
+    ReviewSubject,
 };
+use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
@@ -11,6 +14,9 @@ pub enum CliCommand {
     Version,
     Review {
         subject: String,
+    },
+    Inspect {
+        pull_request: String,
     },
     Chat {
         prompt: String,
@@ -20,6 +26,9 @@ pub enum CliCommand {
         only_new: bool,
     },
     Activities,
+    Reviews {
+        include_all: bool,
+    },
     Artifacts {
         activity_id: String,
     },
@@ -49,6 +58,11 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
             Some(_) => Err("usage: nitpick review-requests [--new]".into()),
         },
         Some("activities") => Ok(CliCommand::Activities),
+        Some("reviews") => match args.next().as_deref() {
+            None => Ok(CliCommand::Reviews { include_all: false }),
+            Some("--all") => Ok(CliCommand::Reviews { include_all: true }),
+            Some(_) => Err("usage: nitpick reviews [--all]".into()),
+        },
         Some("artifacts") => {
             let activity_id = args
                 .next()
@@ -78,6 +92,12 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
             destination: args.next(),
         }),
         Some("cleanup-checkouts") => Ok(CliCommand::CleanupCheckouts),
+        Some("inspect") => {
+            let pull_request = args
+                .next()
+                .ok_or_else(|| "usage: nitpick inspect <pr-ref>".to_owned())?;
+            Ok(CliCommand::Inspect { pull_request })
+        }
         Some("review") => {
             let subject = args
                 .next()
@@ -96,7 +116,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -168,6 +188,43 @@ pub fn format_activities(activities: &[Activity]) -> String {
         .join("\n")
 }
 
+pub fn format_reviews(activities: &[Activity], include_all: bool) -> String {
+    let mut reviews = activities
+        .iter()
+        .filter(|activity| activity.kind == ActivityKind::Review)
+        .filter(|activity| include_all || is_active_review_status(&activity.status))
+        .collect::<Vec<_>>();
+    if reviews.is_empty() {
+        return if include_all {
+            "no reviews".into()
+        } else {
+            "no active reviews".into()
+        };
+    }
+
+    reviews.sort_by(|lhs, rhs| {
+        rhs.updated_at_unix
+            .cmp(&lhs.updated_at_unix)
+            .then_with(|| rhs.id.cmp(&lhs.id))
+    });
+    reviews
+        .into_iter()
+        .map(|activity| {
+            format!(
+                "{:?} {} {}",
+                activity.status,
+                activity.label.as_deref().unwrap_or("review"),
+                activity.id
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_active_review_status(status: &ActivityStatus) -> bool {
+    matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
+}
+
 pub fn format_artifacts(artifacts: &[Artifact]) -> String {
     if artifacts.is_empty() {
         return "no local artifacts".into();
@@ -213,6 +270,58 @@ pub fn format_cleanup_checkouts(result: &nitpick_agent_client::CleanupCheckoutsR
         result.removed_count,
         result.cleaned.join("\n")
     )
+}
+
+pub fn inspect_checkout(
+    pull_request: &str,
+    checkout_root: &Path,
+    editor: Option<&Path>,
+) -> Result<String, String> {
+    inspect_checkout_with_discovery(
+        pull_request,
+        &GitHubCliDiscovery::with_checkout_commands("gh", "git", checkout_root),
+        editor,
+    )
+}
+
+fn inspect_checkout_with_discovery(
+    pull_request: &str,
+    discovery: &GitHubCliDiscovery,
+    editor: Option<&Path>,
+) -> Result<String, String> {
+    let reference = pull_request
+        .parse::<PullRequestRef>()
+        .map_err(|error| format!("invalid PR reference: {error}"))?;
+    let checkout = discovery.checkout_path_for(&reference);
+    if !checkout.join(".git").is_dir() {
+        return Err(format!("checkout not found for {pull_request}"));
+    }
+
+    let editor = editor
+        .map(std::path::PathBuf::from)
+        .or_else(editor_from_env)
+        .ok_or_else(|| "set VISUAL or EDITOR to inspect checkouts".to_owned())?;
+    let status = Command::new(&editor)
+        .arg(&checkout)
+        .status()
+        .map_err(|error| format!("failed to start editor `{}`: {error}", editor.display()))?;
+    if !status.success() {
+        return Err(format!("editor `{}` failed: {status}", editor.display()));
+    }
+    Ok(format!("opened {}", checkout.display()))
+}
+
+fn editor_from_env() -> Option<std::path::PathBuf> {
+    std::env::var_os("VISUAL")
+        .or_else(|| std::env::var_os("EDITOR"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            if cfg!(target_os = "macos") {
+                Some(std::path::PathBuf::from("open"))
+            } else {
+                None
+            }
+        })
 }
 
 pub fn host_status_url(addr: &str) -> String {
@@ -265,6 +374,9 @@ pub fn run_cli_command(
             Ok(format_review_requests(&client.review_requests(only_new)?))
         }
         CliCommand::Activities => Ok(format_activities(&client.activities()?)),
+        CliCommand::Reviews { include_all } => {
+            Ok(format_reviews(&client.activities()?, include_all))
+        }
         CliCommand::Artifacts { activity_id } => {
             Ok(format_artifacts(&client.activity_artifacts(&activity_id)?))
         }
@@ -284,6 +396,9 @@ pub fn run_cli_command(
             &client.pending_sync_artifacts(destination.as_deref())?,
         )),
         CliCommand::CleanupCheckouts => Ok(format_cleanup_checkouts(&client.cleanup_checkouts()?)),
+        CliCommand::Inspect { pull_request } => {
+            inspect_checkout_with_discovery(&pull_request, &GitHubCliDiscovery::new("gh"), None)
+        }
         CliCommand::Review { subject } => {
             let activity = client.review(&review_input(subject, repo_dir, diff))?;
             let output = format_activity(&activity);
@@ -373,6 +488,49 @@ mod tests {
         let command = parse_command(["activities".to_owned()]).expect("command parses");
 
         assert_eq!(command, CliCommand::Activities);
+    }
+
+    #[test]
+    fn parses_reviews_command() {
+        let command = parse_command(["reviews".to_owned()]).expect("command parses");
+
+        assert_eq!(command, CliCommand::Reviews { include_all: false });
+    }
+
+    #[test]
+    fn parses_reviews_all_command() {
+        let command =
+            parse_command(["reviews".to_owned(), "--all".to_owned()]).expect("command parses");
+
+        assert_eq!(command, CliCommand::Reviews { include_all: true });
+    }
+
+    #[test]
+    fn rejects_unknown_reviews_flag() {
+        let error =
+            parse_command(["reviews".to_owned(), "--running".to_owned()]).expect_err("command");
+
+        assert_eq!(error, "usage: nitpick reviews [--all]");
+    }
+
+    #[test]
+    fn parses_inspect_command() {
+        let command = parse_command(["inspect".to_owned(), "acme/platform#42".to_owned()])
+            .expect("command parses");
+
+        assert_eq!(
+            command,
+            CliCommand::Inspect {
+                pull_request: "acme/platform#42".into()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_inspect_without_pr_ref() {
+        let error = parse_command(["inspect".to_owned()]).expect_err("command fails");
+
+        assert_eq!(error, "usage: nitpick inspect <pr-ref>");
     }
 
     #[test]
@@ -572,6 +730,101 @@ mod tests {
     }
 
     #[test]
+    fn formats_active_reviews() {
+        let mut running_review = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        running_review.status = nitpick_agent_core::ActivityStatus::Running;
+        running_review.label = Some("review on acme/platform#42".into());
+        running_review.updated_at_unix = 1_200;
+        let mut completed_review = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-2"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        completed_review.status = nitpick_agent_core::ActivityStatus::Completed;
+        completed_review.label = Some("review on acme/platform#41".into());
+        let mut running_chat = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-3"),
+            nitpick_agent_core::ActivityKind::Chat,
+        );
+        running_chat.status = nitpick_agent_core::ActivityStatus::Running;
+
+        assert_eq!(
+            super::format_reviews(
+                &[completed_review.clone(), running_chat, running_review],
+                false
+            ),
+            "Running review on acme/platform#42 activity-1"
+        );
+        assert_eq!(
+            super::format_reviews(&[completed_review], false),
+            "no active reviews"
+        );
+    }
+
+    #[test]
+    fn formats_all_reviews() {
+        let mut running_review = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        running_review.status = nitpick_agent_core::ActivityStatus::Running;
+        running_review.label = Some("review on acme/platform#42".into());
+        running_review.updated_at_unix = 1_200;
+        let mut completed_review = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-2"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        completed_review.status = nitpick_agent_core::ActivityStatus::Completed;
+        completed_review.label = Some("review on acme/platform#41".into());
+        completed_review.updated_at_unix = 1_000;
+
+        assert_eq!(
+            super::format_reviews(&[completed_review, running_review], true),
+            "Running review on acme/platform#42 activity-1\nCompleted review on acme/platform#41 activity-2"
+        );
+    }
+
+    #[test]
+    fn inspect_checkout_opens_existing_checkout_with_editor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let checkout_root = dir.path().join("checkouts");
+        let checkout = checkout_root.join("acme/platform/pr-42");
+        std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
+        let editor = dir.path().join("editor");
+        let log = dir.path().join("editor.log");
+        std::fs::write(
+            &editor,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$1\" > '{}'\n", log.display()),
+        )
+        .expect("editor");
+        make_executable(&editor);
+
+        let output =
+            super::inspect_checkout("acme/platform#42", &checkout_root, Some(editor.as_path()))
+                .expect("inspect");
+
+        assert_eq!(output, format!("opened {}", checkout.display()));
+        assert_eq!(
+            std::fs::read_to_string(log).expect("log"),
+            format!("{}\n", checkout.display())
+        );
+    }
+
+    #[test]
+    fn inspect_checkout_reports_missing_checkout() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let checkout_root = dir.path().join("checkouts");
+        let editor = dir.path().join("editor");
+
+        let error = super::inspect_checkout("acme/platform#42", &checkout_root, Some(&editor))
+            .expect_err("missing checkout");
+
+        assert_eq!(error, "checkout not found for acme/platform#42");
+    }
+
+    #[test]
     fn formats_review_requests() {
         let requests = vec![ReviewRequest {
             source: "github".into(),
@@ -618,5 +871,13 @@ mod tests {
         assert_eq!(input.subject.repository, "acme/platform#42");
         assert_eq!(input.repo_dir, std::path::PathBuf::from("/tmp/repo"));
         assert_eq!(input.diff, "diff --git");
+    }
+
+    fn make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod");
     }
 }

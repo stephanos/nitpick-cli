@@ -301,6 +301,25 @@ fn github_cli_discovery_lists_checkout_prs_from_checkout_root() {
     );
 }
 
+#[test]
+fn github_cli_discovery_resolves_checkout_path_for_pr_ref() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkout_root = dir.path().join("checkouts");
+    let discovery = GitHubCliDiscovery::with_checkout_commands(
+        dir.path().join("gh"),
+        dir.path().join("git"),
+        &checkout_root,
+    );
+    let pull_request = "acme/platform#42"
+        .parse::<nitpick_agent_github::PullRequestRef>()
+        .expect("reference");
+
+    assert_eq!(
+        discovery.checkout_path_for(&pull_request),
+        checkout_root.join("acme/platform/pr-42")
+    );
+}
+
 fn pull_request_details_for_state(
     state: PullRequestState,
 ) -> nitpick_agent_github::PullRequestDetails {

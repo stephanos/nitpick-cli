@@ -29,6 +29,9 @@ impl AgentRuntime {
 
     pub fn run_review(&self, mut activity: Activity, input: ReviewInput) -> AgentResult<Activity> {
         activity.label_review(&input);
+        if activity.session.provider_session_id.is_none() {
+            activity.session.provider_session_id = Some(review_session_id(&input));
+        }
         activity.touch();
         self.store.save(&activity)?;
         match self.provider.review(&mut activity.session, &input) {
@@ -97,6 +100,13 @@ impl AgentRuntime {
         activity.touch();
         self.store.save(&activity)?;
         Ok(activity)
+    }
+}
+
+fn review_session_id(input: &ReviewInput) -> String {
+    match input.subject.number {
+        Some(number) => format!("github:{}#{number}", input.subject.repository),
+        None => format!("review:{}", input.subject.repository),
     }
 }
 

@@ -56,6 +56,16 @@ async fn cli_commands_talk_to_the_host_api() {
     .expect("activities command");
     assert!(activities.contains("activity-1: Completed"));
 
+    let reviews = run_cli_command(
+        CliCommand::Reviews { include_all: true },
+        &host_addr,
+        repo_dir.clone(),
+        String::new(),
+        String::new(),
+    )
+    .expect("reviews command");
+    assert!(reviews.contains("Completed review on stephanos/nitpick-agent#42 activity-1"));
+
     let cleanup = run_cli_command(
         CliCommand::CleanupCheckouts,
         &host_addr,

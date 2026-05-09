@@ -9,17 +9,29 @@ use nitpick_agent_core::{
 #[derive(Default)]
 struct RecordingProvider {
     calls: Mutex<Vec<&'static str>>,
+    review_session_ids: Mutex<Vec<Option<String>>>,
 }
 
 impl RecordingProvider {
     fn calls(&self) -> Vec<&'static str> {
         self.calls.lock().expect("calls lock").clone()
     }
+
+    fn review_session_ids(&self) -> Vec<Option<String>> {
+        self.review_session_ids
+            .lock()
+            .expect("session lock")
+            .clone()
+    }
 }
 
 impl AgentProvider for RecordingProvider {
     fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
         self.calls.lock().expect("calls lock").push("review");
+        self.review_session_ids
+            .lock()
+            .expect("session lock")
+            .push(session.provider_session_id.clone());
         session.provider_session_id = Some("provider-review-session".into());
 
         Ok(ReviewOutput {
@@ -42,6 +54,29 @@ impl AgentProvider for RecordingProvider {
 
         Ok(format!("answered {}", input.prompt))
     }
+}
+
+#[test]
+fn review_activity_assigns_stable_provider_session_id_before_provider_call() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider.clone(), store);
+
+    runtime
+        .start_review(ReviewInput {
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                ..ReviewSubject::default()
+            },
+            ..ReviewInput::default()
+        })
+        .expect("review activity starts");
+
+    assert_eq!(
+        provider.review_session_ids(),
+        [Some("github:acme/platform#42".into())]
+    );
 }
 
 #[test]

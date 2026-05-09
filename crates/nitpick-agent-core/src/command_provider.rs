@@ -33,8 +33,9 @@ impl CommandAgentProvider {
         Self::new(kind, model, command)
     }
 
-    fn run_prompt(&self, prompt: &str) -> AgentResult<String> {
+    fn run_prompt(&self, prompt: &str, args: &[String]) -> AgentResult<String> {
         let mut child = Command::new(&self.command)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -79,7 +80,8 @@ impl AgentProvider for CommandAgentProvider {
     fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
         session.provider = Some(self.kind.clone());
         let prompt = review_prompt(self.model.as_deref(), input);
-        let summary = self.run_prompt(&prompt)?;
+        let args = self.review_args(session);
+        let summary = self.run_prompt(&prompt, &args)?;
         Ok(ReviewOutput {
             summary,
             comments: Vec::new(),
@@ -92,7 +94,18 @@ impl AgentProvider for CommandAgentProvider {
 
     fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
         session.provider = Some(self.kind.clone());
-        self.run_prompt(&chat_prompt(self.model.as_deref(), input))
+        self.run_prompt(&chat_prompt(self.model.as_deref(), input), &[])
+    }
+}
+
+impl CommandAgentProvider {
+    fn review_args(&self, session: &AgentSession) -> Vec<String> {
+        match (&self.kind, session.provider_session_id.as_deref()) {
+            (AgentProviderKind::Claude, Some(session_id)) => {
+                vec!["--session-id".into(), session_id.into()]
+            }
+            _ => Vec::new(),
+        }
     }
 }
 
