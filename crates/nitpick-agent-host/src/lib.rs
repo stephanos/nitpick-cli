@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
     thread,
 };
@@ -15,8 +15,8 @@ use axum::{
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactId, ArtifactSyncDestination,
-    ArtifactSyncState, ChatInput, Clock, CommandAgentProvider, ReviewInput, ReviewSubject,
-    SessionStatus, SystemClock,
+    ArtifactSyncState, ChatInput, Clock, CommandAgentProvider, ReviewInput, SessionStatus,
+    SystemClock,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliSyncDestination,
@@ -34,6 +34,7 @@ pub struct HostDaemon {
     discovery: Arc<dyn ReviewRequestDiscovery>,
     clock: Arc<dyn Clock>,
     last_github_poll_unix: Arc<Mutex<Option<u64>>>,
+    last_github_poll_summary: Arc<Mutex<Option<String>>>,
 }
 
 impl HostDaemon {
@@ -52,6 +53,7 @@ impl HostDaemon {
             discovery,
             clock: Arc::new(SystemClock),
             last_github_poll_unix: Arc::new(Mutex::new(None)),
+            last_github_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -70,6 +72,7 @@ impl HostDaemon {
             discovery,
             clock: Arc::new(SystemClock),
             last_github_poll_unix: Arc::new(Mutex::new(None)),
+            last_github_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -84,6 +87,7 @@ impl HostDaemon {
             discovery,
             clock: Arc::new(SystemClock),
             last_github_poll_unix: Arc::new(Mutex::new(None)),
+            last_github_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -103,6 +107,7 @@ impl HostDaemon {
             discovery,
             clock,
             last_github_poll_unix: Arc::new(Mutex::new(None)),
+            last_github_poll_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -134,6 +139,16 @@ impl HostDaemon {
                 .count(),
             provider: self.config.provider.clone(),
             model: self.config.model.clone(),
+            github_discovery_enabled: self.config.github_discovery.enabled,
+            github_last_poll_unix: *self
+                .last_github_poll_unix
+                .lock()
+                .map_err(|_| AgentError::new("github poll state lock poisoned"))?,
+            github_last_poll_summary: self
+                .last_github_poll_summary
+                .lock()
+                .map_err(|_| AgentError::new("github poll state lock poisoned"))?
+                .clone(),
         })
     }
 
@@ -153,6 +168,7 @@ impl HostDaemon {
             activity.status = ActivityStatus::Error;
             activity.session.status = SessionStatus::Error(message.into());
             activity.error = Some(message.into());
+            activity.touch();
             self.store.save(&activity)?;
             recovered_count += 1;
         }
@@ -252,6 +268,11 @@ impl HostDaemon {
     pub fn discover_new_github_review_requests(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
         self.discover_github_review_requests()?
             .into_iter()
+            .filter(|pull_request| {
+                self.config
+                    .github_discovery
+                    .allows_repository(&format!("{}/{}", pull_request.owner, pull_request.repo))
+            })
             .filter_map(
                 |pull_request| match self.processed_reviews.needs_review(&pull_request) {
                     Ok(true) => Some(Ok(pull_request)),
@@ -284,16 +305,18 @@ impl HostDaemon {
         let pull_requests = self.discover_new_github_review_requests()?;
         let discovered_count = pull_requests.len();
         if !self.config.github_discovery.auto_review {
-            return Ok(GitHubReviewPollResult {
+            let result = GitHubReviewPollResult {
                 discovered_count,
                 enqueued_count: 0,
                 skipped_reason: None,
-            });
+            };
+            self.record_github_poll_result(now, &result)?;
+            return Ok(result);
         }
 
         let mut enqueued_count = 0;
         for pull_request in pull_requests {
-            let activity = self.start_review(review_input_for_pull_request(&pull_request))?;
+            let activity = self.start_review(self.discovery.review_input(&pull_request)?)?;
             if activity.status != ActivityStatus::Completed {
                 continue;
             }
@@ -305,11 +328,13 @@ impl HostDaemon {
             enqueued_count += 1;
         }
 
-        Ok(GitHubReviewPollResult {
+        let result = GitHubReviewPollResult {
             discovered_count,
             enqueued_count,
             skipped_reason: None,
-        })
+        };
+        self.record_github_poll_result(now, &result)?;
+        Ok(result)
     }
 
     pub fn start_review(&self, input: ReviewInput) -> AgentResult<Activity> {
@@ -343,6 +368,23 @@ impl HostDaemon {
     fn runtime(&self) -> AgentRuntime {
         AgentRuntime::new(self.provider.clone(), self.store.clone())
     }
+
+    fn record_github_poll_result(
+        &self,
+        now: u64,
+        result: &GitHubReviewPollResult,
+    ) -> AgentResult<()> {
+        *self
+            .last_github_poll_unix
+            .lock()
+            .map_err(|_| AgentError::new("github poll state lock poisoned"))? = Some(now);
+        *self
+            .last_github_poll_summary
+            .lock()
+            .map_err(|_| AgentError::new("github poll state lock poisoned"))? =
+            Some(result.summary());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -360,23 +402,32 @@ impl GitHubReviewPollResult {
             skipped_reason: Some(reason.into()),
         }
     }
+
+    pub fn summary(&self) -> String {
+        match self.skipped_reason.as_deref() {
+            Some("disabled") => "disabled".into(),
+            Some("interval") => "waiting for interval".into(),
+            Some(reason) => format!("skipped: {reason}"),
+            None => format!(
+                "reviewed {} of {} PRs",
+                self.enqueued_count, self.discovered_count
+            ),
+        }
+    }
 }
 
-fn review_input_for_pull_request(pull_request: &DiscoveredPullRequest) -> ReviewInput {
-    let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
-    ReviewInput {
-        repo_dir: PathBuf::from("."),
-        instructions: format!(
-            "Review GitHub pull request {repository}#{} at head {}.",
-            pull_request.number, pull_request.head_sha
-        ),
-        subject: ReviewSubject {
-            repository,
-            number: Some(pull_request.number),
-            title: String::new(),
-            author: String::new(),
-        },
-        diff: String::new(),
+#[derive(Clone)]
+pub struct GitHubReviewPoller {
+    daemon: HostDaemon,
+}
+
+impl GitHubReviewPoller {
+    pub fn new(daemon: HostDaemon) -> Self {
+        Self { daemon }
+    }
+
+    pub fn tick(&self) -> AgentResult<GitHubReviewPollResult> {
+        self.daemon.poll_github_review_requests()
     }
 }
 
@@ -391,6 +442,9 @@ pub struct HostStatus {
     pub pending_sync_artifact_count: usize,
     pub provider: AgentProviderKind,
     pub model: Option<String>,
+    pub github_discovery_enabled: bool,
+    pub github_last_poll_unix: Option<u64>,
+    pub github_last_poll_summary: Option<String>,
 }
 
 pub fn api_router(daemon: HostDaemon) -> Router {
@@ -653,6 +707,8 @@ pub struct GitHubDiscoveryConfig {
     pub enabled: bool,
     pub auto_review: bool,
     pub interval_seconds: u64,
+    pub allowlist: Vec<String>,
+    pub denylist: Vec<String>,
 }
 
 impl Default for GitHubDiscoveryConfig {
@@ -661,11 +717,26 @@ impl Default for GitHubDiscoveryConfig {
             enabled: false,
             auto_review: false,
             interval_seconds: 300,
+            allowlist: Vec::new(),
+            denylist: Vec::new(),
         }
     }
 }
 
 impl GitHubDiscoveryConfig {
+    pub fn allows_repository(&self, repository: &str) -> bool {
+        let allowed = self.allowlist.is_empty()
+            || self
+                .allowlist
+                .iter()
+                .any(|pattern| wildcard_match(pattern, repository));
+        let denied = self
+            .denylist
+            .iter()
+            .any(|pattern| wildcard_match(pattern, repository));
+        allowed && !denied
+    }
+
     fn from_raw(raw: RawGitHubDiscoveryConfig) -> AgentResult<Self> {
         let default = Self::default();
         let interval_seconds = raw
@@ -676,8 +747,55 @@ impl GitHubDiscoveryConfig {
             enabled: raw.enabled.unwrap_or(default.enabled),
             auto_review: raw.auto_review.unwrap_or(default.auto_review),
             interval_seconds,
+            allowlist: clean_patterns(raw.allowlist),
+            denylist: clean_patterns(raw.denylist),
         })
     }
+}
+
+fn clean_patterns(patterns: Option<Vec<String>>) -> Vec<String> {
+    patterns
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pattern| pattern.trim().to_owned())
+        .filter(|pattern| !pattern.is_empty())
+        .collect()
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut pattern_index = 0;
+    let mut value_index = 0;
+    let mut star_index = None;
+    let mut star_value_index = 0;
+
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == value[value_index] || pattern[pattern_index] == b'*')
+        {
+            if pattern[pattern_index] == b'*' {
+                star_index = Some(pattern_index);
+                star_value_index = value_index;
+                pattern_index += 1;
+            } else {
+                pattern_index += 1;
+                value_index += 1;
+            }
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            star_value_index += 1;
+            value_index = star_value_index;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+
+    pattern_index == pattern.len()
 }
 
 #[derive(Deserialize)]
@@ -690,4 +808,6 @@ struct RawGitHubDiscoveryConfig {
     enabled: Option<bool>,
     auto_review: Option<bool>,
     interval_seconds: Option<u64>,
+    allowlist: Option<Vec<String>>,
+    denylist: Option<Vec<String>>,
 }

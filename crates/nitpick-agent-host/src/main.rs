@@ -4,7 +4,7 @@ use std::{
 
 use nitpick_agent_core::FsActivityStore;
 use nitpick_agent_github::FsProcessedReviewStore;
-use nitpick_agent_host::{AgentConfig, HostDaemon, api_router};
+use nitpick_agent_host::{AgentConfig, GitHubReviewPoller, HostDaemon, api_router};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -111,7 +111,7 @@ fn spawn_github_review_poller(daemon: HostDaemon) {
 
     thread::spawn(move || {
         loop {
-            if let Err(error) = daemon.poll_github_review_requests() {
+            if let Err(error) = GitHubReviewPoller::new(daemon.clone()).tick() {
                 eprintln!("GitHub review discovery failed: {error}");
             }
             thread::sleep(Duration::from_secs(interval_seconds));

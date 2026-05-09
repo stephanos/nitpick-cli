@@ -1,3 +1,5 @@
+import Foundation
+
 public struct MenuSnapshot: Equatable {
     public var hostIsRunning: Bool
     public var activityCount: Int
@@ -5,6 +7,10 @@ public struct MenuSnapshot: Equatable {
     public var artifactCount: Int
     public var localOnlyArtifactCount: Int
     public var pendingSyncArtifactCount: Int
+    public var githubDiscoveryEnabled: Bool
+    public var githubLastPollSummary: String?
+    public var activities: [ActivitySnapshot]
+    public var currentUnix: UInt64
 
     public init(
         hostIsRunning: Bool,
@@ -12,7 +18,11 @@ public struct MenuSnapshot: Equatable {
         runningActivityCount: Int = 0,
         artifactCount: Int = 0,
         localOnlyArtifactCount: Int = 0,
-        pendingSyncArtifactCount: Int = 0
+        pendingSyncArtifactCount: Int = 0,
+        githubDiscoveryEnabled: Bool = false,
+        githubLastPollSummary: String? = nil,
+        activities: [ActivitySnapshot] = [],
+        currentUnix: UInt64 = UInt64(Date().timeIntervalSince1970)
     ) {
         self.hostIsRunning = hostIsRunning
         self.activityCount = activityCount
@@ -20,6 +30,10 @@ public struct MenuSnapshot: Equatable {
         self.artifactCount = artifactCount
         self.localOnlyArtifactCount = localOnlyArtifactCount
         self.pendingSyncArtifactCount = pendingSyncArtifactCount
+        self.githubDiscoveryEnabled = githubDiscoveryEnabled
+        self.githubLastPollSummary = githubLastPollSummary
+        self.activities = activities
+        self.currentUnix = currentUnix
     }
 
     public var statusTitle: String {
@@ -41,6 +55,77 @@ public struct MenuSnapshot: Equatable {
         default:
             return artifactSuffix("Status: \(activityCount) activities")
         }
+    }
+
+    public var githubTitle: String {
+        guard hostIsRunning else {
+            return "GitHub: Host stopped"
+        }
+        guard githubDiscoveryEnabled else {
+            return "GitHub: Not watching"
+        }
+        if let githubLastPollSummary, !githubLastPollSummary.isEmpty {
+            return "GitHub: Watching, \(githubLastPollSummary)"
+        }
+        return "GitHub: Watching"
+    }
+
+    public var recentActivityTitles: [String] {
+        activities
+            .sorted { lhs, rhs in
+                if lhs.updatedAtUnix == rhs.updatedAtUnix {
+                    return lhs.id > rhs.id
+                }
+                return lhs.updatedAtUnix > rhs.updatedAtUnix
+            }
+            .prefix(5)
+            .map(activityTitle)
+    }
+
+    private func activityTitle(_ activity: ActivitySnapshot) -> String {
+        "\(relativeTime(activity.updatedAtUnix).padding(toLength: 8, withPad: " ", startingAt: 0)) \(activityVerb(activity)) \(activity.label ?? fallbackLabel(activity))"
+    }
+
+    private func activityVerb(_ activity: ActivitySnapshot) -> String {
+        switch activity.status {
+        case "Running":
+            return "started"
+        case "Completed":
+            return "finished"
+        case "Error":
+            return "failed"
+        case "Cancelled":
+            return "cancelled"
+        default:
+            return activity.status.lowercased()
+        }
+    }
+
+    private func fallbackLabel(_ activity: ActivitySnapshot) -> String {
+        switch activity.kind {
+        case "Review":
+            return "review"
+        case "Chat":
+            return "chat"
+        default:
+            return activity.kind.lowercased()
+        }
+    }
+
+    private func relativeTime(_ unix: UInt64) -> String {
+        let seconds = currentUnix > unix ? currentUnix - unix : 0
+        if seconds < 60 {
+            return "\(seconds)s ago"
+        }
+        let minutes = seconds / 60
+        if minutes < 60 {
+            return "\(minutes)m ago"
+        }
+        let hours = minutes / 60
+        if hours < 24 {
+            return "\(hours)h ago"
+        }
+        return "\(hours / 24)d ago"
     }
 
     private func artifactSuffix(_ title: String) -> String {

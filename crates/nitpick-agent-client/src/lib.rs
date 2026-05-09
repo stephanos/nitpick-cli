@@ -19,6 +19,9 @@ pub struct HostStatus {
     pub pending_sync_artifact_count: usize,
     pub provider: String,
     pub model: Option<String>,
+    pub github_discovery_enabled: bool,
+    pub github_last_poll_unix: Option<u64>,
+    pub github_last_poll_summary: Option<String>,
 }
 
 #[derive(Clone, Debug)]

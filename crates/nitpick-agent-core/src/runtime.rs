@@ -28,6 +28,9 @@ impl AgentRuntime {
     }
 
     pub fn run_review(&self, mut activity: Activity, input: ReviewInput) -> AgentResult<Activity> {
+        activity.label_review(&input);
+        activity.touch();
+        self.store.save(&activity)?;
         match self.provider.review(&mut activity.session, &input) {
             Ok(output) => {
                 let artifacts = review_artifacts(self.store.as_ref(), &activity, &output)?;
@@ -43,6 +46,7 @@ impl AgentRuntime {
             }
         }
 
+        activity.touch();
         self.store.save(&activity)?;
         Ok(activity)
     }
@@ -77,6 +81,7 @@ impl AgentRuntime {
             }
         }
 
+        activity.touch();
         self.store.save(&activity)?;
         Ok(activity)
     }
@@ -89,6 +94,7 @@ impl AgentRuntime {
         let mut activity = self.store.create(kind)?;
         activity.status = ActivityStatus::Running;
         activity.session.status = SessionStatus::Running;
+        activity.touch();
         self.store.save(&activity)?;
         Ok(activity)
     }

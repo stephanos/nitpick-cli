@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class HostProcess {
@@ -30,13 +31,19 @@ final class HostProcess {
         }
     }
 
-    func stop() {
+    func stop(timeout: TimeInterval = 5) {
         guard let process else {
             return
         }
 
         if process.isRunning {
             process.terminate()
+            waitForExit(process, timeout: timeout)
+        }
+
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+            waitForExit(process, timeout: 1)
         }
         self.process = nil
     }
@@ -49,5 +56,12 @@ final class HostProcess {
         return Bundle.main.executableURL?
             .deletingLastPathComponent()
             .appendingPathComponent("nitpick-agent-host")
+    }
+
+    private func waitForExit(_ process: Process, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
     }
 }

@@ -7,12 +7,17 @@ use nitpick_agent_core::{
 #[derive(Default)]
 pub struct RecordingProvider {
     reviewed_subjects: Mutex<Vec<String>>,
+    reviewed_inputs: Mutex<Vec<ReviewInput>>,
     review_error: Mutex<Option<String>>,
 }
 
 impl RecordingProvider {
     pub fn reviewed_subjects(&self) -> Vec<String> {
         self.reviewed_subjects.lock().expect("lock").clone()
+    }
+
+    pub fn reviewed_inputs(&self) -> Vec<ReviewInput> {
+        self.reviewed_inputs.lock().expect("lock").clone()
     }
 
     pub fn fail_reviews(&self, error: impl Into<String>) {
@@ -34,6 +39,10 @@ impl AgentProvider for RecordingProvider {
             input.subject.repository,
             input.subject.number.expect("pr number")
         ));
+        self.reviewed_inputs
+            .lock()
+            .expect("lock")
+            .push(input.clone());
         Ok(ReviewOutput {
             summary: "review complete".into(),
             ..ReviewOutput::default()

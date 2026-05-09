@@ -108,6 +108,9 @@ pub struct HostStatus {
     pub pending_sync_artifact_count: usize,
     pub provider: String,
     pub model: Option<String>,
+    pub github_discovery_enabled: bool,
+    pub github_last_poll_unix: Option<u64>,
+    pub github_last_poll_summary: Option<String>,
 }
 
 pub fn format_host_status(status: &HostStatus) -> String {
@@ -295,6 +298,9 @@ fn host_status(status: nitpick_agent_client::HostStatus) -> HostStatus {
         pending_sync_artifact_count: status.pending_sync_artifact_count,
         provider: status.provider,
         model: status.model,
+        github_discovery_enabled: status.github_discovery_enabled,
+        github_last_poll_unix: status.github_last_poll_unix,
+        github_last_poll_summary: status.github_last_poll_summary,
     }
 }
 
@@ -456,6 +462,9 @@ mod tests {
             pending_sync_artifact_count: 1,
             provider: "claude".into(),
             model: Some("sonnet".into()),
+            github_discovery_enabled: true,
+            github_last_poll_unix: Some(1_000),
+            github_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
         };
 
         assert_eq!(
@@ -467,7 +476,7 @@ mod tests {
     #[test]
     fn parses_host_status_json() {
         let status = super::parse_host_status_json(
-            r#"{"activity_count":2,"running_activity_count":1,"completed_activity_count":1,"error_activity_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null}"#,
+            r#"{"activity_count":2,"running_activity_count":1,"completed_activity_count":1,"error_activity_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"github_discovery_enabled":true,"github_last_poll_unix":1000,"github_last_poll_summary":"reviewed 1 of 1 PRs"}"#,
         )
         .expect("status parses");
 
@@ -483,6 +492,9 @@ mod tests {
                 pending_sync_artifact_count: 1,
                 provider: "claude".into(),
                 model: None,
+                github_discovery_enabled: true,
+                github_last_poll_unix: Some(1_000),
+                github_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
             }
         );
     }

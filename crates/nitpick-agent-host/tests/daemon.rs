@@ -51,6 +51,9 @@ fn host_status_reports_current_activity_count() {
             pending_sync_artifact_count: 1,
             provider: AgentProviderKind::Claude,
             model: None,
+            github_discovery_enabled: false,
+            github_last_poll_unix: None,
+            github_last_poll_summary: None,
         }
     );
 }

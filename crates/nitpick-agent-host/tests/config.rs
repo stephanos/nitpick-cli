@@ -38,6 +38,8 @@ fn parses_github_discovery_config_from_toml() {
 enabled = true
 auto_review = true
 interval_seconds = 60
+allowlist = ["stephanos/*", "acme/platform"]
+denylist = ["*/archive-*", "evil/*"]
 "#,
     )
     .expect("config parses");
@@ -48,8 +50,27 @@ interval_seconds = 60
             enabled: true,
             auto_review: true,
             interval_seconds: 60,
+            allowlist: vec!["stephanos/*".into(), "acme/platform".into()],
+            denylist: vec!["*/archive-*".into(), "evil/*".into()],
         }
     );
+}
+
+#[test]
+fn github_discovery_config_matches_allowlist_and_denylist_patterns() {
+    let config = GitHubDiscoveryConfig {
+        enabled: true,
+        auto_review: true,
+        interval_seconds: 300,
+        allowlist: vec!["stephanos/*".into(), "acme/platform".into()],
+        denylist: vec!["*/archive-*".into(), "evil/*".into()],
+    };
+
+    assert!(config.allows_repository("stephanos/nitpick-agent"));
+    assert!(config.allows_repository("acme/platform"));
+    assert!(!config.allows_repository("acme/other"));
+    assert!(!config.allows_repository("stephanos/archive-old"));
+    assert!(!config.allows_repository("evil/platform"));
 }
 
 #[test]
@@ -79,6 +100,9 @@ fn host_status_reports_configured_agent() {
             pending_sync_artifact_count: 0,
             provider: AgentProviderKind::Codex,
             model: Some("gpt-5.3-codex".into()),
+            github_discovery_enabled: false,
+            github_last_poll_unix: None,
+            github_last_poll_summary: None,
         }
     );
 }

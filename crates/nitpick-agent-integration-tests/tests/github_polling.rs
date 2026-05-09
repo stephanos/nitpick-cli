@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nitpick_agent_core::{ActivityKind, ActivityStatus, ActivityStore, FsActivityStore};
 use nitpick_agent_github::{FsProcessedReviewStore, ProcessedReviewStore};
-use nitpick_agent_host::HostDaemon;
+use nitpick_agent_host::{GitHubDiscoveryConfig, HostDaemon};
 use nitpick_agent_integration_tests::support::{
     ManualClock, RecordingProvider, StubDiscovery, TestHarness, github_auto_review_config,
     github_disabled_config, github_discovery_only_config, pull_request,
@@ -43,6 +43,36 @@ fn github_polling_creates_local_review_and_marks_pr_head_processed() {
     assert_eq!(
         harness.provider.reviewed_subjects(),
         ["stephanos/nitpick-agent#42"]
+    );
+    let reviewed_input = harness
+        .provider
+        .reviewed_inputs()
+        .into_iter()
+        .next()
+        .expect("review input");
+    assert_eq!(reviewed_input.subject.title, "Stub PR");
+    assert_eq!(reviewed_input.subject.author, "stub-author");
+    assert_eq!(reviewed_input.diff, "diff for sha-one");
+}
+
+#[test]
+fn github_polling_tick_runs_one_due_poll_and_reports_status() {
+    let harness = TestHarness::new(
+        github_auto_review_config(),
+        Arc::new(StubDiscovery::new(vec![pull_request("sha-one")])),
+    );
+    let poller = nitpick_agent_host::GitHubReviewPoller::new(harness.daemon.clone());
+
+    let result = poller.tick().expect("tick");
+
+    assert_eq!(result.discovered_count, 1);
+    assert_eq!(result.enqueued_count, 1);
+    let status = harness.daemon.status().expect("status");
+    assert!(status.github_discovery_enabled);
+    assert_eq!(status.github_last_poll_unix, Some(1_000));
+    assert_eq!(
+        status.github_last_poll_summary.as_deref(),
+        Some("reviewed 1 of 1 PRs")
     );
 }
 
@@ -246,4 +276,50 @@ fn github_polling_reviews_multiple_prs_and_only_rereviews_changed_heads() {
         1
     );
     assert_eq!(harness.activity_count(), 3);
+}
+
+#[test]
+fn github_polling_filters_discovered_prs_with_allowlist_and_denylist() {
+    let allowed = pull_request("sha-one");
+    let denied_by_allowlist = nitpick_agent_github::DiscoveredPullRequest {
+        owner: "other".into(),
+        repo: "repo".into(),
+        number: 7,
+        head_sha: "sha-two".into(),
+    };
+    let denied_by_denylist = nitpick_agent_github::DiscoveredPullRequest {
+        owner: "stephanos".into(),
+        repo: "archive-old".into(),
+        number: 8,
+        head_sha: "sha-three".into(),
+    };
+    let discovery = Arc::new(StubDiscovery::new(vec![
+        allowed.clone(),
+        denied_by_allowlist,
+        denied_by_denylist,
+    ]));
+    let harness = TestHarness::new(
+        nitpick_agent_host::AgentConfig {
+            github_discovery: GitHubDiscoveryConfig {
+                allowlist: vec!["stephanos/*".into()],
+                denylist: vec!["*/archive-*".into()],
+                ..github_auto_review_config().github_discovery
+            },
+            ..nitpick_agent_host::AgentConfig::default()
+        },
+        discovery,
+    );
+
+    let result = harness
+        .daemon
+        .poll_github_review_requests()
+        .expect("filtered poll");
+
+    assert_eq!(result.discovered_count, 1);
+    assert_eq!(result.enqueued_count, 1);
+    assert_eq!(
+        harness.provider.reviewed_subjects(),
+        ["stephanos/nitpick-agent#42"]
+    );
+    assert!(!harness.processed.needs_review(&allowed).expect("processed"));
 }

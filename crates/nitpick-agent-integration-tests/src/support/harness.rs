@@ -78,6 +78,7 @@ fn github_discovery_config(enabled: bool, auto_review: bool, interval_seconds: u
             enabled,
             auto_review,
             interval_seconds,
+            ..GitHubDiscoveryConfig::default()
         },
         ..AgentConfig::default()
     }

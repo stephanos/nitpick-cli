@@ -10,7 +10,7 @@ use std::{
 
 use nitpick_agent_core::{
     AgentError, AgentResult, Artifact, ArtifactContent, ArtifactSyncDestination,
-    ArtifactSyncOutcome, ArtifactSyncState,
+    ArtifactSyncOutcome, ArtifactSyncState, ReviewInput, ReviewSubject,
 };
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +59,8 @@ pub struct GitHubCliDiscovery {
 
 pub trait ReviewRequestDiscovery: Send + Sync {
     fn requested_reviews(&self) -> AgentResult<Vec<DiscoveredPullRequest>>;
+
+    fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput>;
 }
 
 impl GitHubCliDiscovery {
@@ -70,6 +72,10 @@ impl GitHubCliDiscovery {
 
     pub fn requested_reviews(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
         <Self as ReviewRequestDiscovery>::requested_reviews(self)
+    }
+
+    pub fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput> {
+        <Self as ReviewRequestDiscovery>::review_input(self, pull_request)
     }
 }
 
@@ -114,6 +120,36 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
             .into_iter()
             .map(|record| self.discover_with_head_sha(record))
             .collect()
+    }
+
+    fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput> {
+        let details = pull_request_details(
+            &self.command,
+            &pull_request.owner,
+            &pull_request.repo,
+            pull_request.number,
+        )?;
+        let diff = pull_request_diff(
+            &self.command,
+            &pull_request.owner,
+            &pull_request.repo,
+            pull_request.number,
+        )?;
+        let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
+        Ok(ReviewInput {
+            repo_dir: PathBuf::from("."),
+            instructions: format!(
+                "Review GitHub pull request {repository}#{} at head {}.",
+                pull_request.number, pull_request.head_sha
+            ),
+            subject: ReviewSubject {
+                repository,
+                number: Some(pull_request.number),
+                title: details.title,
+                author: details.author.login,
+            },
+            diff,
+        })
     }
 }
 
@@ -210,6 +246,82 @@ fn pull_request_head_sha(
 struct PullRequestHeadResponse {
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
+}
+
+fn pull_request_details(
+    command: &Path,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> AgentResult<PullRequestDetailsResponse> {
+    let output = Command::new(command)
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &format!("{owner}/{repo}"),
+            "--json",
+            "title,author,headRefOid",
+        ])
+        .output()
+        .map_err(|error| {
+            AgentError::new(format!(
+                "failed to start GitHub CLI `{}`: {error}",
+                command.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(github_cli_status_error(&output));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| AgentError::new(format!("invalid GitHub PR response: {error}")))
+}
+
+#[derive(Deserialize)]
+struct PullRequestDetailsResponse {
+    title: String,
+    author: PullRequestAuthor,
+}
+
+#[derive(Deserialize)]
+struct PullRequestAuthor {
+    login: String,
+}
+
+fn pull_request_diff(command: &Path, owner: &str, repo: &str, number: u64) -> AgentResult<String> {
+    let output = Command::new(command)
+        .args([
+            "pr",
+            "diff",
+            &number.to_string(),
+            "--repo",
+            &format!("{owner}/{repo}"),
+        ])
+        .output()
+        .map_err(|error| {
+            AgentError::new(format!(
+                "failed to start GitHub CLI `{}`: {error}",
+                command.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(github_cli_status_error(&output));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn github_cli_status_error(output: &std::process::Output) -> AgentError {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    AgentError::new(format!(
+        "GitHub CLI failed with status {}{}",
+        output.status,
+        if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr}")
+        }
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use nitpick_agent_core::{AgentError, AgentResult};
+use nitpick_agent_core::{AgentError, AgentResult, ReviewInput, ReviewSubject};
 use nitpick_agent_github::{DiscoveredPullRequest, ReviewRequestDiscovery};
 
 pub fn pull_request(head_sha: &str) -> DiscoveredPullRequest {
@@ -47,5 +47,23 @@ impl ReviewRequestDiscovery for StubDiscovery {
             return Err(AgentError::new(error));
         }
         Ok(self.pull_requests.lock().expect("lock").clone())
+    }
+
+    fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput> {
+        let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
+        Ok(ReviewInput {
+            repo_dir: ".".into(),
+            instructions: format!(
+                "Review GitHub pull request {repository}#{} at head {}.",
+                pull_request.number, pull_request.head_sha
+            ),
+            subject: ReviewSubject {
+                repository,
+                number: Some(pull_request.number),
+                title: "Stub PR".into(),
+                author: "stub-author".into(),
+            },
+            diff: format!("diff for {}", pull_request.head_sha),
+        })
     }
 }
