@@ -258,7 +258,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if let image = NSImage(
+        if let image = menuBarImage() {
+            image.isTemplate = true
+            image.size = NSSize(width: 18, height: 18)
+            button.image = image
+            button.title = ""
+        } else if let image = NSImage(
             systemSymbolName: identity.symbolName,
             accessibilityDescription: identity.accessibilityDescription
         ) {
@@ -268,6 +273,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             button.title = identity.fallbackTitle
         }
+    }
+
+    private func menuBarImage() -> NSImage? {
+        guard let url = Bundle.main.url(forResource: identity.imageName, withExtension: "svg") else {
+            return nil
+        }
+
+        return NSImage(contentsOf: url)
     }
 
     private func installCommandLineTool() {
