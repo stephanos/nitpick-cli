@@ -595,6 +595,10 @@ if [ "$1 $2" = "pr view" ] && [ "$3" = "7" ]; then
   printf '{"headRefOid":"def456"}'
   exit 0
 fi
+if [ "$1" = "api" ]; then
+  printf '[]'
+  exit 0
+fi
 exit 1
 "#,
     )

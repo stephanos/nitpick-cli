@@ -22,6 +22,7 @@ pub struct StubDiscovery {
     pull_requests: Mutex<Vec<DiscoveredPullRequest>>,
     calls: Mutex<usize>,
     error: Mutex<Option<String>>,
+    already_reviewed_heads: Mutex<Vec<String>>,
 }
 
 impl StubDiscovery {
@@ -30,6 +31,7 @@ impl StubDiscovery {
             pull_requests: Mutex::new(pull_requests),
             calls: Mutex::new(0),
             error: Mutex::new(None),
+            already_reviewed_heads: Mutex::new(Vec::new()),
         }
     }
 
@@ -43,6 +45,10 @@ impl StubDiscovery {
 
     pub fn calls(&self) -> usize {
         *self.calls.lock().expect("lock")
+    }
+
+    pub fn set_already_reviewed_heads(&self, head_shas: Vec<String>) {
+        *self.already_reviewed_heads.lock().expect("lock") = head_shas;
     }
 }
 
@@ -99,5 +105,14 @@ impl ReviewSource for StubDiscovery {
             head_sha: request.head_sha.clone(),
         };
         <Self as ReviewRequestDiscovery>::review_input(self, &pull_request)
+    }
+
+    fn already_reviewed(&self, request: &ReviewRequest) -> AgentResult<bool> {
+        Ok(self
+            .already_reviewed_heads
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|head_sha| head_sha == &request.head_sha))
     }
 }

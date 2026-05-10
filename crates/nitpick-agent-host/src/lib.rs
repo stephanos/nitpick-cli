@@ -319,6 +319,14 @@ impl HostDaemon {
                     Err(error) => Some(Err(error)),
                 },
             )
+            .filter_map(|request| match request {
+                Ok(request) => match self.review_source.already_reviewed(&request) {
+                    Ok(true) => None,
+                    Ok(false) => Some(Ok(request)),
+                    Err(error) => Some(Err(error)),
+                },
+                Err(error) => Some(Err(error)),
+            })
             .collect()
     }
 
@@ -830,18 +838,17 @@ impl AgentConfig {
         }
     }
 
-    fn provider(&self) -> Arc<dyn AgentProvider> {
+    pub fn command_provider(&self) -> CommandAgentProvider {
         match &self.command {
-            Some(command) => Arc::new(CommandAgentProvider::new(
-                self.provider.clone(),
-                self.model.clone(),
-                command,
-            )),
-            None => Arc::new(CommandAgentProvider::for_kind(
-                self.provider.clone(),
-                self.model.clone(),
-            )),
+            Some(command) => {
+                CommandAgentProvider::new(self.provider.clone(), self.model.clone(), command)
+            }
+            None => CommandAgentProvider::for_kind(self.provider.clone(), self.model.clone()),
         }
+    }
+
+    fn provider(&self) -> Arc<dyn AgentProvider> {
+        Arc::new(self.command_provider())
     }
 
     fn review_source(&self) -> Arc<dyn ReviewSource> {

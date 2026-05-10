@@ -11,6 +11,7 @@ path = "src/main.rs"
 nitpick-agent-client = { path = "../nitpick-agent-client" }
 nitpick-agent-core.workspace = true
 nitpick-agent-github = { path = "../nitpick-agent-github" }
+nitpick-agent-host = { path = "../nitpick-agent-host" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 

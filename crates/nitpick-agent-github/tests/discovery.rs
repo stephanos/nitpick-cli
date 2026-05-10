@@ -1,6 +1,6 @@
 use std::{fs, os::unix::fs::PermissionsExt};
 
-use nitpick_agent_core::{ProcessedReviewStore, ReviewRequest};
+use nitpick_agent_core::{ProcessedReviewStore, ReviewRequest, ReviewSource};
 use nitpick_agent_github::{
     DiscoveredPullRequest, FsProcessedReviewStore, GitHubCliDiscovery, PullRequestState,
 };
@@ -141,6 +141,69 @@ git -C {} checkout -B feature/watcher origin/feature/watcher --quiet\n",
             checkout_dir.display(),
         )
     );
+}
+
+#[test]
+fn github_cli_discovery_detects_existing_nitpick_review_for_current_head() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let args_file = dir.path().join("args");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" > {}
+printf '%s\n' '[{{"commit_id":"abc123","body":"<!-- nitpick-agent:artifact-1 -->\\n\\nlooks good"}}]'
+"#,
+            args_file.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let request = ReviewRequest {
+        source: "github".into(),
+        repository: "acme/platform".into(),
+        number: Some(42),
+        id: "42".into(),
+        head_sha: "abc123".into(),
+    };
+
+    let already_reviewed = GitHubCliDiscovery::new(&gh)
+        .already_reviewed(&request)
+        .expect("already reviewed");
+
+    assert!(already_reviewed);
+    assert_eq!(
+        fs::read_to_string(args_file).expect("args"),
+        "api repos/acme/platform/pulls/42/reviews\n"
+    );
+}
+
+#[test]
+fn github_cli_discovery_ignores_nitpick_review_for_old_head() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+printf '%s\n' '[{"commit_id":"old-sha","body":"<!-- nitpick-agent:artifact-1 -->\\n\\nlooks good"}]'
+"#,
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let request = ReviewRequest {
+        source: "github".into(),
+        repository: "acme/platform".into(),
+        number: Some(42),
+        id: "42".into(),
+        head_sha: "abc123".into(),
+    };
+
+    let already_reviewed = GitHubCliDiscovery::new(&gh)
+        .already_reviewed(&request)
+        .expect("already reviewed");
+
+    assert!(!already_reviewed);
 }
 
 #[test]

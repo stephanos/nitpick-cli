@@ -160,6 +160,10 @@ pub trait ReviewSource: Send + Sync {
     fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>>;
 
     fn review_input(&self, request: &ReviewRequest) -> AgentResult<ReviewInput>;
+
+    fn already_reviewed(&self, _request: &ReviewRequest) -> AgentResult<bool> {
+        Ok(false)
+    }
 }
 
 pub trait ProcessedReviewStore: Send + Sync {

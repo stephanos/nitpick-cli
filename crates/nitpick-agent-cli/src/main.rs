@@ -1,6 +1,6 @@
 use std::{env, process::ExitCode};
 
-use nitpick_agent_cli::{host_addr_from_env, parse_command, run_cli_command};
+use nitpick_agent_cli::{config_path_from_env, host_addr_from_env, parse_command, run_cli_command};
 
 fn main() -> ExitCode {
     match run() {
@@ -18,10 +18,15 @@ fn run() -> Result<(), String> {
     let repo_dir = current_dir()?;
     let diff = git_output(&repo_dir, &["diff"]).unwrap_or_default();
     let context = git_output(&repo_dir, &["status", "--short"]).unwrap_or_default();
-    println!(
-        "{}",
-        run_cli_command(command, &addr, repo_dir, diff, context)?
+    let config_path = config_path_from_env(
+        env::var_os("NITPICK_AGENT_CONFIG"),
+        env::var_os("XDG_CONFIG_HOME"),
+        env::var_os("HOME"),
     );
+    let output = run_cli_command(command, &addr, repo_dir, diff, context, config_path)?;
+    if !output.is_empty() {
+        println!("{output}");
+    }
     Ok(())
 }
 

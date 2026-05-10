@@ -49,6 +49,10 @@ nitpick review-requests --new
 nitpick chat "summarize this repo"
 nitpick reviews
 nitpick reviews --all
+nitpick logs activity-1
+nitpick logs acme/platform#42
+nitpick resume activity-1
+nitpick resume acme/platform#42
 nitpick activities
 nitpick artifacts activity-1
 nitpick artifact artifact-1
@@ -70,9 +74,9 @@ interval_seconds = 300
 
 The older `[github.discovery]` config shape is still accepted for compatibility.
 
-`artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to post a review summary artifact through `gh pr review --comment`.
+`artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to post review summary artifacts through `gh pr review --comment` and review comment artifacts through the GitHub pull request review API.
 
-Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. GitHub posting uses `gh` by default; override it with `github_command`.
+Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Claude review sessions can be reopened with `nitpick resume <activity-id|pr-ref>` when the stored activity has a provider session ID. Codex session resume is recorded locally but not attached yet because this CLI path has no stable provider-specific resume invocation. GitHub posting uses `gh` by default; override it with `github_command`.
 
 ## Layout
 

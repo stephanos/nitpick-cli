@@ -219,6 +219,23 @@ fn github_polling_skips_already_processed_prs_after_store_reopen() {
 }
 
 #[test]
+fn github_polling_skips_prs_with_existing_nitpick_review_on_current_head() {
+    let discovery = Arc::new(StubDiscovery::new(vec![pull_request("sha-one")]));
+    discovery.set_already_reviewed_heads(vec!["sha-one".into()]);
+    let harness = TestHarness::new(github_auto_review_config(), discovery);
+
+    let result = harness
+        .daemon
+        .poll_review_requests()
+        .expect("poll succeeds");
+
+    assert_eq!(result.discovered_count, 0);
+    assert_eq!(result.enqueued_count, 0);
+    assert_eq!(harness.activity_count(), 0);
+    assert!(harness.provider.reviewed_subjects().is_empty());
+}
+
+#[test]
 fn github_polling_does_not_mark_failed_reviews_processed() {
     let harness = TestHarness::new(
         github_auto_review_config(),

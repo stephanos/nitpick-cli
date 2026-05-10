@@ -33,6 +33,14 @@ impl CommandAgentProvider {
         Self::new(kind, model, command)
     }
 
+    pub fn kind(&self) -> &AgentProviderKind {
+        &self.kind
+    }
+
+    pub fn command(&self) -> &std::path::Path {
+        &self.command
+    }
+
     fn run_prompt(&self, prompt: &str, args: &[String]) -> AgentResult<String> {
         let mut child = Command::new(&self.command)
             .args(args)
@@ -74,6 +82,26 @@ impl CommandAgentProvider {
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
+
+    fn run_interactive(&self, args: &[String]) -> AgentResult<()> {
+        let status = Command::new(&self.command)
+            .args(args)
+            .status()
+            .map_err(|error| {
+                AgentError::new(format!(
+                    "failed to start {} provider command `{}`: {error}",
+                    self.kind,
+                    self.command.display()
+                ))
+            })?;
+        if !status.success() {
+            return Err(AgentError::new(format!(
+                "{} provider command failed with status {}",
+                self.kind, status
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl AgentProvider for CommandAgentProvider {
@@ -95,6 +123,21 @@ impl AgentProvider for CommandAgentProvider {
     fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
         session.provider = Some(self.kind.clone());
         self.run_prompt(&chat_prompt(self.model.as_deref(), input), &[])
+    }
+
+    fn attach_session(&self, session: &AgentSession) -> AgentResult<()> {
+        let session_id = session
+            .provider_session_id
+            .as_deref()
+            .ok_or_else(|| AgentError::new("activity has no provider session id"))?;
+        match self.kind {
+            AgentProviderKind::Claude => {
+                self.run_interactive(&["--resume".into(), session_id.into()])
+            }
+            AgentProviderKind::Codex => Err(AgentError::new(
+                "codex provider does not support session resume yet",
+            )),
+        }
     }
 }
 

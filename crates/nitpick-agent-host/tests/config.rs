@@ -36,6 +36,24 @@ checkout_dir = "/var/tmp/nitpick-checkouts"
 }
 
 #[test]
+fn config_builds_command_provider_for_cli_session_resume() {
+    let config = AgentConfig::from_toml(
+        r#"
+[agent]
+provider = "claude"
+model = "sonnet"
+command = "/tmp/fake-claude"
+"#,
+    )
+    .expect("config");
+
+    let provider = config.command_provider();
+
+    assert_eq!(provider.kind(), &AgentProviderKind::Claude);
+    assert_eq!(provider.command().to_string_lossy(), "/tmp/fake-claude");
+}
+
+#[test]
 fn parses_github_discovery_config_from_toml() {
     let config = AgentConfig::from_toml(
         r#"

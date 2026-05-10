@@ -316,6 +316,19 @@ impl ReviewSource for GitHubCliDiscovery {
         };
         <Self as ReviewRequestDiscovery>::review_input(self, &pull_request)
     }
+
+    fn already_reviewed(&self, request: &ReviewRequest) -> AgentResult<bool> {
+        let Some(number) = request.number else {
+            return Ok(false);
+        };
+        let (owner, repo) = request.repository.split_once('/').ok_or_else(|| {
+            AgentError::new(format!(
+                "invalid GitHub repository name `{}`",
+                request.repository
+            ))
+        })?;
+        pull_request_has_nitpick_review(&self.command, owner, repo, number, &request.head_sha)
+    }
 }
 
 impl ReviewRequestDiscovery for GitHubCliDiscovery {
@@ -692,6 +705,45 @@ fn pull_request_diff(command: &Path, owner: &str, repo: &str, number: u64) -> Ag
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn pull_request_has_nitpick_review(
+    command: &Path,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    head_sha: &str,
+) -> AgentResult<bool> {
+    let output = Command::new(command)
+        .args([
+            "api",
+            &format!("repos/{owner}/{repo}/pulls/{number}/reviews"),
+        ])
+        .output()
+        .map_err(|error| {
+            AgentError::new(format!(
+                "failed to start GitHub CLI `{}`: {error}",
+                command.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(github_cli_status_error(&output));
+    }
+    let reviews: Vec<PullRequestReviewResponse> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| AgentError::new(format!("invalid GitHub PR reviews response: {error}")))?;
+    Ok(reviews.into_iter().any(|review| {
+        review.commit_id == head_sha && review.body.is_some_and(|body| has_nitpick_marker(&body))
+    }))
+}
+
+#[derive(Deserialize)]
+struct PullRequestReviewResponse {
+    commit_id: String,
+    body: Option<String>,
+}
+
+fn has_nitpick_marker(body: &str) -> bool {
+    body.contains("<!-- nitpick-agent:") || body.contains("<!-- nitpick:")
+}
+
 fn github_cli_status_error(output: &std::process::Output) -> AgentError {
     command_status_error("GitHub CLI", output)
 }
@@ -872,7 +924,7 @@ fn sync_with_github_cli(
             }
         )));
     }
-    let remote_id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let remote_id = github_remote_id_from_stdout(&output.stdout);
 
     Ok(ArtifactSyncOutcome {
         sync_state: ArtifactSyncState::Synced {
@@ -881,6 +933,17 @@ fn sync_with_github_cli(
         },
         remote_id: (!remote_id.is_empty()).then_some(remote_id),
     })
+}
+
+fn github_remote_id_from_stdout(stdout: &[u8]) -> String {
+    let output = String::from_utf8_lossy(stdout).trim().to_owned();
+    if output.starts_with('{')
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&output)
+        && let Some(html_url) = value.get("html_url").and_then(|value| value.as_str())
+    {
+        return html_url.to_owned();
+    }
+    output
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

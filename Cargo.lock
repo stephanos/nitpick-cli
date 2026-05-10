@@ -352,6 +352,7 @@ dependencies = [
  "nitpick-agent-client",
  "nitpick-agent-core",
  "nitpick-agent-github",
+ "nitpick-agent-host",
  "serde",
  "serde_json",
  "tempfile",

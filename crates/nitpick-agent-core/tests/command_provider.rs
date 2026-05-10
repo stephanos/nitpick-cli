@@ -1,8 +1,8 @@
 use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
 
 use nitpick_agent_core::{
-    AgentProviderKind, AgentRuntime, ChatInput, CommandAgentProvider, MemoryActivityStore,
-    ReviewInput, ReviewSubject,
+    AgentProvider, AgentProviderKind, AgentRuntime, ChatInput, CommandAgentProvider,
+    MemoryActivityStore, ReviewInput, ReviewSubject,
 };
 
 #[test]
@@ -114,6 +114,62 @@ fn codex_command_provider_does_not_use_claude_session_flag() {
         .expect("review runs");
 
     assert_eq!(fs::read_to_string(args_log).expect("args"), "\n");
+}
+
+#[test]
+fn claude_command_provider_resumes_existing_session() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let command = dir.path().join("provider");
+    let args_log = dir.path().join("args.log");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
+            args_log.display()
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+    let provider = CommandAgentProvider::new(AgentProviderKind::Claude, None, &command);
+    let session = nitpick_agent_core::AgentSession {
+        provider: Some(AgentProviderKind::Claude),
+        provider_session_id: Some("github:acme/platform#42".into()),
+        ..nitpick_agent_core::AgentSession::default()
+    };
+
+    provider.attach_session(&session).expect("attach");
+
+    assert_eq!(
+        fs::read_to_string(args_log).expect("args"),
+        "--resume github:acme/platform#42\n"
+    );
+}
+
+#[test]
+fn attach_requires_provider_session_id() {
+    let provider = CommandAgentProvider::for_kind(AgentProviderKind::Claude, None);
+    let error = provider
+        .attach_session(&nitpick_agent_core::AgentSession::default())
+        .expect_err("missing session id");
+
+    assert_eq!(error.to_string(), "activity has no provider session id");
+}
+
+#[test]
+fn codex_attach_is_unsupported_until_resume_args_are_defined() {
+    let provider = CommandAgentProvider::for_kind(AgentProviderKind::Codex, None);
+    let session = nitpick_agent_core::AgentSession {
+        provider: Some(AgentProviderKind::Codex),
+        provider_session_id: Some("github:acme/platform#42".into()),
+        ..nitpick_agent_core::AgentSession::default()
+    };
+
+    let error = provider.attach_session(&session).expect_err("unsupported");
+
+    assert_eq!(
+        error.to_string(),
+        "codex provider does not support session resume yet"
+    );
 }
 
 fn make_executable(command: &std::path::Path) {

@@ -3,8 +3,8 @@ use std::{path::Path, process::Command};
 
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityStatus, Artifact, ChatInput, ReviewInput, ReviewRequest,
-    ReviewSubject,
+    Activity, ActivityKind, ActivityOutput, ActivityStatus, AgentProvider, Artifact,
+    ArtifactContent, ChatInput, ReviewInput, ReviewRequest, ReviewSubject,
 };
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
 
@@ -28,6 +28,12 @@ pub enum CliCommand {
     Activities,
     Reviews {
         include_all: bool,
+    },
+    Logs {
+        target: String,
+    },
+    Resume {
+        target: String,
     },
     Artifacts {
         activity_id: String,
@@ -63,6 +69,18 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
             Some("--all") => Ok(CliCommand::Reviews { include_all: true }),
             Some(_) => Err("usage: nitpick reviews [--all]".into()),
         },
+        Some("logs") => {
+            let target = args
+                .next()
+                .ok_or_else(|| "usage: nitpick logs <activity-id|pr-ref>".to_owned())?;
+            Ok(CliCommand::Logs { target })
+        }
+        Some("resume") => {
+            let target = args
+                .next()
+                .ok_or_else(|| "usage: nitpick resume <activity-id|pr-ref>".to_owned())?;
+            Ok(CliCommand::Resume { target })
+        }
         Some("artifacts") => {
             let activity_id = args
                 .next()
@@ -116,7 +134,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  logs <activity-id|pr-ref>                          Show review logs for an activity or PR\n  resume <activity-id|pr-ref>                        Reopen a supported provider session\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -209,20 +227,32 @@ pub fn format_reviews(activities: &[Activity], include_all: bool) -> String {
     });
     reviews
         .into_iter()
-        .map(|activity| {
-            format!(
-                "{:?} {} {}",
-                activity.status,
-                activity.label.as_deref().unwrap_or("review"),
-                activity.id
-            )
-        })
+        .map(format_review_activity)
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn is_active_review_status(status: &ActivityStatus) -> bool {
     matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
+}
+
+fn format_review_activity(activity: &Activity) -> String {
+    let mut output = format!(
+        "{:?} {} {} updated={} session={}",
+        activity.status,
+        activity.label.as_deref().unwrap_or("review"),
+        activity.id,
+        activity.updated_at_unix,
+        activity
+            .session
+            .provider_session_id
+            .as_deref()
+            .unwrap_or("(none)")
+    );
+    if let Some(error) = &activity.error {
+        output.push_str(&format!(" error={error:?}"));
+    }
+    output
 }
 
 pub fn format_artifacts(artifacts: &[Artifact]) -> String {
@@ -247,6 +277,103 @@ pub fn format_artifact(artifact: &Artifact) -> String {
         "{}\nactivity: {}\nkind: {:?}\nsync: {:?}",
         artifact.id, artifact.activity_id, artifact.kind, artifact.sync_state
     )
+}
+
+pub fn resolve_log_activity<'a>(
+    activities: &'a [Activity],
+    target: &str,
+) -> Result<&'a Activity, String> {
+    if let Some(activity) = activities
+        .iter()
+        .find(|activity| activity.id.as_str() == target)
+    {
+        return Ok(activity);
+    }
+
+    let label = review_label_for_target(target)?;
+    activities
+        .iter()
+        .filter(|activity| activity.kind == ActivityKind::Review)
+        .filter(|activity| activity.label.as_deref() == Some(label.as_str()))
+        .max_by(|lhs, rhs| {
+            lhs.updated_at_unix
+                .cmp(&rhs.updated_at_unix)
+                .then_with(|| lhs.id.cmp(&rhs.id))
+        })
+        .ok_or_else(|| format!("no review activity found for {target}"))
+}
+
+fn review_label_for_target(target: &str) -> Result<String, String> {
+    let reference = target
+        .parse::<PullRequestRef>()
+        .map_err(|error| format!("invalid log target: {error}"))?;
+    Ok(format!(
+        "review on {}/{}#{}",
+        reference.owner, reference.repo, reference.number
+    ))
+}
+
+pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> String {
+    let mut lines = vec![
+        format!("activity: {}", activity.id),
+        format!("kind: {:?}", activity.kind),
+        format!("status: {:?}", activity.status),
+    ];
+    if let Some(label) = &activity.label {
+        lines.push(format!("label: {label}"));
+    }
+    lines.push(format!("updated: {}", activity.updated_at_unix));
+    lines.push(format!(
+        "session: {}",
+        activity
+            .session
+            .provider_session_id
+            .as_deref()
+            .unwrap_or("(none)")
+    ));
+    if let Some(error) = &activity.error {
+        lines.push(format!("error: {error}"));
+    }
+    if let Some(output) = &activity.output {
+        lines.push("output:".into());
+        lines.push(format_activity_output(output));
+    }
+    if artifacts.is_empty() {
+        lines.push("artifacts: none".into());
+    } else {
+        lines.push("artifacts:".into());
+        for artifact in artifacts {
+            lines.push(format!("== {} {:?} ==", artifact.id, artifact.kind));
+            lines.push(format_artifact_content(&artifact.content));
+        }
+    }
+    lines.join("\n")
+}
+
+fn format_activity_output(output: &ActivityOutput) -> String {
+    match output {
+        ActivityOutput::Review(output) => {
+            let mut lines = vec![output.summary.clone()];
+            for comment in &output.comments {
+                lines.push(format!(
+                    "{}:{} {}",
+                    comment.path, comment.line, comment.body
+                ));
+            }
+            lines.join("\n")
+        }
+        ActivityOutput::Chat(output) => output.clone(),
+    }
+}
+
+fn format_artifact_content(content: &ArtifactContent) -> String {
+    match content {
+        ArtifactContent::ReviewSummary(summary) => summary.clone(),
+        ArtifactContent::ReviewComment(comment) => {
+            format!("{}:{} {}", comment.path, comment.line, comment.body)
+        }
+        ArtifactContent::ChatResponse(response) => response.clone(),
+    }
 }
 
 pub fn format_review_requests(requests: &[ReviewRequest]) -> String {
@@ -352,12 +479,42 @@ pub fn chat_input(prompt: String, repo_dir: std::path::PathBuf, context: String)
     }
 }
 
+pub fn config_path_from_env(
+    nitpick_agent_config: Option<std::ffi::OsString>,
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    if let Some(path) = nitpick_agent_config {
+        return std::path::PathBuf::from(path);
+    }
+    if let Some(config_home) = xdg_config_home {
+        return std::path::PathBuf::from(config_home)
+            .join("nitpick-agent")
+            .join("config.toml");
+    }
+    std::path::PathBuf::from(home.unwrap_or_else(|| ".".into()))
+        .join(".config")
+        .join("nitpick-agent")
+        .join("config.toml")
+}
+
+pub fn ensure_resumable_activity(activity: &Activity) -> Result<(), String> {
+    if activity.session.provider_session_id.is_none() {
+        return Err(format!(
+            "activity {} has no provider session id",
+            activity.id
+        ));
+    }
+    Ok(())
+}
+
 pub fn run_cli_command(
     command: CliCommand,
     host_addr: &str,
     repo_dir: std::path::PathBuf,
     diff: String,
     context: String,
+    config_path: std::path::PathBuf,
 ) -> Result<String, String> {
     let client = HostClient::new(host_addr);
     match command {
@@ -376,6 +533,24 @@ pub fn run_cli_command(
         CliCommand::Activities => Ok(format_activities(&client.activities()?)),
         CliCommand::Reviews { include_all } => {
             Ok(format_reviews(&client.activities()?, include_all))
+        }
+        CliCommand::Logs { target } => {
+            let activities = client.activities()?;
+            let activity = resolve_log_activity(&activities, &target)?;
+            let artifacts = client.activity_artifacts(activity.id.as_str())?;
+            Ok(format_activity_logs(activity, &artifacts))
+        }
+        CliCommand::Resume { target } => {
+            let activities = client.activities()?;
+            let activity = resolve_log_activity(&activities, &target)?;
+            ensure_resumable_activity(activity)?;
+            let config = nitpick_agent_host::AgentConfig::load_or_default(&config_path)
+                .map_err(|error| error.to_string())?;
+            config
+                .command_provider()
+                .attach_session(&activity.session)
+                .map_err(|error| error.to_string())?;
+            Ok(String::new())
         }
         CliCommand::Artifacts { activity_id } => {
             Ok(format_artifacts(&client.activity_artifacts(&activity_id)?))
@@ -503,6 +678,46 @@ mod tests {
             parse_command(["reviews".to_owned(), "--all".to_owned()]).expect("command parses");
 
         assert_eq!(command, CliCommand::Reviews { include_all: true });
+    }
+
+    #[test]
+    fn parses_logs_command() {
+        let command =
+            parse_command(["logs".to_owned(), "acme/platform#42".to_owned()]).expect("command");
+
+        assert_eq!(
+            command,
+            CliCommand::Logs {
+                target: "acme/platform#42".into()
+            }
+        );
+    }
+
+    #[test]
+    fn parses_resume_command() {
+        let command =
+            parse_command(["resume".to_owned(), "acme/platform#42".to_owned()]).expect("command");
+
+        assert_eq!(
+            command,
+            CliCommand::Resume {
+                target: "acme/platform#42".into()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_logs_without_target() {
+        let error = parse_command(["logs".to_owned()]).expect_err("command fails");
+
+        assert_eq!(error, "usage: nitpick logs <activity-id|pr-ref>");
+    }
+
+    #[test]
+    fn rejects_resume_without_target() {
+        let error = parse_command(["resume".to_owned()]).expect_err("command fails");
+
+        assert_eq!(error, "usage: nitpick resume <activity-id|pr-ref>");
     }
 
     #[test]
@@ -737,6 +952,7 @@ mod tests {
         );
         running_review.status = nitpick_agent_core::ActivityStatus::Running;
         running_review.label = Some("review on acme/platform#42".into());
+        running_review.session.provider_session_id = Some("github:acme/platform#42".into());
         running_review.updated_at_unix = 1_200;
         let mut completed_review = nitpick_agent_core::Activity::new(
             nitpick_agent_core::ActivityId::new("activity-2"),
@@ -755,7 +971,7 @@ mod tests {
                 &[completed_review.clone(), running_chat, running_review],
                 false
             ),
-            "Running review on acme/platform#42 activity-1"
+            "Running review on acme/platform#42 activity-1 updated=1200 session=github:acme/platform#42"
         );
         assert_eq!(
             super::format_reviews(&[completed_review], false),
@@ -771,6 +987,7 @@ mod tests {
         );
         running_review.status = nitpick_agent_core::ActivityStatus::Running;
         running_review.label = Some("review on acme/platform#42".into());
+        running_review.session.provider_session_id = Some("github:acme/platform#42".into());
         running_review.updated_at_unix = 1_200;
         let mut completed_review = nitpick_agent_core::Activity::new(
             nitpick_agent_core::ActivityId::new("activity-2"),
@@ -778,11 +995,125 @@ mod tests {
         );
         completed_review.status = nitpick_agent_core::ActivityStatus::Completed;
         completed_review.label = Some("review on acme/platform#41".into());
+        completed_review.session.provider_session_id = Some("github:acme/platform#41".into());
         completed_review.updated_at_unix = 1_000;
 
         assert_eq!(
             super::format_reviews(&[completed_review, running_review], true),
-            "Running review on acme/platform#42 activity-1\nCompleted review on acme/platform#41 activity-2"
+            "Running review on acme/platform#42 activity-1 updated=1200 session=github:acme/platform#42\nCompleted review on acme/platform#41 activity-2 updated=1000 session=github:acme/platform#41"
+        );
+    }
+
+    #[test]
+    fn formats_failed_reviews_with_error() {
+        let mut failed_review = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        failed_review.status = nitpick_agent_core::ActivityStatus::Error;
+        failed_review.label = Some("review on acme/platform#42".into());
+        failed_review.session.provider_session_id = Some("github:acme/platform#42".into());
+        failed_review.updated_at_unix = 1_200;
+        failed_review.error = Some("provider failed".into());
+
+        assert_eq!(
+            super::format_reviews(&[failed_review], true),
+            "Error review on acme/platform#42 activity-1 updated=1200 session=github:acme/platform#42 error=\"provider failed\""
+        );
+    }
+
+    #[test]
+    fn resolves_log_activity_by_id_or_latest_pr_review() {
+        let mut older_review = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        older_review.label = Some("review on acme/platform#42".into());
+        older_review.updated_at_unix = 1_000;
+        let mut latest_review = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-2"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        latest_review.label = Some("review on acme/platform#42".into());
+        latest_review.updated_at_unix = 1_200;
+
+        assert_eq!(
+            super::resolve_log_activity(
+                &[older_review.clone(), latest_review.clone()],
+                "activity-1"
+            )
+            .expect("activity")
+            .id,
+            older_review.id
+        );
+        assert_eq!(
+            super::resolve_log_activity(&[older_review, latest_review.clone()], "acme/platform#42")
+                .expect("activity")
+                .id,
+            latest_review.id
+        );
+    }
+
+    #[test]
+    fn formats_activity_logs_with_output_artifacts_and_error() {
+        let mut activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        activity.status = nitpick_agent_core::ActivityStatus::Error;
+        activity.label = Some("review on acme/platform#42".into());
+        activity.session.provider_session_id = Some("github:acme/platform#42".into());
+        activity.updated_at_unix = 1_200;
+        activity.error = Some("provider failed".into());
+        activity.output = Some(nitpick_agent_core::ActivityOutput::Review(
+            nitpick_agent_core::ReviewOutput {
+                summary: "summary body".into(),
+                comments: vec![nitpick_agent_core::ReviewComment {
+                    path: "src/lib.rs".into(),
+                    line: 12,
+                    body: "comment body".into(),
+                }],
+                journey: nitpick_agent_core::ReviewJourney::default(),
+            },
+        ));
+        let artifact = nitpick_agent_core::Artifact::local(
+            nitpick_agent_core::ArtifactId::new("artifact-1"),
+            activity.id.clone(),
+            nitpick_agent_core::ArtifactKind::ReviewSummary,
+            nitpick_agent_core::ArtifactContent::ReviewSummary("artifact summary".into()),
+        );
+
+        assert_eq!(
+            super::format_activity_logs(&activity, &[artifact]),
+            "activity: activity-1\nkind: Review\nstatus: Error\nlabel: review on acme/platform#42\nupdated: 1200\nsession: github:acme/platform#42\nerror: provider failed\noutput:\nsummary body\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
+        );
+    }
+
+    #[test]
+    fn resume_requires_provider_session_id() {
+        let activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+
+        let error = super::ensure_resumable_activity(&activity).expect_err("missing session id");
+
+        assert_eq!(error, "activity activity-1 has no provider session id");
+    }
+
+    #[test]
+    fn resolves_config_path_like_host() {
+        assert_eq!(
+            super::config_path_from_env(Some("/tmp/config.toml".into()), None, None),
+            std::path::PathBuf::from("/tmp/config.toml")
+        );
+        assert_eq!(
+            super::config_path_from_env(None, Some("/tmp/xdg".into()), None),
+            std::path::PathBuf::from("/tmp/xdg/nitpick-agent/config.toml")
+        );
+        assert_eq!(
+            super::config_path_from_env(None, None, Some("/Users/stephan".into())),
+            std::path::PathBuf::from("/Users/stephan/.config/nitpick-agent/config.toml")
         );
     }
 

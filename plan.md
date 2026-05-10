@@ -114,7 +114,7 @@ Requirements:
 Current gap:
 
 - `reviewd` creates pending GitHub reviews through the PR reviews API and uses review-safe `gh` wrappers.
-- `nitpick-agent` can sync review summary artifacts through `gh pr review --comment` with the `github-review` destination, but inline draft review comments still need file/line-aware sync.
+- `nitpick-agent` can sync review summary artifacts through `gh pr review --comment` and single inline review comment artifacts through the GitHub pull request review API with the `github-review` destination; batching multiple comments into one review is still pending.
 
 Reference:
 
@@ -134,33 +134,9 @@ Requirements:
 Current gap:
 
 - `reviewd` skips normal reviews when a bot review already exists and treats later runs as re-reviews.
-- `nitpick-agent` does not appear to have equivalent bot-review detection.
+- `nitpick-agent` now skips automatic reviews when GitHub already has a nitpick-marked review on the current PR head; manual reviews remain unaffected.
 
-## 8. Comment Watcher And Response Loop
-
-`nitpick-agent` must respond to relevant PR review-thread comments.
-
-Requirements:
-
-- Fetch unresolved review threads for a PR.
-- Identify threads that need an agent response:
-  - a human replied after a bot response
-  - a comment mentions `@claude`
-- Resume the existing PR review session when responding.
-- Fall back to a new session when the prior provider session is unavailable.
-- Add responses as draft review comments on the relevant file/line.
-- Stop watching closed or merged PRs.
-
-Current gap:
-
-- `reviewd` monitors unresolved threads, detects `@claude` comments or replies to bot comments, and responds.
-- `nitpick-agent` has no equivalent GraphQL thread fetch or comment-response workflow.
-
-Reference:
-
-- `reviewd/lib/watcher.sh:89`
-
-## 9. Operational Logs And Resume UX
+## 8. Operational Logs And Resume UX
 
 `nitpick-agent` must expose enough operational state to debug and resume reviews.
 
@@ -176,4 +152,4 @@ Requirements:
 Current gap:
 
 - `reviewd` supports `status`, `logs [pr]`, and `resume [pr]` with tmux-backed reviewer/watcher processes.
-- `nitpick-agent` has status, review-focused activity listing, checkout inspection, activities, and artifacts, but not interactive attach/resume or per-PR process logs.
+- `nitpick-agent` has status, review-focused activity listing with updated times, session IDs, and errors, checkout inspection, activity/PR log views, Claude attach/resume, activities, and artifacts, but not Codex attach/resume or daemon logs.
