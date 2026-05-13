@@ -203,7 +203,7 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#discussion_r99"}}
 }
 
 #[test]
-fn github_cli_review_destination_batches_summary_and_inline_comments() {
+fn github_cli_review_destination_batches_summary_and_inline_comments_into_pending_review() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     let commands_file = dir.path().join("commands");
@@ -218,7 +218,7 @@ if [ "$1" = "pr" ]; then
   exit 0
 fi
 cat > {payload}
-printf '{{"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99"}}\n'
+printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
 "#,
             commands = commands_file.display(),
             payload = payload_file.display(),
@@ -273,7 +273,7 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview
         serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
     assert_eq!(payload["commit_id"], "abc123");
-    assert_eq!(payload["event"], "COMMENT");
+    assert!(payload.get("event").is_none());
     assert_eq!(payload["body"], "summary body");
     assert_eq!(payload["comments"].as_array().expect("comments").len(), 2);
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
@@ -286,10 +286,51 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview
     assert_eq!(payload["comments"][1]["body"], "Also this.");
     assert_eq!(outcomes.len(), 3);
     assert!(outcomes.iter().all(|outcome| outcome.sync_state
-        == ArtifactSyncState::Synced {
+        == ArtifactSyncState::Pending {
             destination: "github-review".into(),
-            remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+            remote_id: Some("99".into()),
+            remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
         }));
+}
+
+#[test]
+fn github_cli_review_destination_updates_pending_review_body() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+cat > {payload}
+printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+"#,
+            commands = commands_file.display(),
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let review = destination
+        .update_pending_review_body("99", "updated summary")
+        .expect("review");
+
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "api repos/acme/platform/pulls/42/reviews/99 --method PUT --input -\n"
+    );
+    assert_eq!(review.state, "PENDING");
 }
 
 fn make_executable(path: &std::path::Path) {
