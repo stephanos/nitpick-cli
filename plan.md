@@ -84,7 +84,7 @@ References:
 
 `nitpick-agent` must preserve and resume provider sessions across review and follow-up actions.
 
-Status: Implemented for current review flow
+Status: Implemented
 
 Implemented:
 
@@ -93,10 +93,10 @@ Implemented:
 - Stores provider session IDs in local activity/session state.
 - Reopens stored Claude sessions through `nitpick resume <activity-id|pr-ref>`.
 - Reopens stored Codex sessions through `nitpick resume <activity-id|pr-ref>`.
+- Clears a stale local provider session ID when the provider reports that the saved session no longer exists.
 
 Remaining:
 
-- Recover gracefully when a stored provider session no longer exists.
 - Reuse provider sessions for comment-response work if that workflow is reintroduced.
 
 References:
@@ -108,19 +108,20 @@ References:
 
 `nitpick-agent` must support GitHub review comments and pending review creation, not only standalone PR comments.
 
-Status: Partial
+Status: Implemented
 
 Implemented:
 
 - Keeps standalone PR comments as a separate sync mode through `github`.
 - Syncs a single review artifact with `artifact-sync <artifact-id> github-review <pr-ref>`.
-- Syncs all review artifacts from one activity as a single GitHub pull request review with `nitpick review-sync <activity-id> <pr-ref>`.
+- Stages all review artifacts from one activity into a pending GitHub draft review with `nitpick review-sync <activity-id> <pr-ref>`.
 - Preserves local artifacts as the source of truth before sync.
 - Uses `gh pr review` and the GitHub pull request review API for review-specific writes.
+- Documents the minimum GitHub permissions needed for discovery, draft review sync, and standalone PR comments.
 
 Remaining:
 
-- Document the minimum GitHub token scopes/permissions needed for review sync.
+- None currently known.
 
 References:
 

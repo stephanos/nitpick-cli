@@ -84,20 +84,32 @@ impl CommandAgentProvider {
     }
 
     fn run_interactive(&self, args: &[String]) -> AgentResult<()> {
-        let status = Command::new(&self.command)
+        let output = Command::new(&self.command)
             .args(args)
-            .status()
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|error| {
                 AgentError::new(format!(
                     "failed to start {} provider command `{}`: {error}",
                     self.kind,
                     self.command.display()
                 ))
-            })?;
-        if !status.success() {
+            })?
+            .wait_with_output()
+            .map_err(|error| AgentError::new(format!("wait for provider command: {error}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             return Err(AgentError::new(format!(
-                "{} provider command failed with status {}",
-                self.kind, status
+                "{} provider command failed with status {}{}",
+                self.kind,
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
             )));
         }
         Ok(())

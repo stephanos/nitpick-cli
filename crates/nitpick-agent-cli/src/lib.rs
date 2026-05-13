@@ -3,8 +3,9 @@ use std::{path::Path, process::Command};
 
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityOutput, ActivityStatus, AgentProvider, Artifact,
-    ArtifactContent, ChatInput, ReviewInput, ReviewRequest, ReviewSubject,
+    Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentProvider,
+    Artifact, ArtifactContent, ChatInput, FsActivityStore, ReviewInput, ReviewRequest,
+    ReviewSubject,
 };
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
 
@@ -556,6 +557,38 @@ pub fn ensure_resumable_activity(activity: &Activity) -> Result<(), String> {
     Ok(())
 }
 
+fn handle_resume_error(activity: &Activity, data_dir: &Path, error: String) -> String {
+    if !provider_session_missing(&error) {
+        return error;
+    }
+    let Some(session_id) = activity.session.provider_session_id.as_deref() else {
+        return error;
+    };
+    let message = format!(
+        "activity {} can no longer be resumed because provider session {} was not found; cleared the stored session id",
+        activity.id, session_id
+    );
+    match clear_provider_session_id(data_dir, activity) {
+        Ok(()) => message,
+        Err(clear_error) => format!("{message} (failed to persist recovery: {clear_error})"),
+    }
+}
+
+fn provider_session_missing(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("session not found")
+        || error.contains("session does not exist")
+        || error.contains("conversation not found")
+}
+
+fn clear_provider_session_id(data_dir: &Path, activity: &Activity) -> Result<(), String> {
+    let store = FsActivityStore::new(data_dir).map_err(|error| error.to_string())?;
+    let mut stored = store.get(&activity.id).map_err(|error| error.to_string())?;
+    stored.session.provider_session_id = None;
+    stored.touch();
+    store.save(&stored).map_err(|error| error.to_string())
+}
+
 pub fn run_cli_command(
     command: CliCommand,
     host_addr: &str,
@@ -601,7 +634,7 @@ pub fn run_cli_command(
             config
                 .command_provider()
                 .attach_session(&activity.session)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| handle_resume_error(activity, &data_dir, error.to_string()))?;
             Ok(String::new())
         }
         CliCommand::Artifacts { activity_id } => {

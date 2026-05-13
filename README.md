@@ -79,7 +79,15 @@ The older `[github.discovery]` config shape is still accepted for compatibility.
 
 `artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to stage one review artifact into a pending GitHub draft review. Use `review-sync <activity-id> <pr-ref>` to stage all review artifacts from an activity into one pending GitHub draft review. If a pending draft already exists, nitpick updates the draft summary when safe and refuses to add new inline comments until the existing draft is submitted or cleared manually.
 
-Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Stored Claude and Codex sessions can be reopened with `nitpick resume <activity-id|pr-ref>` when the activity has a provider session ID. GitHub posting uses `gh` by default; override it with `github_command`.
+GitHub token permissions:
+
+- **Discovery and duplicate detection:** `Pull requests: read` for listing review requests, reading PR metadata and head SHAs, and checking existing PR reviews.
+- **Draft review sync (`github-review`, `review-sync`):** `Pull requests: write`.
+- **Standalone PR comments (`artifact-sync ... github <pr-ref>`):** `Issues: write`, because pull request conversation comments use the issues comment API.
+
+For fine-grained PATs and GitHub App tokens, those repository permissions are the practical minimum. For classic PATs, `repo` is the practical minimum for private repositories; `public_repo` is enough for public-only repositories.
+
+Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Stored Claude and Codex sessions can be reopened with `nitpick resume <activity-id|pr-ref>` when the activity has a provider session ID. If the provider reports that the saved session no longer exists, nitpick clears the stale local session ID and reports that the activity is no longer resumable. GitHub posting uses `gh` by default; override it with `github_command`.
 
 ## Layout
 

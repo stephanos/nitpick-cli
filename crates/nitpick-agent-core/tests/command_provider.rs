@@ -184,6 +184,28 @@ fn codex_command_provider_resumes_existing_session() {
     );
 }
 
+#[test]
+fn attach_session_includes_stderr_from_failed_resume_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let command = dir.path().join("provider");
+    fs::write(&command, "#!/bin/sh\nprintf 'session not found\\n' >&2\nexit 1\n")
+        .expect("write command");
+    make_executable(&command);
+    let provider = CommandAgentProvider::new(AgentProviderKind::Claude, None, &command);
+    let session = nitpick_agent_core::AgentSession {
+        provider: Some(AgentProviderKind::Claude),
+        provider_session_id: Some("github:acme/platform#42".into()),
+        ..nitpick_agent_core::AgentSession::default()
+    };
+
+    let error = provider.attach_session(&session).expect_err("resume fails");
+
+    assert_eq!(
+        error.to_string(),
+        "claude provider command failed with status exit status: 1: session not found"
+    );
+}
+
 fn make_executable(command: &std::path::Path) {
     let mut permissions = fs::metadata(command).expect("metadata").permissions();
     permissions.set_mode(0o755);
