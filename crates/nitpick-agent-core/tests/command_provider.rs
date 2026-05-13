@@ -156,19 +156,31 @@ fn attach_requires_provider_session_id() {
 }
 
 #[test]
-fn codex_attach_is_unsupported_until_resume_args_are_defined() {
-    let provider = CommandAgentProvider::for_kind(AgentProviderKind::Codex, None);
+fn codex_command_provider_resumes_existing_session() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let command = dir.path().join("provider");
+    let args_log = dir.path().join("args.log");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
+            args_log.display()
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+    let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &command);
     let session = nitpick_agent_core::AgentSession {
         provider: Some(AgentProviderKind::Codex),
         provider_session_id: Some("github:acme/platform#42".into()),
         ..nitpick_agent_core::AgentSession::default()
     };
 
-    let error = provider.attach_session(&session).expect_err("unsupported");
+    provider.attach_session(&session).expect("attach");
 
     assert_eq!(
-        error.to_string(),
-        "codex provider does not support session resume yet"
+        fs::read_to_string(args_log).expect("args"),
+        "resume github:acme/platform#42\n"
     );
 }
 

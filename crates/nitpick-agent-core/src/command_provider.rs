@@ -134,9 +134,7 @@ impl AgentProvider for CommandAgentProvider {
             AgentProviderKind::Claude => {
                 self.run_interactive(&["--resume".into(), session_id.into()])
             }
-            AgentProviderKind::Codex => Err(AgentError::new(
-                "codex provider does not support session resume yet",
-            )),
+            AgentProviderKind::Codex => self.run_interactive(&["resume".into(), session_id.into()]),
         }
     }
 }

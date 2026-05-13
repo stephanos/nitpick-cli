@@ -29,6 +29,7 @@ and stores local source-of-truth data under:
 
 Override these with `NITPICK_AGENT_CONFIG` and `NITPICK_AGENT_DATA_DIR`.
 GitHub PR checkouts are retained under the data directory at `checkouts/` by default, and can be moved with `NITPICK_AGENT_CHECKOUT_DIR`.
+When the macOS app starts the host daemon, stdout/stderr are appended to `logs/daemon.log` under the nitpick-agent data directory. By default this is `~/.local/share/nitpick-agent/logs/daemon.log`.
 
 The host API listens on `127.0.0.1:19783` by default when started with:
 
@@ -51,8 +52,10 @@ nitpick reviews
 nitpick reviews --all
 nitpick logs activity-1
 nitpick logs acme/platform#42
+nitpick logs daemon
 nitpick resume activity-1
 nitpick resume acme/platform#42
+nitpick review-sync activity-1 acme/platform#42
 nitpick activities
 nitpick artifacts activity-1
 nitpick artifact artifact-1
@@ -74,9 +77,9 @@ interval_seconds = 300
 
 The older `[github.discovery]` config shape is still accepted for compatibility.
 
-`artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to post review summary artifacts through `gh pr review --comment` and review comment artifacts through the GitHub pull request review API.
+`artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to sync one review artifact. Use `review-sync <activity-id> <pr-ref>` to post all review artifacts from an activity as one GitHub pull request review.
 
-Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Claude review sessions can be reopened with `nitpick resume <activity-id|pr-ref>` when the stored activity has a provider session ID. Codex session resume is recorded locally but not attached yet because this CLI path has no stable provider-specific resume invocation. GitHub posting uses `gh` by default; override it with `github_command`.
+Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Stored Claude and Codex sessions can be reopened with `nitpick resume <activity-id|pr-ref>` when the activity has a provider session ID. GitHub posting uses `gh` by default; override it with `github_command`.
 
 ## Layout
 

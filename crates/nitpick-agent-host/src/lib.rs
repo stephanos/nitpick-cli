@@ -292,6 +292,38 @@ impl HostDaemon {
         Ok(Some(self.store.update_artifact_sync_state(id, sync_state)?))
     }
 
+    pub fn sync_activity_artifacts(
+        &self,
+        id: &ActivityId,
+        destination: &str,
+        target: Option<&str>,
+    ) -> AgentResult<Option<Vec<Artifact>>> {
+        if self.get_activity(id)?.is_none() {
+            return Ok(None);
+        }
+        let artifacts = self.store.list_artifacts_for(id)?;
+        let outcomes = self
+            .config
+            .sync_destination(destination, target)?
+            .sync_batch(&artifacts)?;
+        if outcomes.len() != artifacts.len() {
+            return Err(AgentError::new(format!(
+                "sync destination `{destination}` returned {} outcome(s) for {} artifact(s)",
+                outcomes.len(),
+                artifacts.len()
+            )));
+        }
+
+        let mut updated = Vec::with_capacity(artifacts.len());
+        for (artifact, outcome) in artifacts.into_iter().zip(outcomes) {
+            updated.push(
+                self.store
+                    .update_artifact_sync_state(&artifact.id, outcome.sync_state)?,
+            );
+        }
+        Ok(Some(updated))
+    }
+
     pub fn discover_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
         self.review_source.requested_reviews()
     }
@@ -585,6 +617,10 @@ pub fn api_router(daemon: HostDaemon) -> Router {
         .route("/activities", get(activities))
         .route("/activities/{id}", get(activity))
         .route("/activities/{id}/artifacts", get(activity_artifacts))
+        .route(
+            "/activities/{id}/artifact-sync",
+            post(activity_artifact_sync),
+        )
         .route("/sync/pending", get(pending_sync_artifacts))
         .route("/review-requests", get(review_requests))
         .route("/github/review-requests", get(github_review_requests))
@@ -711,6 +747,21 @@ async fn artifact_sync(
         input.target.as_deref(),
     )? {
         Some(artifact) => Ok(Json(artifact).into_response()),
+        None => Ok(StatusCode::NOT_FOUND.into_response()),
+    }
+}
+
+async fn activity_artifact_sync(
+    State(daemon): State<HostDaemon>,
+    PathParam(id): PathParam<String>,
+    Json(input): Json<ArtifactSyncInput>,
+) -> Result<Response, ApiError> {
+    match daemon.sync_activity_artifacts(
+        &ActivityId::new(id),
+        &input.destination,
+        input.target.as_deref(),
+    )? {
+        Some(artifacts) => Ok(Json(artifacts).into_response()),
         None => Ok(StatusCode::NOT_FOUND.into_response()),
     }
 }

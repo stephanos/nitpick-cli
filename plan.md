@@ -92,7 +92,7 @@ Requirements:
 Current gap:
 
 - `reviewd` uses explicit Claude `--session-id` and `--resume`.
-- `nitpick-agent` now assigns stable PR review session IDs and passes them to Claude via `--session-id`; Codex keeps the stored session ID without provider-specific resume flags yet.
+- `nitpick-agent` now assigns stable PR review session IDs, passes them to Claude via `--session-id`, and can attach to stored Claude or Codex sessions through `nitpick resume`.
 
 References:
 
@@ -114,7 +114,7 @@ Requirements:
 Current gap:
 
 - `reviewd` creates pending GitHub reviews through the PR reviews API and uses review-safe `gh` wrappers.
-- `nitpick-agent` can sync review summary artifacts through `gh pr review --comment` and single inline review comment artifacts through the GitHub pull request review API with the `github-review` destination; batching multiple comments into one review is still pending.
+- `nitpick-agent` can sync one review artifact with the `github-review` destination, and can sync all review artifacts from an activity as one GitHub pull request review with `nitpick review-sync`.
 
 Reference:
 
@@ -152,4 +152,4 @@ Requirements:
 Current gap:
 
 - `reviewd` supports `status`, `logs [pr]`, and `resume [pr]` with tmux-backed reviewer/watcher processes.
-- `nitpick-agent` has status, review-focused activity listing with updated times, session IDs, and errors, checkout inspection, activity/PR log views, Claude attach/resume, activities, and artifacts, but not Codex attach/resume or daemon logs.
+- `nitpick-agent` has status, review-focused activity listing with updated times, session IDs, and errors, checkout inspection, activity/PR log views, daemon log access, Claude/Codex attach/resume, activities, and artifacts.

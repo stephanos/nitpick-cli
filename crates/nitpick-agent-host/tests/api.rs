@@ -356,6 +356,105 @@ async fn artifact_sync_endpoint_posts_to_github_review_destination() {
 }
 
 #[tokio::test]
+async fn activity_artifact_sync_endpoint_batches_github_review_artifacts() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+cat > {payload}
+printf '{{"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99"}}\n'
+"#,
+            commands = commands_file.display(),
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let store = Arc::new(MemoryActivityStore::default());
+    let activity = store.create(ActivityKind::Review).expect("activity");
+    let activity_id = activity.id.clone();
+    let summary = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewSummary,
+            ArtifactContent::ReviewSummary("summary body".into()),
+        )
+        .expect("summary artifact");
+    let comment = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewComment,
+            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+                path: "src/lib.rs".into(),
+                line: 12,
+                body: "Prefer this.".into(),
+            }),
+        )
+        .expect("comment artifact");
+    store
+        .save_artifacts(&[summary.clone(), comment.clone()])
+        .expect("save artifacts");
+    let app = api_router(HostDaemon::with_config(
+        store.clone(),
+        AgentConfig {
+            provider: AgentProviderKind::Claude,
+            model: None,
+            command: None,
+            github_command: Some(gh.display().to_string()),
+            ..AgentConfig::default()
+        },
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            &format!("/activities/{activity_id}/artifact-sync"),
+            &serde_json::json!({
+                "destination": "github-review",
+                "target": "acme/platform#42"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body.as_array().expect("array").len(), 2);
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "pr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["body"], "summary body");
+    assert_eq!(payload["comments"].as_array().expect("comments").len(), 1);
+    assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
+    assert_eq!(
+        store.get_artifact(&summary.id).expect("summary").sync_state,
+        ArtifactSyncState::Synced {
+            destination: "github-review".into(),
+            remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+        }
+    );
+    assert_eq!(
+        store.get_artifact(&comment.id).expect("comment").sync_state,
+        ArtifactSyncState::Synced {
+            destination: "github-review".into(),
+            remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+        }
+    );
+}
+
+#[tokio::test]
 async fn pending_sync_endpoint_lists_pending_artifacts_for_destination() {
     let store = Arc::new(MemoryActivityStore::default());
     let activity = store.create(ActivityKind::Review).expect("activity");
@@ -746,6 +845,12 @@ fn wait_for_completed_activity(store: &MemoryActivityStore, activity_id: &str) {
         );
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn make_executable(path: &std::path::Path) {
+    let mut permissions = fs::metadata(path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("chmod");
 }
 
 struct FakeProvider;

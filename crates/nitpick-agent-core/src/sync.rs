@@ -10,4 +10,11 @@ pub trait ArtifactSyncDestination: Send + Sync {
     fn name(&self) -> &'static str;
 
     fn sync(&self, artifact: &Artifact) -> AgentResult<ArtifactSyncOutcome>;
+
+    fn sync_batch(&self, artifacts: &[Artifact]) -> AgentResult<Vec<ArtifactSyncOutcome>> {
+        artifacts
+            .iter()
+            .map(|artifact| self.sync(artifact))
+            .collect()
+    }
 }

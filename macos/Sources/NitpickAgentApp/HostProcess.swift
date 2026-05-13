@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import NitpickAgentMacOSCore
 
 final class HostProcess {
     private var process: Process?
@@ -20,8 +21,23 @@ final class HostProcess {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = ["daemon"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        let logURL = DaemonLogFile().url
+        do {
+            try FileManager.default.createDirectory(
+                at: logURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if !FileManager.default.fileExists(atPath: logURL.path) {
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            }
+            let logHandle = try FileHandle(forWritingTo: logURL)
+            try logHandle.seekToEnd()
+            process.standardOutput = logHandle
+            process.standardError = logHandle
+        } catch {
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+        }
 
         do {
             try process.run()

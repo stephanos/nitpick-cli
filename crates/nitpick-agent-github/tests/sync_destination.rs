@@ -200,6 +200,96 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#discussion_r99"}}
     );
 }
 
+#[test]
+fn github_cli_review_destination_batches_summary_and_inline_comments() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+cat > {payload}
+printf '{{"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99"}}\n'
+"#,
+            commands = commands_file.display(),
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+    let summary = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewSummary,
+        ArtifactContent::ReviewSummary("summary body".into()),
+    );
+    let first_comment = Artifact::local(
+        ArtifactId::new("artifact-2"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "Prefer this.".into(),
+        }),
+    );
+    let second_comment = Artifact::local(
+        ArtifactId::new("artifact-3"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/main.rs".into(),
+            line: 8,
+            body: "Also this.".into(),
+        }),
+    );
+
+    let outcomes = destination
+        .sync_batch(&[summary, first_comment, second_comment])
+        .expect("sync outcomes");
+
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "pr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["commit_id"], "abc123");
+    assert_eq!(payload["event"], "COMMENT");
+    assert_eq!(payload["body"], "summary body");
+    assert_eq!(payload["comments"].as_array().expect("comments").len(), 2);
+    assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
+    assert_eq!(payload["comments"][0]["line"], 12);
+    assert_eq!(payload["comments"][0]["side"], "RIGHT");
+    assert_eq!(payload["comments"][0]["body"], "Prefer this.");
+    assert_eq!(payload["comments"][1]["path"], "src/main.rs");
+    assert_eq!(payload["comments"][1]["line"], 8);
+    assert_eq!(payload["comments"][1]["side"], "RIGHT");
+    assert_eq!(payload["comments"][1]["body"], "Also this.");
+    assert_eq!(outcomes.len(), 3);
+    assert!(outcomes.iter().all(|outcome| outcome.sync_state
+        == ArtifactSyncState::Synced {
+            destination: "github-review".into(),
+            remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+        }));
+}
+
 fn make_executable(path: &std::path::Path) {
     let mut permissions = fs::metadata(path).expect("metadata").permissions();
     permissions.set_mode(0o755);

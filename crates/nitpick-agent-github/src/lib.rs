@@ -8,8 +8,8 @@ use std::{
 
 use nitpick_agent_core::{
     AgentError, AgentResult, Artifact, ArtifactContent, ArtifactSyncDestination,
-    ArtifactSyncOutcome, ArtifactSyncState, ReviewInput, ReviewRequest, ReviewSource,
-    ReviewSubject,
+    ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput, ReviewRequest,
+    ReviewSource, ReviewSubject,
 };
 use serde::{Deserialize, Serialize};
 
@@ -882,6 +882,83 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
             )),
         }
     }
+
+    fn sync_batch(&self, artifacts: &[Artifact]) -> AgentResult<Vec<ArtifactSyncOutcome>> {
+        sync_review_batch_with_github_cli(&self.command, &self.target, artifacts, self.name())
+    }
+}
+
+fn sync_review_batch_with_github_cli(
+    command: &Path,
+    target: &PullRequestRef,
+    artifacts: &[Artifact],
+    destination: &str,
+) -> AgentResult<Vec<ArtifactSyncOutcome>> {
+    let mut body = None;
+    let mut comments = Vec::new();
+    for artifact in artifacts {
+        match &artifact.content {
+            ArtifactContent::ReviewSummary(summary) => {
+                body = Some(summary.clone());
+            }
+            ArtifactContent::ReviewComment(comment) => {
+                comments.push(comment.clone());
+            }
+            ArtifactContent::ChatResponse(_) => {
+                return Err(AgentError::new(
+                    "github-review sync only supports review artifacts",
+                ));
+            }
+        }
+    }
+    if artifacts.is_empty() {
+        return Ok(Vec::new());
+    }
+    if body.is_none() && comments.is_empty() {
+        return Err(AgentError::new(
+            "github-review sync requires at least one review summary or comment",
+        ));
+    }
+
+    let head_sha = pull_request_head_sha(command, &target.owner, &target.repo, target.number)?;
+    let payload_comments = comments
+        .into_iter()
+        .map(review_comment_payload)
+        .collect::<Vec<_>>();
+    let mut payload = serde_json::json!({
+        "commit_id": head_sha,
+        "event": "COMMENT",
+        "comments": payload_comments,
+    });
+    if let Some(body) = body {
+        payload["body"] = serde_json::Value::String(body);
+    }
+    let outcome = sync_with_github_cli(
+        command,
+        &[
+            "api",
+            &format!(
+                "repos/{}/{}/pulls/{}/reviews",
+                target.owner, target.repo, target.number
+            ),
+            "--method",
+            "POST",
+            "--input",
+            "-",
+        ],
+        &payload.to_string(),
+        destination,
+    )?;
+    Ok(artifacts.iter().map(|_| outcome.clone()).collect())
+}
+
+fn review_comment_payload(comment: ReviewComment) -> serde_json::Value {
+    serde_json::json!({
+        "path": comment.path,
+        "line": comment.line,
+        "side": "RIGHT",
+        "body": comment.body,
+    })
 }
 
 fn sync_with_github_cli(

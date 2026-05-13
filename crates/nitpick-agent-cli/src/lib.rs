@@ -46,6 +46,10 @@ pub enum CliCommand {
         destination: String,
         target: Option<String>,
     },
+    ReviewSync {
+        activity_id: String,
+        target: String,
+    },
     SyncPending {
         destination: Option<String>,
     },
@@ -106,6 +110,18 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
                 target: args.next(),
             })
         }
+        Some("review-sync") => {
+            let activity_id = args
+                .next()
+                .ok_or_else(|| "usage: nitpick review-sync <activity-id> <pr-ref>".to_owned())?;
+            let target = args
+                .next()
+                .ok_or_else(|| "usage: nitpick review-sync <activity-id> <pr-ref>".to_owned())?;
+            Ok(CliCommand::ReviewSync {
+                activity_id,
+                target,
+            })
+        }
         Some("sync-pending") => Ok(CliCommand::SyncPending {
             destination: args.next(),
         }),
@@ -134,7 +150,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  logs <activity-id|pr-ref>                          Show review logs for an activity or PR\n  resume <activity-id|pr-ref>                        Reopen a supported provider session\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  logs <activity-id|pr-ref>                          Show review logs for an activity or PR\n  resume <activity-id|pr-ref>                        Reopen a supported provider session\n  review-sync <activity-id> <pr-ref>                 Sync an activity as one GitHub review\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -498,6 +514,38 @@ pub fn config_path_from_env(
         .join("config.toml")
 }
 
+pub fn data_dir_from_env(
+    nitpick_agent_data_dir: Option<std::ffi::OsString>,
+    xdg_data_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    if let Some(path) = nitpick_agent_data_dir {
+        return std::path::PathBuf::from(path);
+    }
+    if let Some(data_home) = xdg_data_home {
+        return std::path::PathBuf::from(data_home).join("nitpick-agent");
+    }
+    std::path::PathBuf::from(home.unwrap_or_else(|| ".".into()))
+        .join(".local")
+        .join("share")
+        .join("nitpick-agent")
+}
+
+pub fn daemon_log_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("logs").join("daemon.log")
+}
+
+pub fn format_daemon_log(path: &std::path::Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(format!(
+            "daemon log not found: {}\nrestart the macOS app or host after updating to log persistence",
+            path.display()
+        )),
+        Err(error) => Err(format!("read daemon log {}: {error}", path.display())),
+    }
+}
+
 pub fn ensure_resumable_activity(activity: &Activity) -> Result<(), String> {
     if activity.session.provider_session_id.is_none() {
         return Err(format!(
@@ -515,6 +563,7 @@ pub fn run_cli_command(
     diff: String,
     context: String,
     config_path: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
 ) -> Result<String, String> {
     let client = HostClient::new(host_addr);
     match command {
@@ -533,6 +582,9 @@ pub fn run_cli_command(
         CliCommand::Activities => Ok(format_activities(&client.activities()?)),
         CliCommand::Reviews { include_all } => {
             Ok(format_reviews(&client.activities()?, include_all))
+        }
+        CliCommand::Logs { target } if target == "daemon" => {
+            format_daemon_log(&daemon_log_path(&data_dir))
         }
         CliCommand::Logs { target } => {
             let activities = client.activities()?;
@@ -566,6 +618,14 @@ pub fn run_cli_command(
             &artifact_id,
             &destination,
             target.as_deref(),
+        )?)),
+        CliCommand::ReviewSync {
+            activity_id,
+            target,
+        } => Ok(format_artifacts(&client.sync_activity_artifacts(
+            &activity_id,
+            "github-review",
+            Some(&target),
         )?)),
         CliCommand::SyncPending { destination } => Ok(format_artifacts(
             &client.pending_sync_artifacts(destination.as_deref())?,
@@ -818,6 +878,32 @@ mod tests {
                 target: Some("acme/platform#42".into()),
             }
         );
+    }
+
+    #[test]
+    fn parses_review_sync_command() {
+        let command = parse_command([
+            "review-sync".to_owned(),
+            "activity-1".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command");
+
+        assert_eq!(
+            command,
+            CliCommand::ReviewSync {
+                activity_id: "activity-1".into(),
+                target: "acme/platform#42".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_review_sync_without_target() {
+        let error = parse_command(["review-sync".to_owned(), "activity-1".to_owned()])
+            .expect_err("command");
+
+        assert_eq!(error, "usage: nitpick review-sync <activity-id> <pr-ref>");
     }
 
     #[test]
@@ -1115,6 +1201,82 @@ mod tests {
             super::config_path_from_env(None, None, Some("/Users/stephan".into())),
             std::path::PathBuf::from("/Users/stephan/.config/nitpick-agent/config.toml")
         );
+    }
+
+    #[test]
+    fn resolves_data_dir_like_host() {
+        assert_eq!(
+            super::data_dir_from_env(Some("/tmp/data".into()), None, None),
+            std::path::PathBuf::from("/tmp/data")
+        );
+        assert_eq!(
+            super::data_dir_from_env(None, Some("/tmp/xdg-data".into()), None),
+            std::path::PathBuf::from("/tmp/xdg-data/nitpick-agent")
+        );
+        assert_eq!(
+            super::data_dir_from_env(None, None, Some("/Users/stephan".into())),
+            std::path::PathBuf::from("/Users/stephan/.local/share/nitpick-agent")
+        );
+    }
+
+    #[test]
+    fn daemon_log_path_lives_under_data_dir() {
+        assert_eq!(
+            super::daemon_log_path(&std::path::PathBuf::from("/tmp/nitpick-data")),
+            std::path::PathBuf::from("/tmp/nitpick-data/logs/daemon.log")
+        );
+    }
+
+    #[test]
+    fn formats_missing_daemon_log_with_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("logs/daemon.log");
+
+        let output = super::format_daemon_log(&path).expect("daemon log");
+
+        assert_eq!(
+            output,
+            format!(
+                "daemon log not found: {}\nrestart the macOS app or host after updating to log persistence",
+                path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn formats_existing_daemon_log() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("logs/daemon.log");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("log dir");
+        std::fs::write(&path, "started\npoll failed\n").expect("write log");
+
+        let output = super::format_daemon_log(&path).expect("daemon log");
+
+        assert_eq!(output, "started\npoll failed\n");
+    }
+
+    #[test]
+    fn logs_daemon_reads_daemon_log_without_host_lookup() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let path = super::daemon_log_path(&data_dir);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("log dir");
+        std::fs::write(&path, "daemon started\n").expect("write log");
+
+        let output = super::run_cli_command(
+            CliCommand::Logs {
+                target: "daemon".into(),
+            },
+            "127.0.0.1:1",
+            dir.path().to_path_buf(),
+            String::new(),
+            String::new(),
+            dir.path().join("config.toml"),
+            data_dir,
+        )
+        .expect("logs daemon");
+
+        assert_eq!(output, "daemon started\n");
     }
 
     #[test]

@@ -87,6 +87,21 @@ impl HostClient {
         )
     }
 
+    pub fn sync_activity_artifacts(
+        &self,
+        activity_id: &str,
+        destination: &str,
+        target: Option<&str>,
+    ) -> Result<Vec<Artifact>, String> {
+        self.post_json(
+            &format!("/activities/{activity_id}/artifact-sync"),
+            &ArtifactSyncInput {
+                destination,
+                target,
+            },
+        )
+    }
+
     pub fn review(&self, input: &ReviewInput) -> Result<Activity, String> {
         self.post_json("/reviews", input)
     }
@@ -162,8 +177,13 @@ fn request_host(
         .ok_or_else(|| "missing HTTP response body".to_owned())?;
     if !response.starts_with("HTTP/1.1 200 ") {
         return Err(format!(
-            "unexpected host status line: {}",
-            response.lines().next().unwrap_or("(empty)")
+            "unexpected host status line: {}{}",
+            response.lines().next().unwrap_or("(empty)"),
+            if body.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", body.trim())
+            }
         ));
     }
     Ok(body.to_owned())
