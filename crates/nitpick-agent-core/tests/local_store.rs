@@ -52,6 +52,8 @@ fn filesystem_store_updates_artifact_sync_state() {
             &artifact_id,
             ArtifactSyncState::Pending {
                 destination: "github".into(),
+                remote_id: None,
+                remote_url: None,
             },
         )
         .expect("update sync state");
@@ -59,7 +61,9 @@ fn filesystem_store_updates_artifact_sync_state() {
     assert_eq!(
         updated.sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
         }
     );
 
@@ -70,7 +74,50 @@ fn filesystem_store_updates_artifact_sync_state() {
             .expect("artifact survives")
             .sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
+        }
+    );
+}
+
+#[test]
+fn filesystem_store_persists_pending_sync_remote_handle() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = FsActivityStore::new(dir.path()).expect("store");
+    let activity = store.create(ActivityKind::Review).expect("activity");
+    let artifact = store
+        .create_artifact(
+            activity.id,
+            ArtifactKind::ReviewSummary,
+            ArtifactContent::ReviewSummary("summary".into()),
+        )
+        .expect("artifact");
+    let artifact_id = artifact.id.clone();
+    store.save_artifacts(&[artifact]).expect("save artifact");
+
+    store
+        .update_artifact_sync_state(
+            &artifact_id,
+            ArtifactSyncState::Pending {
+                destination: "github-review".into(),
+                remote_id: Some("99".into()),
+                remote_url: Some(
+                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into(),
+                ),
+            },
+        )
+        .expect("update sync state");
+
+    let reopened = FsActivityStore::new(dir.path()).expect("reopen store");
+    assert_eq!(
+        reopened.get_artifact(&artifact_id).expect("artifact").sync_state,
+        ArtifactSyncState::Pending {
+            destination: "github-review".into(),
+            remote_id: Some("99".into()),
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into(),
+            ),
         }
     );
 }

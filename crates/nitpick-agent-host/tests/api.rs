@@ -157,6 +157,8 @@ async fn artifact_sync_state_endpoint_marks_artifact_pending() {
             &format!("/artifacts/{artifact_id}/sync-state"),
             &ArtifactSyncState::Pending {
                 destination: "github".into(),
+                remote_id: None,
+                remote_url: None,
             },
         ))
         .await
@@ -171,7 +173,9 @@ async fn artifact_sync_state_endpoint_marks_artifact_pending() {
             .expect("artifact")
             .sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
         }
     );
 }
@@ -206,7 +210,9 @@ async fn artifact_sync_endpoint_uses_github_dry_run_destination() {
             .expect("artifact")
             .sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
         }
     );
 }
@@ -480,6 +486,8 @@ async fn pending_sync_endpoint_lists_pending_artifacts_for_destination() {
             &pending.id,
             ArtifactSyncState::Pending {
                 destination: "github".into(),
+                remote_id: None,
+                remote_url: None,
             },
         )
         .expect("mark pending");

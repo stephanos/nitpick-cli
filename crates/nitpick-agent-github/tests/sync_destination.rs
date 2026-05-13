@@ -23,7 +23,9 @@ fn github_dry_run_marks_artifact_pending_for_github() {
     assert_eq!(
         outcome.sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
         }
     );
     assert_eq!(outcome.remote_id, None);

@@ -250,6 +250,7 @@ impl HostDaemon {
             .filter(|artifact| match &artifact.sync_state {
                 ArtifactSyncState::Pending {
                     destination: artifact_destination,
+                    ..
                 } => destination.is_none_or(|destination| destination == artifact_destination),
                 _ => false,
             })

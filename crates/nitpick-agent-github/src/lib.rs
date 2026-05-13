@@ -26,6 +26,8 @@ impl ArtifactSyncDestination for GitHubDryRunSyncDestination {
         Ok(ArtifactSyncOutcome {
             sync_state: ArtifactSyncState::Pending {
                 destination: self.name().into(),
+                remote_id: None,
+                remote_url: None,
             },
             remote_id: None,
         })
