@@ -1,155 +1,166 @@
 # nitpick-agent Requirements
 
-This document captures the functionality `nitpick-agent` needs in order to cover the useful behavior from `reviewd`.
+This document tracks the functionality `nitpick-agent` needs in order to cover the useful behavior from `reviewd`.
 
 ## 1. GitHub PR Discovery
 
 `nitpick-agent` must discover PRs where the authenticated user has been requested for review.
 
-Requirements:
+Status: Partial
 
-- Poll GitHub for open PRs matching `user-review-requested:@me`.
-- Support explicit review requests through the CLI/API.
-- Avoid reviewing the same PR head repeatedly.
-- Re-review a PR when its head SHA changes.
+Implemented:
 
-Current gap:
+- Polls GitHub for open PRs matching `user-review-requested:@me`.
+- Supports explicit review requests through the CLI/API.
+- Avoids reviewing the same PR head repeatedly.
+- Re-reviews a PR when its head SHA changes.
+- Records scheduled GitHub discovery failures in host status so the menu bar can surface missing `gh` or other review-source errors.
 
-- `reviewd` polls GitHub for `user-review-requested:@me`.
-- `nitpick-agent` can discover requested reviews, but the replacement workflow still needs to be verified end to end against the old behavior.
-- `nitpick-agent` now records scheduled GitHub discovery failures in host status so the menu bar can surface missing `gh` or other review-source errors.
+Remaining:
+
+- Verify the replacement workflow end to end against the old `reviewd` behavior in a real GitHub account/repository setup.
 
 ## 2. Processed PR Tracking
 
 `nitpick-agent` must maintain a durable index of reviewed PR heads.
 
-Requirements:
+Status: Implemented
 
-- Store owner, repo, PR number, and head SHA for each processed review.
-- Mark a PR head as processed only after a successful review.
-- Treat a changed head SHA as a new review requirement.
-- Preserve processed state across daemon restarts.
+Implemented:
 
-Current gap:
+- Stores owner, repo, PR number, and head SHA for each processed review.
+- Marks a PR head as processed only after a successful review.
+- Treats a changed head SHA as a new review requirement.
+- Preserves processed state across daemon restarts.
 
-- `reviewd` records reviewed PRs and head SHAs, then re-reviews when new commits arrive.
-- `nitpick-agent` has local artifacts and processed review storage, but the operational behavior should remain requirement-driven and covered by integration tests.
+Remaining:
+
+- None currently known.
 
 ## 3. GitHub PR Metadata Model
 
 `nitpick-agent` must represent GitHub PRs as first-class review subjects.
 
-Requirements:
+Status: Implemented
 
-- Track PR owner, repo, number, URL, title, author, state, and head SHA.
-- Keep generic core review types independent from GitHub-specific fields where practical.
-- Put GitHub-specific discovery, checkout, review-thread, and sync behavior in the GitHub adapter or a GitHub watcher layer.
+Implemented:
 
-Current gap:
+- Tracks PR owner, repo, number, URL, title, author, state, and head SHA.
+- Keeps generic core review types independent from GitHub-specific fields.
+- Keeps GitHub-specific discovery, checkout, cleanup, and sync behavior in the GitHub adapter/host layer.
 
-- `reviewd` directly knows GitHub PR metadata.
-- `nitpick-agent` now has GitHub PR metadata and state parsing in the GitHub adapter, while core remains generic.
-- Checkout cleanup still needs to use the PR state model to remove durable checkouts for closed or merged PRs.
+Remaining:
+
+- None currently known.
 
 ## 4. Local PR Checkout Management
 
-`nitpick-agent` must provide a local checkout of the PR head when an agent reviews or responds.
+`nitpick-agent` must provide a local checkout of the PR head when an agent reviews or inspects a PR.
 
-Requirements:
+Status: Implemented
 
-- Clone the PR repository when no checkout exists.
-- Fetch the PR head ref before review.
-- Check out the current PR head into a stable per-PR directory.
-- Retain checkouts durably under the agent data directory until cleanup can use closed/merged PR state.
-- Pass the checkout directory to the provider as `repo_dir`.
-- Reuse the checkout for follow-up responses when possible.
+Implemented:
 
-Current gap:
+- Clones the PR repository when no checkout exists.
+- Fetches the PR head ref before review.
+- Checks out the current PR head into a stable per-PR directory.
+- Retains checkouts durably under the agent data directory.
+- Passes the checkout directory to the provider as `repo_dir`.
+- Cleans up closed or merged PR checkouts through `nitpick cleanup-checkouts`.
+- Runs scheduled checkout cleanup after due GitHub discovery polls.
+- Records completed cleanup activities.
+- Opens an existing durable PR checkout with `nitpick inspect <pr-ref>`.
 
-- `reviewd` clones, fetches, and checks out PR branches under `/tmp/reviewd`.
-- `nitpick-agent` now uses durable checkout storage and has a GitHub cleanup API for closed or merged PR checkouts.
-- `nitpick cleanup-checkouts` now runs an explicit host maintenance pass over known PR checkouts and records completed cleanup activities.
-- The scheduled review-source poller now runs checkout cleanup after due polls for the normal GitHub-backed daemon.
-- `nitpick inspect <pr-ref>` opens an existing durable PR checkout in the user's editor for local inspection.
+Remaining:
+
+- Follow-up response workflows may need to reuse the checkout if comment-response support is reintroduced.
 
 References:
 
 - `reviewd/lib/session.sh:30`
-- `nitpick-agent/crates/nitpick-agent-github/src/lib.rs:176`
+- `nitpick-agent/crates/nitpick-agent-github/src/lib.rs`
 
 ## 5. Real Provider Session Continuity
 
 `nitpick-agent` must preserve and resume provider sessions across review and follow-up actions.
 
-Requirements:
+Status: Implemented for current review flow
 
-- Generate stable provider session IDs for PR review activities.
-- Pass session IDs to Claude/Codex when starting a review, when the provider supports it.
-- Resume existing provider sessions for re-review and comment-response work.
-- Recover cleanly when a stored provider session no longer exists.
-- Store the provider session ID in local activity/session state.
+Implemented:
 
-Current gap:
+- Generates stable provider session IDs for PR review activities.
+- Passes stable session IDs to Claude reviews with `--session-id`.
+- Stores provider session IDs in local activity/session state.
+- Reopens stored Claude sessions through `nitpick resume <activity-id|pr-ref>`.
+- Reopens stored Codex sessions through `nitpick resume <activity-id|pr-ref>`.
 
-- `reviewd` uses explicit Claude `--session-id` and `--resume`.
-- `nitpick-agent` now assigns stable PR review session IDs, passes them to Claude via `--session-id`, and can attach to stored Claude or Codex sessions through `nitpick resume`.
+Remaining:
+
+- Recover gracefully when a stored provider session no longer exists.
+- Reuse provider sessions for comment-response work if that workflow is reintroduced.
 
 References:
 
 - `reviewd/lib/session.sh:53`
-- `nitpick-agent/crates/nitpick-agent-core/src/command_provider.rs:36`
+- `nitpick-agent/crates/nitpick-agent-core/src/command_provider.rs`
 
 ## 6. GitHub Draft Review Workflow
 
 `nitpick-agent` must support GitHub review comments and pending review creation, not only standalone PR comments.
 
-Requirements:
+Status: Partial
 
-- Create or reuse a pending GitHub review for the authenticated user.
-- Add inline draft review comments for file/line-specific findings.
-- Keep standalone PR comments as a separate sync mode, not the default code-review workflow.
-- Constrain GitHub write operations so the agent can add review comments without broad mutation rights.
-- Preserve local artifacts as the source of truth before sync.
+Implemented:
 
-Current gap:
+- Keeps standalone PR comments as a separate sync mode through `github`.
+- Syncs a single review artifact with `artifact-sync <artifact-id> github-review <pr-ref>`.
+- Syncs all review artifacts from one activity as a single GitHub pull request review with `nitpick review-sync <activity-id> <pr-ref>`.
+- Preserves local artifacts as the source of truth before sync.
+- Uses `gh pr review` and the GitHub pull request review API for review-specific writes.
 
-- `reviewd` creates pending GitHub reviews through the PR reviews API and uses review-safe `gh` wrappers.
-- `nitpick-agent` can sync one review artifact with the `github-review` destination, and can sync all review artifacts from an activity as one GitHub pull request review with `nitpick review-sync`.
+Remaining:
 
-Reference:
+- Decide whether to create/reuse a pending GitHub review as a draft, or whether submitting one comment review per `review-sync` is sufficient.
+- Document the minimum GitHub token scopes/permissions needed for review sync.
 
-- `nitpick-agent/crates/nitpick-agent-github/src/lib.rs:383`
+References:
+
+- `reviewd` pending-review behavior.
+- `nitpick-agent/crates/nitpick-agent-github/src/lib.rs`
 
 ## 7. Bot Review Duplicate Detection
 
 `nitpick-agent` must avoid duplicate bot reviews for the same PR head.
 
-Requirements:
+Status: Implemented
 
-- Detect existing bot-authored or bot-marked reviews for a PR.
-- Skip normal review when the current PR head has already been reviewed.
-- Treat changed heads as re-review candidates.
-- Distinguish manual self-review from automatic duplicate prevention.
+Implemented:
 
-Current gap:
+- Detects existing nitpick-marked reviews for the current PR head.
+- Skips automatic review when GitHub already has a nitpick-marked review on the current PR head.
+- Treats changed heads as re-review candidates.
+- Leaves manual reviews unaffected by automatic duplicate prevention.
 
-- `reviewd` skips normal reviews when a bot review already exists and treats later runs as re-reviews.
-- `nitpick-agent` now skips automatic reviews when GitHub already has a nitpick-marked review on the current PR head; manual reviews remain unaffected.
+Remaining:
+
+- None currently known.
 
 ## 8. Operational Logs And Resume UX
 
 `nitpick-agent` must expose enough operational state to debug and resume reviews.
 
-Requirements:
+Status: Implemented
 
-- Show daemon status.
-- Show active/running/completed/error review activities.
-- Provide per-PR logs or activity logs.
-- Provide daemon logs.
-- Let the user resume or attach to an active provider session when supported.
-- Avoid requiring tmux specifically, but preserve the useful resume/log workflows.
+Implemented:
 
-Current gap:
+- Shows daemon status.
+- Lists active/running/completed/error review activities with updated time, activity ID, provider session ID, and errors.
+- Shows per-activity and per-PR logs with `nitpick logs <activity-id|pr-ref>`.
+- Shows daemon logs with `nitpick logs daemon`.
+- Opens durable checkouts with `nitpick inspect <pr-ref>`.
+- Reopens supported provider sessions with `nitpick resume <activity-id|pr-ref>`.
+- Avoids requiring tmux while preserving the useful status/log/resume workflows.
 
-- `reviewd` supports `status`, `logs [pr]`, and `resume [pr]` with tmux-backed reviewer/watcher processes.
-- `nitpick-agent` has status, review-focused activity listing with updated times, session IDs, and errors, checkout inspection, activity/PR log views, daemon log access, Claude/Codex attach/resume, activities, and artifacts.
+Remaining:
+
+- None currently known.
