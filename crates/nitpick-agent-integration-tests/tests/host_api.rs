@@ -109,7 +109,9 @@ async fn local_artifact_sync_lifecycle_marks_pending_then_synced() {
     assert_eq!(
         pending.sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
         }
     );
     assert_eq!(

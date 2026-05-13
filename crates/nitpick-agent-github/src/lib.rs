@@ -2,7 +2,7 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     str::FromStr,
 };
 
@@ -26,6 +26,8 @@ impl ArtifactSyncDestination for GitHubDryRunSyncDestination {
         Ok(ArtifactSyncOutcome {
             sync_state: ArtifactSyncState::Pending {
                 destination: self.name().into(),
+                remote_id: None,
+                remote_url: None,
             },
             remote_id: None,
         })
@@ -57,6 +59,44 @@ impl GitHubCliReviewSyncDestination {
             target,
             command: command.into(),
         }
+    }
+
+    pub fn create_pending_review_batch(
+        &self,
+        artifacts: &[Artifact],
+    ) -> AgentResult<Vec<ArtifactSyncOutcome>> {
+        sync_review_batch_with_github_cli(&self.command, &self.target, artifacts, self.name())
+    }
+
+    pub fn fetch_review(&self, review_id: &str) -> AgentResult<GitHubReviewResponse> {
+        github_review_from_cli(
+            &self.command,
+            &[&format!(
+                "repos/{}/{}/pulls/{}/reviews/{}",
+                self.target.owner, self.target.repo, self.target.number, review_id
+            )],
+        )
+    }
+
+    pub fn update_pending_review_body(
+        &self,
+        review_id: &str,
+        body: &str,
+    ) -> AgentResult<GitHubReviewResponse> {
+        github_review_from_cli_with_input(
+            &self.command,
+            &[
+                &format!(
+                    "repos/{}/{}/pulls/{}/reviews/{}",
+                    self.target.owner, self.target.repo, self.target.number, review_id
+                ),
+                "--method",
+                "PUT",
+                "--input",
+                "-",
+            ],
+            &serde_json::json!({ "body": body }).to_string(),
+        )
     }
 }
 
@@ -927,13 +967,12 @@ fn sync_review_batch_with_github_cli(
         .collect::<Vec<_>>();
     let mut payload = serde_json::json!({
         "commit_id": head_sha,
-        "event": "COMMENT",
         "comments": payload_comments,
     });
     if let Some(body) = body {
         payload["body"] = serde_json::Value::String(body);
     }
-    let outcome = sync_with_github_cli(
+    let outcome = sync_pending_review_with_github_cli(
         command,
         &[
             "api",
@@ -950,6 +989,14 @@ fn sync_review_batch_with_github_cli(
         destination,
     )?;
     Ok(artifacts.iter().map(|_| outcome.clone()).collect())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct GitHubReviewResponse {
+    pub id: u64,
+    pub html_url: Option<String>,
+    pub state: String,
+    pub commit_id: Option<String>,
 }
 
 fn review_comment_payload(comment: ReviewComment) -> serde_json::Value {
@@ -1010,6 +1057,98 @@ fn sync_with_github_cli(
         },
         remote_id: (!remote_id.is_empty()).then_some(remote_id),
     })
+}
+
+fn sync_pending_review_with_github_cli(
+    command: &Path,
+    args: &[&str],
+    body: &str,
+    destination: &str,
+) -> AgentResult<ArtifactSyncOutcome> {
+    let output = run_github_cli_with_input(command, args, body)?;
+    let review: GitHubReviewResponse = serde_json::from_slice(&output.stdout)
+        .map_err(|error| AgentError::new(format!("parse GitHub review response: {error}")))?;
+    Ok(ArtifactSyncOutcome {
+        sync_state: ArtifactSyncState::Pending {
+            destination: destination.into(),
+            remote_id: Some(review.id.to_string()),
+            remote_url: review.html_url.clone(),
+        },
+        remote_id: review.html_url,
+    })
+}
+
+fn github_review_from_cli(command: &Path, endpoint_args: &[&str]) -> AgentResult<GitHubReviewResponse> {
+    let mut args = vec!["api"];
+    args.extend_from_slice(endpoint_args);
+    let output = Command::new(command)
+        .args(&args)
+        .output()
+        .map_err(|error| AgentError::new(format!("run GitHub CLI `{}`: {error}", command.display())))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(AgentError::new(format!(
+            "GitHub CLI failed with status {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| AgentError::new(format!("parse GitHub review response: {error}")))
+}
+
+fn github_review_from_cli_with_input(
+    command: &Path,
+    endpoint_args: &[&str],
+    body: &str,
+) -> AgentResult<GitHubReviewResponse> {
+    let mut args = vec!["api"];
+    args.extend_from_slice(endpoint_args);
+    let output = run_github_cli_with_input(command, &args, body)?;
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| AgentError::new(format!("parse GitHub review response: {error}")))
+}
+
+fn run_github_cli_with_input(command: &Path, args: &[&str], body: &str) -> AgentResult<Output> {
+    let mut child = Command::new(command)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            AgentError::new(format!(
+                "failed to start GitHub CLI `{}`: {error}",
+                command.display()
+            ))
+        })?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| AgentError::new("GitHub CLI stdin unavailable"))?
+        .write_all(body.as_bytes())
+        .map_err(|error| AgentError::new(format!("write GitHub body: {error}")))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| AgentError::new(format!("wait for GitHub CLI: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(AgentError::new(format!(
+            "GitHub CLI failed with status {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+    Ok(output)
 }
 
 fn github_remote_id_from_stdout(stdout: &[u8]) -> String {

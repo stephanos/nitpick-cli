@@ -35,6 +35,8 @@ fn host_status_reports_current_activity_count() {
             &artifact_id,
             ArtifactSyncState::Pending {
                 destination: "github".into(),
+                remote_id: None,
+                remote_url: None,
             },
         )
         .expect("mark pending");

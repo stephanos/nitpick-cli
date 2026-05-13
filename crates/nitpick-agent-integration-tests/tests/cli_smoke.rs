@@ -34,7 +34,7 @@ if [ "$1" = "pr" ]; then
   exit 0
 fi
 cat >/dev/null
-printf '{{"html_url":"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99"}}\n'
+printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
 "#,
             log = review_sync_log.display(),
         ),
@@ -150,7 +150,9 @@ printf '{{"html_url":"https://github.com/stephanos/nitpick-agent/pull/42#pullreq
         data_dir.clone(),
     )
     .expect("review sync command");
-    assert!(review_sync.contains("artifact-1: ReviewSummary Synced"));
+    assert!(review_sync.contains(
+        "artifact-1: ReviewSummary Pending { destination: \"github-review\", remote_id: Some(\"99\"), remote_url: Some(\"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99\") }"
+    ));
     assert_eq!(
         std::fs::read_to_string(review_sync_log).expect("review sync args"),
         "pr view 42 --repo stephanos/nitpick-agent --json headRefOid\napi repos/stephanos/nitpick-agent/pulls/42/reviews --method POST --input -\n"

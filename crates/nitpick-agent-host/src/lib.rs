@@ -14,8 +14,9 @@ use axum::{
 };
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
-    AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactId, ArtifactSyncDestination,
-    ArtifactSyncState, ChatInput, Clock, CommandAgentProvider, MemoryProcessedReviewStore,
+    AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent, ArtifactId,
+    ArtifactSyncDestination, ArtifactSyncState, ChatInput, Clock, CommandAgentProvider,
+    MemoryProcessedReviewStore,
     ProcessedReviewStore, ReviewInput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
 };
 use nitpick_agent_github::{
@@ -250,6 +251,7 @@ impl HostDaemon {
             .filter(|artifact| match &artifact.sync_state {
                 ArtifactSyncState::Pending {
                     destination: artifact_destination,
+                    ..
                 } => destination.is_none_or(|destination| destination == artifact_destination),
                 _ => false,
             })
@@ -302,6 +304,12 @@ impl HostDaemon {
             return Ok(None);
         }
         let artifacts = self.store.list_artifacts_for(id)?;
+        if destination == "github-review"
+            && let Some(updated) =
+                self.reconcile_submitted_github_review_artifacts(&artifacts, target)?
+        {
+            return Ok(Some(updated));
+        }
         let outcomes = self
             .config
             .sync_destination(destination, target)?
@@ -319,6 +327,147 @@ impl HostDaemon {
             updated.push(
                 self.store
                     .update_artifact_sync_state(&artifact.id, outcome.sync_state)?,
+            );
+        }
+        Ok(Some(updated))
+    }
+
+    fn reconcile_submitted_github_review_artifacts(
+        &self,
+        artifacts: &[Artifact],
+        target: Option<&str>,
+    ) -> AgentResult<Option<Vec<Artifact>>> {
+        let pending_artifacts = artifacts
+            .iter()
+            .filter(|artifact| {
+                matches!(
+                    artifact.sync_state,
+                    ArtifactSyncState::Pending {
+                        ref destination,
+                        remote_id: Some(_),
+                        ..
+                    } if destination == "github-review"
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if pending_artifacts.is_empty() {
+            return Ok(None);
+        }
+        let review_id = match &pending_artifacts[0].sync_state {
+            ArtifactSyncState::Pending {
+                remote_id: Some(review_id),
+                ..
+            } => review_id.clone(),
+            _ => return Ok(None),
+        };
+        let target = target.ok_or_else(|| {
+            AgentError::new("github-review sync requires a pull request target")
+        })?;
+        let target = target.parse::<PullRequestRef>().map_err(|error| {
+            AgentError::new(format!("invalid GitHub sync target: {error}"))
+        })?;
+        let destination = GitHubCliReviewSyncDestination::new(
+            target,
+            self.config.github_command.as_deref().unwrap_or("gh"),
+        );
+        let review = match destination.fetch_review(&review_id) {
+            Ok(review) => review,
+            Err(_) => {
+                let mut updated = Vec::with_capacity(artifacts.len());
+                for artifact in artifacts {
+                    let next_state = match &artifact.sync_state {
+                        ArtifactSyncState::Pending {
+                            destination,
+                            remote_id: Some(current_review_id),
+                            ..
+                        } if destination == "github-review" && current_review_id == &review_id => {
+                            ArtifactSyncState::LocalOnly
+                        }
+                        _ => artifact.sync_state.clone(),
+                    };
+                    updated.push(
+                        self.store
+                            .update_artifact_sync_state(&artifact.id, next_state)?,
+                    );
+                }
+                return Ok(Some(updated));
+            }
+        };
+        if review.state == "PENDING" {
+            let has_new_inline_comments = artifacts.iter().any(|artifact| {
+                artifact.sync_state == ArtifactSyncState::LocalOnly
+                    && matches!(artifact.content, ArtifactContent::ReviewComment(_))
+            });
+            if has_new_inline_comments {
+                return Err(AgentError::new(
+                    "pending GitHub draft review already exists; submit or clear the draft review before staging new inline comments",
+                ));
+            }
+
+            let remote_url = review.html_url.clone().or_else(|| {
+                pending_artifacts.iter().find_map(|artifact| match &artifact.sync_state {
+                    ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
+                    _ => None,
+                })
+            });
+            let local_summary = artifacts.iter().find_map(|artifact| {
+                if artifact.sync_state != ArtifactSyncState::LocalOnly {
+                    return None;
+                }
+                match &artifact.content {
+                    ArtifactContent::ReviewSummary(summary) => Some(summary.clone()),
+                    _ => None,
+                }
+            });
+            if let Some(summary) = local_summary {
+                destination.update_pending_review_body(&review_id, &summary)?;
+            }
+            let mut updated = Vec::with_capacity(artifacts.len());
+            for artifact in artifacts {
+                let next_state = if artifact.sync_state == ArtifactSyncState::LocalOnly {
+                    match &artifact.content {
+                        ArtifactContent::ReviewSummary(_) => ArtifactSyncState::Pending {
+                            destination: "github-review".into(),
+                            remote_id: Some(review_id.clone()),
+                            remote_url: remote_url.clone(),
+                        },
+                        _ => artifact.sync_state.clone(),
+                    }
+                } else {
+                    artifact.sync_state.clone()
+                };
+                updated.push(
+                    self.store
+                        .update_artifact_sync_state(&artifact.id, next_state)?,
+                );
+            }
+            return Ok(Some(updated));
+        }
+        let remote_id = review.html_url.or_else(|| {
+            pending_artifacts.iter().find_map(|artifact| match &artifact.sync_state {
+                ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
+                _ => None,
+            })
+        });
+        let mut updated = Vec::with_capacity(artifacts.len());
+        for artifact in artifacts {
+            let next_state = match &artifact.sync_state {
+                ArtifactSyncState::Pending {
+                    destination,
+                    remote_id: Some(current_review_id),
+                    ..
+                } if destination == "github-review" && current_review_id == &review_id => {
+                    ArtifactSyncState::Synced {
+                        destination: "github-review".into(),
+                        remote_id: remote_id.clone(),
+                    }
+                }
+                _ => artifact.sync_state.clone(),
+            };
+            updated.push(
+                self.store
+                    .update_artifact_sync_state(&artifact.id, next_state)?,
             );
         }
         Ok(Some(updated))

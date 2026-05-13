@@ -65,6 +65,8 @@ pub enum ArtifactSyncState {
     LocalOnly,
     Pending {
         destination: String,
+        remote_id: Option<String>,
+        remote_url: Option<String>,
     },
     Synced {
         destination: String,

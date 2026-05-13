@@ -157,6 +157,8 @@ async fn artifact_sync_state_endpoint_marks_artifact_pending() {
             &format!("/artifacts/{artifact_id}/sync-state"),
             &ArtifactSyncState::Pending {
                 destination: "github".into(),
+                remote_id: None,
+                remote_url: None,
             },
         ))
         .await
@@ -171,7 +173,9 @@ async fn artifact_sync_state_endpoint_marks_artifact_pending() {
             .expect("artifact")
             .sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
         }
     );
 }
@@ -206,7 +210,9 @@ async fn artifact_sync_endpoint_uses_github_dry_run_destination() {
             .expect("artifact")
             .sync_state,
         ArtifactSyncState::Pending {
-            destination: "github".into()
+            destination: "github".into(),
+            remote_id: None,
+            remote_url: None,
         }
     );
 }
@@ -356,7 +362,7 @@ async fn artifact_sync_endpoint_posts_to_github_review_destination() {
 }
 
 #[tokio::test]
-async fn activity_artifact_sync_endpoint_batches_github_review_artifacts() {
+async fn activity_artifact_sync_endpoint_stages_pending_github_review_draft() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     let commands_file = dir.path().join("commands");
@@ -371,7 +377,7 @@ if [ "$1" = "pr" ]; then
   exit 0
 fi
 cat > {payload}
-printf '{{"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99"}}\n'
+printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
 "#,
             commands = commands_file.display(),
             payload = payload_file.display(),
@@ -440,18 +446,241 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
     assert_eq!(
         store.get_artifact(&summary.id).expect("summary").sync_state,
-        ArtifactSyncState::Synced {
+        ArtifactSyncState::Pending {
             destination: "github-review".into(),
-            remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+            remote_id: Some("99".into()),
+            remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
         }
     );
     assert_eq!(
         store.get_artifact(&comment.id).expect("comment").sync_state,
+        ArtifactSyncState::Pending {
+            destination: "github-review".into(),
+            remote_id: Some("99".into()),
+            remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+        }
+    );
+}
+
+#[tokio::test]
+async fn activity_artifact_sync_endpoint_marks_pending_artifacts_synced_after_manual_submission() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
+  printf '{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"COMMENT","commit_id":"abc123"}'
+  exit 0
+fi
+if [ "$1" = "pr" ]; then
+  printf '{"headRefOid":"abc123"}'
+  exit 0
+fi
+cat >/dev/null
+printf '{"id":100,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-100","state":"PENDING","commit_id":"abc123"}'
+"#,
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let store = Arc::new(MemoryActivityStore::default());
+    let activity = store.create(ActivityKind::Review).expect("activity");
+    let activity_id = activity.id.clone();
+    let summary = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewSummary,
+            ArtifactContent::ReviewSummary("summary body".into()),
+        )
+        .expect("summary artifact");
+    store.save_artifacts(&[summary.clone()]).expect("save artifacts");
+    store
+        .update_artifact_sync_state(
+            &summary.id,
+            ArtifactSyncState::Pending {
+                destination: "github-review".into(),
+                remote_id: Some("99".into()),
+                remote_url: Some(
+                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into(),
+                ),
+            },
+        )
+        .expect("mark pending");
+    let app = api_router(HostDaemon::with_config(
+        store.clone(),
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            ..AgentConfig::default()
+        },
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            &format!("/activities/{activity_id}/artifact-sync"),
+            &serde_json::json!({
+                "destination": "github-review",
+                "target": "acme/platform#42"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        store.get_artifact(&summary.id).expect("summary").sync_state,
         ArtifactSyncState::Synced {
             destination: "github-review".into(),
             remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
         }
     );
+}
+
+#[tokio::test]
+async fn activity_artifact_sync_endpoint_restores_local_only_when_pending_review_is_missing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
+  printf 'not found' >&2
+  exit 1
+fi
+exit 1
+"#,
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let store = Arc::new(MemoryActivityStore::default());
+    let activity = store.create(ActivityKind::Review).expect("activity");
+    let activity_id = activity.id.clone();
+    let summary = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewSummary,
+            ArtifactContent::ReviewSummary("summary body".into()),
+        )
+        .expect("summary artifact");
+    store.save_artifacts(&[summary.clone()]).expect("save artifacts");
+    store
+        .update_artifact_sync_state(
+            &summary.id,
+            ArtifactSyncState::Pending {
+                destination: "github-review".into(),
+                remote_id: Some("99".into()),
+                remote_url: Some(
+                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into(),
+                ),
+            },
+        )
+        .expect("mark pending");
+    let app = api_router(HostDaemon::with_config(
+        store.clone(),
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            ..AgentConfig::default()
+        },
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            &format!("/activities/{activity_id}/artifact-sync"),
+            &serde_json::json!({
+                "destination": "github-review",
+                "target": "acme/platform#42"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        store.get_artifact(&summary.id).expect("summary").sync_state,
+        ArtifactSyncState::LocalOnly
+    );
+}
+
+#[tokio::test]
+async fn activity_artifact_sync_endpoint_refuses_new_inline_comments_when_pending_review_exists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
+  printf '{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}'
+  exit 0
+fi
+if [ "$1" = "pr" ]; then
+  printf '{"headRefOid":"abc123"}'
+  exit 0
+fi
+exit 1
+"#,
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let store = Arc::new(MemoryActivityStore::default());
+    let activity = store.create(ActivityKind::Review).expect("activity");
+    let activity_id = activity.id.clone();
+    let summary = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewSummary,
+            ArtifactContent::ReviewSummary("summary body".into()),
+        )
+        .expect("summary artifact");
+    let comment = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewComment,
+            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+                path: "src/lib.rs".into(),
+                line: 12,
+                body: "Prefer this.".into(),
+            }),
+        )
+        .expect("comment artifact");
+    store
+        .save_artifacts(&[summary.clone(), comment.clone()])
+        .expect("save artifacts");
+    store
+        .update_artifact_sync_state(
+            &summary.id,
+            ArtifactSyncState::Pending {
+                destination: "github-review".into(),
+                remote_id: Some("99".into()),
+                remote_url: Some(
+                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into(),
+                ),
+            },
+        )
+        .expect("mark pending");
+    let app = api_router(HostDaemon::with_config(
+        store.clone(),
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            ..AgentConfig::default()
+        },
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            &format!("/activities/{activity_id}/artifact-sync"),
+            &serde_json::json!({
+                "destination": "github-review",
+                "target": "acme/platform#42"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = json_body(response).await;
+    assert!(body["error"]
+        .as_str()
+        .expect("error text")
+        .contains("submit or clear the draft review"));
 }
 
 #[tokio::test]
@@ -480,6 +709,8 @@ async fn pending_sync_endpoint_lists_pending_artifacts_for_destination() {
             &pending.id,
             ArtifactSyncState::Pending {
                 destination: "github".into(),
+                remote_id: None,
+                remote_url: None,
             },
         )
         .expect("mark pending");
