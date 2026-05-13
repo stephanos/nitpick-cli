@@ -1,5 +1,6 @@
 .DS_Store
 /target
 /.build
+/.worktrees
 crates/*/.build
 macos/.build
