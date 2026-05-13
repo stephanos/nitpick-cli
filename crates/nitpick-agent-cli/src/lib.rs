@@ -150,7 +150,7 @@ pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliComman
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  logs <activity-id|pr-ref>                          Show review logs for an activity or PR\n  resume <activity-id|pr-ref>                        Reopen a supported provider session\n  review-sync <activity-id> <pr-ref>                 Sync an activity as one GitHub review\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  logs <activity-id|pr-ref>                          Show review logs for an activity or PR\n  resume <activity-id|pr-ref>                        Reopen a supported provider session\n  review-sync <activity-id> <pr-ref>                 Stage an activity as one GitHub draft review\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -949,6 +949,13 @@ mod tests {
             }),
             "no checkouts cleaned up"
         );
+    }
+
+    #[test]
+    fn help_text_mentions_draft_review_sync() {
+        assert!(super::help_text("0.1.0").contains(
+            "review-sync <activity-id> <pr-ref>                 Stage an activity as one GitHub draft review"
+        ));
     }
 
     #[test]

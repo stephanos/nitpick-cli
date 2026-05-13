@@ -6,7 +6,7 @@ This document tracks the functionality `nitpick-agent` needs in order to cover t
 
 `nitpick-agent` must discover PRs where the authenticated user has been requested for review.
 
-Status: Partial
+Status: Implemented
 
 Implemented:
 
@@ -120,7 +120,6 @@ Implemented:
 
 Remaining:
 
-- Decide whether to create/reuse a pending GitHub review as a draft, or whether submitting one comment review per `review-sync` is sufficient.
 - Document the minimum GitHub token scopes/permissions needed for review sync.
 
 References:
