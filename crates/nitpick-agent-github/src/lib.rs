@@ -7,6 +7,7 @@ use std::{
     str::FromStr,
 };
 
+use directories::ProjectDirs;
 use nitpick_agent_core::{
     AgentError, AgentResult, Artifact, ArtifactContent, ArtifactSyncDestination,
     ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput, ReviewRequest,
@@ -540,17 +541,13 @@ fn default_checkout_root() -> PathBuf {
         return PathBuf::from(data_dir).join("checkouts");
     }
 
-    if let Some(data_home) = env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(data_home)
-            .join("nitpick-agent")
-            .join("checkouts");
-    }
+    project_dirs()
+        .map(|dirs| dirs.data_dir().join("checkouts"))
+        .unwrap_or_else(|| PathBuf::from("checkouts"))
+}
 
-    PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
-        .join(".local")
-        .join("share")
-        .join("nitpick-agent")
-        .join("checkouts")
+fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from("dev", "nitpick", "nitpick-agent")
 }
 
 fn ensure_checkout(

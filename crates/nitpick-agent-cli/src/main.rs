@@ -21,16 +21,8 @@ fn run() -> Result<(), String> {
     let repo_dir = current_dir()?;
     let diff = git_output(&repo_dir, &["diff"]).unwrap_or_default();
     let context = git_output(&repo_dir, &["status", "--short"]).unwrap_or_default();
-    let config_path = config_path_from_env(
-        env::var_os("NITPICK_AGENT_CONFIG"),
-        env::var_os("XDG_CONFIG_HOME"),
-        env::var_os("HOME"),
-    );
-    let data_dir = data_dir_from_env(
-        env::var_os("NITPICK_AGENT_DATA_DIR"),
-        env::var_os("XDG_DATA_HOME"),
-        env::var_os("HOME"),
-    );
+    let config_path = config_path_from_env(env::var_os("NITPICK_AGENT_CONFIG"));
+    let data_dir = data_dir_from_env(env::var_os("NITPICK_AGENT_DATA_DIR"));
     let output = run_cli_command_with_options(
         invocation.command,
         CliRunContext {

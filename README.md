@@ -18,18 +18,18 @@ Review results, review comments, summaries, chat responses, sessions, and activi
 By default, the host reads config from:
 
 ```text
-~/.config/nitpick-agent/config.toml
+~/Library/Application Support/dev.nitpick.nitpick-agent/config.toml
 ```
 
 and stores local source-of-truth data under:
 
 ```text
-~/.local/share/nitpick-agent
+~/Library/Application Support/dev.nitpick.nitpick-agent
 ```
 
 Override these with `NITPICK_AGENT_CONFIG` and `NITPICK_AGENT_DATA_DIR`.
 GitHub PR checkouts are retained under the data directory at `checkouts/` by default, and can be moved with `NITPICK_AGENT_CHECKOUT_DIR`.
-When the macOS app starts the host daemon, stdout/stderr are appended to `logs/daemon.log` under the nitpick-agent data directory. By default this is `~/.local/share/nitpick-agent/logs/daemon.log`.
+When the macOS app starts the host daemon, stdout/stderr are appended to `logs/daemon.log` under the nitpick-agent data directory. By default this is `~/Library/Application Support/dev.nitpick.nitpick-agent/logs/daemon.log`.
 
 The host API listens on `127.0.0.1:19783` by default when started with:
 

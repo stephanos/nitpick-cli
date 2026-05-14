@@ -2,6 +2,7 @@ use std::{
     env, net::SocketAddr, path::PathBuf, process::ExitCode, sync::Arc, thread, time::Duration,
 };
 
+use directories::ProjectDirs;
 use nitpick_agent_core::{FsActivityStore, FsProcessedReviewStore};
 use nitpick_agent_host::{AgentConfig, HostDaemon, ReviewSourcePoller, api_router};
 
@@ -131,14 +132,9 @@ fn data_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    if let Some(data_home) = env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(data_home).join("nitpick-agent");
-    }
-
-    PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
-        .join(".local")
-        .join("share")
-        .join("nitpick-agent")
+    project_dirs()
+        .map(|dirs| dirs.data_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn config_path() -> PathBuf {
@@ -146,14 +142,11 @@ fn config_path() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(config_home)
-            .join("nitpick-agent")
-            .join("config.toml");
-    }
+    project_dirs()
+        .map(|dirs| dirs.config_dir().join("config.toml"))
+        .unwrap_or_else(|| PathBuf::from("config.toml"))
+}
 
-    PathBuf::from(env::var_os("HOME").unwrap_or_else(|| ".".into()))
-        .join(".config")
-        .join("nitpick-agent")
-        .join("config.toml")
+fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from("dev", "nitpick", "nitpick-agent")
 }

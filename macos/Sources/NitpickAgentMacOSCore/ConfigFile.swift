@@ -12,16 +12,10 @@ public struct ConfigFile {
             return
         }
 
-        if let configHome = environment["XDG_CONFIG_HOME"], !configHome.isEmpty {
-            url = URL(fileURLWithPath: configHome)
-                .appendingPathComponent("nitpick-agent")
-                .appendingPathComponent("config.toml")
-            return
-        }
-
         url = homeDirectoryURL
-            .appendingPathComponent(".config")
-            .appendingPathComponent("nitpick-agent")
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support")
+            .appendingPathComponent("dev.nitpick.nitpick-agent")
             .appendingPathComponent("config.toml")
     }
 }
@@ -38,16 +32,10 @@ public struct DataDirectory {
             return
         }
 
-        if let dataHome = environment["XDG_DATA_HOME"], !dataHome.isEmpty {
-            url = URL(fileURLWithPath: dataHome)
-                .appendingPathComponent("nitpick-agent")
-            return
-        }
-
         url = homeDirectoryURL
-            .appendingPathComponent(".local")
-            .appendingPathComponent("share")
-            .appendingPathComponent("nitpick-agent")
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Application Support")
+            .appendingPathComponent("dev.nitpick.nitpick-agent")
     }
 }
 

@@ -1,4 +1,5 @@
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
+use directories::ProjectDirs;
 use serde::Deserialize;
 use std::{path::Path, process::Command};
 
@@ -561,38 +562,26 @@ pub fn chat_input(prompt: String, repo_dir: std::path::PathBuf, context: String)
 
 pub fn config_path_from_env(
     nitpick_agent_config: Option<std::ffi::OsString>,
-    xdg_config_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
 ) -> std::path::PathBuf {
     if let Some(path) = nitpick_agent_config {
         return std::path::PathBuf::from(path);
     }
-    if let Some(config_home) = xdg_config_home {
-        return std::path::PathBuf::from(config_home)
-            .join("nitpick-agent")
-            .join("config.toml");
-    }
-    std::path::PathBuf::from(home.unwrap_or_else(|| ".".into()))
-        .join(".config")
-        .join("nitpick-agent")
-        .join("config.toml")
+    project_dirs()
+        .map(|dirs| dirs.config_dir().join("config.toml"))
+        .unwrap_or_else(|| std::path::PathBuf::from("config.toml"))
 }
 
-pub fn data_dir_from_env(
-    nitpick_agent_data_dir: Option<std::ffi::OsString>,
-    xdg_data_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-) -> std::path::PathBuf {
+pub fn data_dir_from_env(nitpick_agent_data_dir: Option<std::ffi::OsString>) -> std::path::PathBuf {
     if let Some(path) = nitpick_agent_data_dir {
         return std::path::PathBuf::from(path);
     }
-    if let Some(data_home) = xdg_data_home {
-        return std::path::PathBuf::from(data_home).join("nitpick-agent");
-    }
-    std::path::PathBuf::from(home.unwrap_or_else(|| ".".into()))
-        .join(".local")
-        .join("share")
-        .join("nitpick-agent")
+    project_dirs()
+        .map(|dirs| dirs.data_dir().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+fn project_dirs() -> Option<ProjectDirs> {
+    ProjectDirs::from("dev", "nitpick", "nitpick-agent")
 }
 
 pub fn daemon_log_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -1372,33 +1361,27 @@ mod tests {
     #[test]
     fn resolves_config_path_like_host() {
         assert_eq!(
-            super::config_path_from_env(Some("/tmp/config.toml".into()), None, None),
+            super::config_path_from_env(Some("/tmp/config.toml".into())),
             std::path::PathBuf::from("/tmp/config.toml")
         );
-        assert_eq!(
-            super::config_path_from_env(None, Some("/tmp/xdg".into()), None),
-            std::path::PathBuf::from("/tmp/xdg/nitpick-agent/config.toml")
-        );
-        assert_eq!(
-            super::config_path_from_env(None, None, Some("/Users/stephan".into())),
-            std::path::PathBuf::from("/Users/stephan/.config/nitpick-agent/config.toml")
-        );
+        let expected = directories::ProjectDirs::from("dev", "nitpick", "nitpick-agent")
+            .expect("project dirs")
+            .config_dir()
+            .join("config.toml");
+        assert_eq!(super::config_path_from_env(None), expected);
     }
 
     #[test]
     fn resolves_data_dir_like_host() {
         assert_eq!(
-            super::data_dir_from_env(Some("/tmp/data".into()), None, None),
+            super::data_dir_from_env(Some("/tmp/data".into())),
             std::path::PathBuf::from("/tmp/data")
         );
-        assert_eq!(
-            super::data_dir_from_env(None, Some("/tmp/xdg-data".into()), None),
-            std::path::PathBuf::from("/tmp/xdg-data/nitpick-agent")
-        );
-        assert_eq!(
-            super::data_dir_from_env(None, None, Some("/Users/stephan".into())),
-            std::path::PathBuf::from("/Users/stephan/.local/share/nitpick-agent")
-        );
+        let expected = directories::ProjectDirs::from("dev", "nitpick", "nitpick-agent")
+            .expect("project dirs")
+            .data_dir()
+            .to_path_buf();
+        assert_eq!(super::data_dir_from_env(None), expected);
     }
 
     #[test]

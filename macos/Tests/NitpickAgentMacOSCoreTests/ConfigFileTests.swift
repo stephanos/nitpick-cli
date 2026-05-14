@@ -12,22 +12,16 @@ final class ConfigFileTests: XCTestCase {
         XCTAssertEqual(config.url.path, "/tmp/nitpick/config.toml")
     }
 
-    func testUsesXdgConfigHomeWhenPresent() {
-        let config = ConfigFile(
-            environment: ["XDG_CONFIG_HOME": "/tmp/config"],
-            homeDirectoryURL: URL(fileURLWithPath: "/Users/test")
-        )
-
-        XCTAssertEqual(config.url.path, "/tmp/config/nitpick-agent/config.toml")
-    }
-
     func testDefaultsToHomeConfigPath() {
         let config = ConfigFile(
             environment: [:],
             homeDirectoryURL: URL(fileURLWithPath: "/Users/test")
         )
 
-        XCTAssertEqual(config.url.path, "/Users/test/.config/nitpick-agent/config.toml")
+        XCTAssertEqual(
+            config.url.path,
+            "/Users/test/Library/Application Support/dev.nitpick.nitpick-agent/config.toml"
+        )
     }
 
     func testDataDirectoryUsesExplicitEnvironmentPath() {
@@ -39,22 +33,16 @@ final class ConfigFileTests: XCTestCase {
         XCTAssertEqual(dataDirectory.url.path, "/tmp/nitpick-data")
     }
 
-    func testDataDirectoryUsesXdgDataHomeWhenPresent() {
-        let dataDirectory = DataDirectory(
-            environment: ["XDG_DATA_HOME": "/tmp/data"],
-            homeDirectoryURL: URL(fileURLWithPath: "/Users/test")
-        )
-
-        XCTAssertEqual(dataDirectory.url.path, "/tmp/data/nitpick-agent")
-    }
-
-    func testDataDirectoryDefaultsToHomeLocalSharePath() {
+    func testDataDirectoryDefaultsToApplicationSupportPath() {
         let dataDirectory = DataDirectory(
             environment: [:],
             homeDirectoryURL: URL(fileURLWithPath: "/Users/test")
         )
 
-        XCTAssertEqual(dataDirectory.url.path, "/Users/test/.local/share/nitpick-agent")
+        XCTAssertEqual(
+            dataDirectory.url.path,
+            "/Users/test/Library/Application Support/dev.nitpick.nitpick-agent"
+        )
     }
 
     func testDaemonLogFileLivesUnderDataDirectory() {

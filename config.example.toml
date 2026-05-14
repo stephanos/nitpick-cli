@@ -3,7 +3,7 @@ provider = "claude"
 # model = "claude-opus-4-6"
 # command = "claude"
 github_command = "gh"
-# checkout_dir = "/Users/you/.local/share/nitpick-agent/checkouts"
+# checkout_dir = "/Users/you/Library/Application Support/dev.nitpick.nitpick-agent/checkouts"
 
 [agent.sandbox]
 mode = "macos-seatbelt"
