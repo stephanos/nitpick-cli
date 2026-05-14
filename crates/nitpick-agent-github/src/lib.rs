@@ -266,14 +266,14 @@ impl GitHubCliDiscovery {
             return Ok(checkouts);
         }
 
-        for owner_entry in fs::read_dir(&self.checkout_root)
-            .map_err(|error| AgentError::new(format!("read checkout root: {error}")))?
-        {
+        for owner_entry in fs::read_dir(&self.checkout_root).map_err(|error| {
+            AgentError::io_path("read checkout root", &self.checkout_root, error)
+        })? {
             let owner_entry =
-                owner_entry.map_err(|error| AgentError::new(format!("read owner dir: {error}")))?;
+                owner_entry.map_err(|error| AgentError::io("read owner dir", error))?;
             if !owner_entry
                 .file_type()
-                .map_err(|error| AgentError::new(format!("read owner file type: {error}")))?
+                .map_err(|error| AgentError::io("read owner file type", error))?
                 .is_dir()
             {
                 continue;
@@ -281,13 +281,13 @@ impl GitHubCliDiscovery {
             let owner = owner_entry.file_name().to_string_lossy().to_string();
 
             for repo_entry in fs::read_dir(owner_entry.path())
-                .map_err(|error| AgentError::new(format!("read repo dir: {error}")))?
+                .map_err(|error| AgentError::io("read repo dir", error))?
             {
-                let repo_entry = repo_entry
-                    .map_err(|error| AgentError::new(format!("read repo entry: {error}")))?;
+                let repo_entry =
+                    repo_entry.map_err(|error| AgentError::io("read repo entry", error))?;
                 if !repo_entry
                     .file_type()
-                    .map_err(|error| AgentError::new(format!("read repo file type: {error}")))?
+                    .map_err(|error| AgentError::io("read repo file type", error))?
                     .is_dir()
                 {
                     continue;
@@ -295,15 +295,13 @@ impl GitHubCliDiscovery {
                 let repo = repo_entry.file_name().to_string_lossy().to_string();
 
                 for pr_entry in fs::read_dir(repo_entry.path())
-                    .map_err(|error| AgentError::new(format!("read PR checkout dir: {error}")))?
+                    .map_err(|error| AgentError::io("read PR checkout dir", error))?
                 {
-                    let pr_entry = pr_entry
-                        .map_err(|error| AgentError::new(format!("read PR entry: {error}")))?;
+                    let pr_entry =
+                        pr_entry.map_err(|error| AgentError::io("read PR entry", error))?;
                     if !pr_entry
                         .file_type()
-                        .map_err(|error| {
-                            AgentError::new(format!("read PR checkout file type: {error}"))
-                        })?
+                        .map_err(|error| AgentError::io("read PR checkout file type", error))?
                         .is_dir()
                     {
                         continue;
@@ -350,13 +348,13 @@ impl ReviewSource for GitHubCliDiscovery {
 
     fn review_input(&self, request: &ReviewRequest) -> AgentResult<ReviewInput> {
         let Some(number) = request.number else {
-            return Err(AgentError::new(format!(
+            return Err(AgentError::invalid_input(format!(
                 "GitHub review request `{}` is missing a pull request number",
                 request.display_reference()
             )));
         };
         let (owner, repo) = request.repository.split_once('/').ok_or_else(|| {
-            AgentError::new(format!(
+            AgentError::invalid_input(format!(
                 "invalid GitHub repository name `{}`",
                 request.repository
             ))
@@ -375,7 +373,7 @@ impl ReviewSource for GitHubCliDiscovery {
             return Ok(false);
         };
         let (owner, repo) = request.repository.split_once('/').ok_or_else(|| {
-            AgentError::new(format!(
+            AgentError::invalid_input(format!(
                 "invalid GitHub repository name `{}`",
                 request.repository
             ))
@@ -555,13 +553,13 @@ fn ensure_checkout(
 
     if !repo_dir.join(".git").is_dir() {
         let parent = repo_dir.parent().ok_or_else(|| {
-            AgentError::new(format!(
+            AgentError::invalid_input(format!(
                 "checkout path has no parent: {}",
                 repo_dir.display()
             ))
         })?;
         fs::create_dir_all(parent)
-            .map_err(|error| AgentError::new(format!("create checkout parent: {error}")))?;
+            .map_err(|error| AgentError::io_path("create checkout parent", parent, error))?;
         tracing::debug!(
             command = %command.display(),
             repository = %pull_request.repository(),
@@ -633,7 +631,7 @@ fn run_git(command: &Path, args: &[&str]) -> AgentResult<()> {
     tracing::debug!(command = %command.display(), args = ?args, "running git command");
     let started = Instant::now();
     let output = Command::new(command).args(args).output().map_err(|error| {
-        AgentError::new(format!(
+        AgentError::provider(format!(
             "failed to start git command `{}`: {error}",
             command.display()
         ))
@@ -679,7 +677,7 @@ impl SearchPullRequest {
             .name_with_owner
             .split_once('/')
             .ok_or_else(|| {
-                AgentError::new(format!(
+                AgentError::invalid_input(format!(
                     "invalid GitHub repository name `{}`",
                     self.repository.name_with_owner
                 ))
@@ -1087,7 +1085,7 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
                     self.name(),
                 )
             }
-            ArtifactContent::ChatResponse(_) => Err(AgentError::new(
+            ArtifactContent::ChatResponse(_) => Err(AgentError::invalid_input(
                 "github-review sync only supports review artifacts",
             )),
         }
@@ -1115,7 +1113,7 @@ fn sync_review_batch_with_github_cli(
                 comments.push(comment.clone());
             }
             ArtifactContent::ChatResponse(_) => {
-                return Err(AgentError::new(
+                return Err(AgentError::invalid_input(
                     "github-review sync only supports review artifacts",
                 ));
             }
@@ -1125,7 +1123,7 @@ fn sync_review_batch_with_github_cli(
         return Ok(Vec::new());
     }
     if body.is_none() && comments.is_empty() {
-        return Err(AgentError::new(
+        return Err(AgentError::invalid_input(
             "github-review sync requires at least one review summary or comment",
         ));
     }

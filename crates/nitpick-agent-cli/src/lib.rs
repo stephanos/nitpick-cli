@@ -2,13 +2,35 @@ use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use serde::Deserialize;
 use std::{path::Path, process::Command};
 
-use nitpick_agent_client::HostClient;
+use nitpick_agent_client::{HostClient, HostClientError};
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, Artifact,
+    Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentError, Artifact,
     ArtifactContent, ChatInput, FsActivityStore, ReviewInput, ReviewRequest, ReviewSubject,
     config_path_from_env_value, data_dir_from_env_value,
 };
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CliError {
+    #[error("{0}")]
+    Message(String),
+    #[error("{0}")]
+    Host(#[from] HostClientError),
+    #[error("{0}")]
+    Agent(#[from] AgentError),
+}
+
+impl From<String> for CliError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl From<&str> for CliError {
+    fn from(message: &str) -> Self {
+        Self::Message(message.to_owned())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliCommand {
@@ -688,6 +710,14 @@ pub fn run_cli_command_with_options(
     context: CliRunContext,
     options: CliOptions,
 ) -> Result<String, String> {
+    run_cli_command_typed(command, context, options).map_err(|error| error.to_string())
+}
+
+pub fn run_cli_command_typed(
+    command: CliCommand,
+    context: CliRunContext,
+    options: CliOptions,
+) -> Result<String, CliError> {
     let client = HostClient::new(&context.host_addr);
     match command {
         CliCommand::Help => Ok(help_text(env!("CARGO_PKG_VERSION"))),
@@ -698,7 +728,7 @@ pub fn run_cli_command_with_options(
                 "nitpick-agent-host: not connected\naddress: {}",
                 context.host_addr
             )),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(error.into()),
         },
         CliCommand::ReviewRequests { only_new } => {
             Ok(format_review_requests(&client.review_requests(only_new)?))
@@ -708,26 +738,30 @@ pub fn run_cli_command_with_options(
             Ok(format_reviews(&client.activities()?, include_all))
         }
         CliCommand::Logs { target } if target == "daemon" => {
-            format_daemon_log(&daemon_log_path(&context.data_dir))
+            format_daemon_log(&daemon_log_path(&context.data_dir)).map_err(Into::into)
         }
         CliCommand::Logs { target } => {
             let activities = client.activities()?;
-            let activity = resolve_log_activity(&activities, &target)?;
+            let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
             let artifacts = client.activity_artifacts(activity.id.as_str())?;
             Ok(format_activity_logs(activity, &artifacts))
         }
         CliCommand::Resume { target } => {
             let activities = client.activities()?;
-            let activity = resolve_log_activity(&activities, &target)?;
-            ensure_resumable_activity(activity)?;
+            let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
+            ensure_resumable_activity(activity).map_err(CliError::from)?;
             let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::from)?;
             apply_sandbox_option(&mut config, &options);
             config
                 .command_provider()
                 .attach_session_in_repo(&activity.session, &context.repo_dir)
                 .map_err(|error| {
-                    handle_resume_error(activity, &context.data_dir, error.to_string())
+                    CliError::from(handle_resume_error(
+                        activity,
+                        &context.data_dir,
+                        error.to_string(),
+                    ))
                 })?;
             Ok(String::new())
         }
@@ -760,6 +794,7 @@ pub fn run_cli_command_with_options(
         CliCommand::CleanupCheckouts => Ok(format_cleanup_checkouts(&client.cleanup_checkouts()?)),
         CliCommand::Inspect { pull_request } => {
             inspect_checkout_with_discovery(&pull_request, &GitHubCliDiscovery::new("gh"), None)
+                .map_err(Into::into)
         }
         CliCommand::Review { subject } => {
             let mut input = review_input(subject, context.repo_dir, context.diff);
@@ -767,19 +802,19 @@ pub fn run_cli_command_with_options(
             let activity = client.review(&input)?;
             let output = format_activity(&activity);
             if let Some(error) = activity.error {
-                return Err(error);
+                return Err(error.into());
             }
             Ok(output)
         }
         CliCommand::Chat { target } => {
             let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::from)?;
             apply_sandbox_option(&mut config, &options);
-            let checkout = require_cached_checkout(&target, &config)?;
+            let checkout = require_cached_checkout(&target, &config).map_err(CliError::from)?;
             config
                 .command_provider()
                 .start_interactive_session_in_repo(&checkout)
-                .map_err(|error| error.to_string())?;
+                .map_err(CliError::from)?;
             Ok(String::new())
         }
     }

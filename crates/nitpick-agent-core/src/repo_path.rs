@@ -9,14 +9,14 @@ impl RepoPath {
     pub fn parse(value: &str) -> AgentResult<Self> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            return Err(AgentError::new(format!(
+            return Err(AgentError::invalid_input(format!(
                 "review comment path escapes repository: {value}"
             )));
         }
 
         let path = Utf8Path::new(trimmed);
         if path.is_absolute() {
-            return Err(AgentError::new(format!(
+            return Err(AgentError::invalid_input(format!(
                 "review comment path escapes repository: {value}"
             )));
         }
@@ -26,7 +26,7 @@ impl RepoPath {
                 component,
                 Utf8Component::ParentDir | Utf8Component::RootDir | Utf8Component::Prefix(_)
             ) {
-                return Err(AgentError::new(format!(
+                return Err(AgentError::invalid_input(format!(
                     "review comment path escapes repository: {value}"
                 )));
             }

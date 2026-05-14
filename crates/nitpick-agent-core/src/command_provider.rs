@@ -82,7 +82,7 @@ impl CommandAgentProvider {
         let session_id = session
             .provider_session_id
             .as_deref()
-            .ok_or_else(|| AgentError::new("activity has no provider session id"))?;
+            .ok_or_else(|| AgentError::invalid_input("activity has no provider session id"))?;
         let repo_dir = self.sandbox_repo_dir(repo_dir, &self.sandbox)?;
         match self.kind {
             AgentProviderKind::Claude => self.run_interactive_in_dir(
@@ -376,7 +376,7 @@ impl AgentProvider for CommandAgentProvider {
         let session_id = session
             .provider_session_id
             .as_deref()
-            .ok_or_else(|| AgentError::new("activity has no provider session id"))?;
+            .ok_or_else(|| AgentError::invalid_input("activity has no provider session id"))?;
         match self.kind {
             AgentProviderKind::Claude => {
                 self.run_interactive(&["--resume".into(), session_id.into()])

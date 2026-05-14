@@ -46,3 +46,56 @@ pub fn default_checkout_root() -> PathBuf {
 fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{ffi::OsString, path::PathBuf};
+
+    use super::{
+        checkout_root_from_env_values, config_path_from_env_value, data_dir_from_env_value,
+        default_checkout_root,
+    };
+
+    #[test]
+    fn config_path_uses_explicit_env_value() {
+        assert_eq!(
+            config_path_from_env_value(Some(OsString::from("/tmp/nitpick/config.toml"))),
+            PathBuf::from("/tmp/nitpick/config.toml")
+        );
+    }
+
+    #[test]
+    fn data_dir_uses_explicit_env_value() {
+        assert_eq!(
+            data_dir_from_env_value(Some(OsString::from("/tmp/nitpick/data"))),
+            PathBuf::from("/tmp/nitpick/data")
+        );
+    }
+
+    #[test]
+    fn checkout_root_prefers_checkout_dir_over_data_dir() {
+        assert_eq!(
+            checkout_root_from_env_values(
+                Some(OsString::from("/tmp/checkouts")),
+                Some(OsString::from("/tmp/data")),
+            ),
+            PathBuf::from("/tmp/checkouts")
+        );
+    }
+
+    #[test]
+    fn checkout_root_falls_back_to_data_dir_checkouts() {
+        assert_eq!(
+            checkout_root_from_env_values(None, Some(OsString::from("/tmp/data"))),
+            PathBuf::from("/tmp/data/checkouts")
+        );
+    }
+
+    #[test]
+    fn checkout_root_uses_default_data_dir_checkouts() {
+        assert_eq!(
+            checkout_root_from_env_values(None, None),
+            default_checkout_root()
+        );
+    }
+}

@@ -149,11 +149,11 @@ impl HostDaemon {
             review_source_last_poll_unix: *self
                 .last_review_source_poll_unix
                 .lock()
-                .map_err(|_| AgentError::new("review source poll state lock poisoned"))?,
+                .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))?,
             review_source_last_poll_summary: self
                 .last_review_source_poll_summary
                 .lock()
-                .map_err(|_| AgentError::new("review source poll state lock poisoned"))?
+                .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))?
                 .clone(),
         })
     }
@@ -317,7 +317,7 @@ impl HostDaemon {
             .sync_destination(destination, target)?
             .sync_batch(&artifacts)?;
         if outcomes.len() != artifacts.len() {
-            return Err(AgentError::new(format!(
+            return Err(AgentError::invalid_input(format!(
                 "sync destination `{destination}` returned {} outcome(s) for {} artifact(s)",
                 outcomes.len(),
                 artifacts.len()
@@ -363,11 +363,12 @@ impl HostDaemon {
             } => review_id.clone(),
             _ => return Ok(None),
         };
-        let target = target
-            .ok_or_else(|| AgentError::new("github-review sync requires a pull request target"))?;
-        let target = target
-            .parse::<PullRequestRef>()
-            .map_err(|error| AgentError::new(format!("invalid GitHub sync target: {error}")))?;
+        let target = target.ok_or_else(|| {
+            AgentError::invalid_input("github-review sync requires a pull request target")
+        })?;
+        let target = target.parse::<PullRequestRef>().map_err(|error| {
+            AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
+        })?;
         let destination = GitHubCliReviewSyncDestination::new(
             target,
             self.config.github_command.as_deref().unwrap_or("gh"),
@@ -401,7 +402,7 @@ impl HostDaemon {
                     && matches!(artifact.content, ArtifactContent::ReviewComment(_))
             });
             if has_new_inline_comments {
-                return Err(AgentError::new(
+                return Err(AgentError::invalid_input(
                     "pending GitHub draft review already exists; submit or clear the draft review before staging new inline comments",
                 ));
             }
@@ -536,7 +537,7 @@ impl HostDaemon {
             let mut last_poll = self
                 .last_review_source_poll_unix
                 .lock()
-                .map_err(|_| AgentError::new("review source poll state lock poisoned"))?;
+                .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))?;
             if let Some(last_poll) = *last_poll
                 && now.saturating_sub(last_poll) < self.config.github_discovery.interval_seconds
             {
@@ -635,11 +636,11 @@ impl HostDaemon {
         *self
             .last_review_source_poll_unix
             .lock()
-            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? = Some(now);
+            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? = Some(now);
         *self
             .last_review_source_poll_summary
             .lock()
-            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? =
+            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? =
             Some(result.summary());
         Ok(())
     }
@@ -648,11 +649,11 @@ impl HostDaemon {
         *self
             .last_review_source_poll_unix
             .lock()
-            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? = Some(now);
+            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? = Some(now);
         *self
             .last_review_source_poll_summary
             .lock()
-            .map_err(|_| AgentError::new("review source poll state lock poisoned"))? =
+            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? =
             Some(review_source_error_summary(error));
         Ok(())
     }
@@ -842,9 +843,10 @@ async fn github_review_requests(
     let requests = match query.filter.as_deref() {
         Some("new") => daemon.discover_new_review_requests()?,
         Some(filter) => {
-            return Err(
-                AgentError::new(format!("unknown review request filter `{filter}`")).into(),
-            );
+            return Err(AgentError::invalid_input(format!(
+                "unknown review request filter `{filter}`"
+            ))
+            .into());
         }
         None => daemon.discover_review_requests()?,
     };
@@ -862,9 +864,10 @@ async fn review_requests(
 ) -> Result<Json<Vec<ReviewRequest>>, ApiError> {
     match query.filter.as_deref() {
         Some("new") => Ok(Json(daemon.discover_new_review_requests()?)),
-        Some(filter) => {
-            Err(AgentError::new(format!("unknown review request filter `{filter}`")).into())
-        }
+        Some(filter) => Err(AgentError::invalid_input(format!(
+            "unknown review request filter `{filter}`"
+        ))
+        .into()),
         None => Ok(Json(daemon.discover_review_requests()?)),
     }
 }
@@ -988,7 +991,7 @@ pub struct AgentConfig {
 impl AgentConfig {
     pub fn from_toml(input: &str) -> AgentResult<Self> {
         let raw = toml::from_str::<RawConfig>(input)
-            .map_err(|error| nitpick_agent_core::AgentError::new(error.to_string()))?;
+            .map_err(|error| nitpick_agent_core::AgentError::config(error.to_string()))?;
         let agent = raw.agent.unwrap_or_default();
         let provider = match agent.provider {
             Some(provider) => provider.parse()?,
@@ -1040,7 +1043,7 @@ impl AgentConfig {
     pub fn load(path: impl AsRef<Path>) -> AgentResult<Self> {
         let path = path.as_ref();
         let input = fs::read_to_string(path).map_err(|error| {
-            nitpick_agent_core::AgentError::new(format!(
+            nitpick_agent_core::AgentError::config(format!(
                 "failed to read config {}: {error}",
                 path.display()
             ))
@@ -1053,7 +1056,7 @@ impl AgentConfig {
         match fs::read_to_string(path) {
             Ok(input) => Self::from_toml(&input),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(nitpick_agent_core::AgentError::new(format!(
+            Err(error) => Err(nitpick_agent_core::AgentError::config(format!(
                 "failed to read config {}: {error}",
                 path.display()
             ))),
@@ -1099,7 +1102,7 @@ impl AgentConfig {
             "github" => match target {
                 Some(target) => {
                     let target = target.parse::<PullRequestRef>().map_err(|error| {
-                        AgentError::new(format!("invalid GitHub sync target: {error}"))
+                        AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
                     })?;
                     Ok(Box::new(GitHubCliSyncDestination::new(
                         target,
@@ -1110,17 +1113,17 @@ impl AgentConfig {
             },
             "github-review" => {
                 let target = target.ok_or_else(|| {
-                    AgentError::new("github-review sync requires a pull request target")
+                    AgentError::invalid_input("github-review sync requires a pull request target")
                 })?;
                 let target = target.parse::<PullRequestRef>().map_err(|error| {
-                    AgentError::new(format!("invalid GitHub sync target: {error}"))
+                    AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
                 })?;
                 Ok(Box::new(GitHubCliReviewSyncDestination::new(
                     target,
                     self.github_command.as_deref().unwrap_or("gh"),
                 )))
             }
-            destination => Err(AgentError::new(format!(
+            destination => Err(AgentError::invalid_input(format!(
                 "unknown sync destination `{destination}`"
             ))),
         }
@@ -1135,13 +1138,13 @@ fn github_pull_request_from_review_request(
     request: ReviewRequest,
 ) -> AgentResult<DiscoveredPullRequest> {
     let Some(number) = request.number else {
-        return Err(AgentError::new(format!(
+        return Err(AgentError::invalid_input(format!(
             "review request `{}` is missing a pull request number",
             request.display_reference()
         )));
     };
     let (owner, repo) = request.repository.split_once('/').ok_or_else(|| {
-        AgentError::new(format!(
+        AgentError::invalid_input(format!(
             "invalid GitHub repository name `{}`",
             request.repository
         ))
@@ -1204,7 +1207,7 @@ impl AgentSandboxConfig {
             .filter(|mode| !mode.is_empty())
             .unwrap_or(default.mode);
         if !matches!(mode.as_str(), "macos-seatbelt" | "none") {
-            return Err(AgentError::new(format!(
+            return Err(AgentError::config(format!(
                 "unsupported agent sandbox mode `{mode}`"
             )));
         }

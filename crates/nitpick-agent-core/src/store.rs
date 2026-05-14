@@ -112,7 +112,7 @@ impl ActivityStore for MemoryActivityStore {
         let mut activities = self
             .activities
             .lock()
-            .map_err(|_| AgentError::new("activity store lock poisoned"))?;
+            .map_err(|_| AgentError::io("activity store lock", "poisoned"))?;
         activities.insert(activity.id.clone(), activity.clone());
         Ok(())
     }
@@ -121,18 +121,18 @@ impl ActivityStore for MemoryActivityStore {
         let activities = self
             .activities
             .lock()
-            .map_err(|_| AgentError::new("activity store lock poisoned"))?;
+            .map_err(|_| AgentError::io("activity store lock", "poisoned"))?;
         activities
             .get(id)
             .cloned()
-            .ok_or_else(|| AgentError::new(format!("activity not found: {id}")))
+            .ok_or_else(|| AgentError::not_found("activity", id.as_str()))
     }
 
     fn list(&self) -> AgentResult<Vec<Activity>> {
         let activities = self
             .activities
             .lock()
-            .map_err(|_| AgentError::new("activity store lock poisoned"))?;
+            .map_err(|_| AgentError::io("activity store lock", "poisoned"))?;
         Ok(activities.values().cloned().collect())
     }
 }
@@ -157,7 +157,7 @@ impl ArtifactStore for MemoryActivityStore {
         let mut stored = self
             .artifacts
             .lock()
-            .map_err(|_| AgentError::new("artifact store lock poisoned"))?;
+            .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
         for artifact in artifacts {
             stored.insert(artifact.id.clone(), artifact.clone());
         }
@@ -168,7 +168,7 @@ impl ArtifactStore for MemoryActivityStore {
         let stored = self
             .artifacts
             .lock()
-            .map_err(|_| AgentError::new("artifact store lock poisoned"))?;
+            .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
         Ok(stored
             .values()
             .filter(|artifact| &artifact.activity_id == activity_id)
@@ -180,7 +180,7 @@ impl ArtifactStore for MemoryActivityStore {
         let stored = self
             .artifacts
             .lock()
-            .map_err(|_| AgentError::new("artifact store lock poisoned"))?;
+            .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
         Ok(stored.values().cloned().collect())
     }
 
@@ -188,11 +188,11 @@ impl ArtifactStore for MemoryActivityStore {
         let stored = self
             .artifacts
             .lock()
-            .map_err(|_| AgentError::new("artifact store lock poisoned"))?;
+            .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
         stored
             .get(id)
             .cloned()
-            .ok_or_else(|| AgentError::new(format!("artifact not found: {id}")))
+            .ok_or_else(|| AgentError::not_found("artifact", id.as_str()))
     }
 
     fn update_artifact_sync_state(
@@ -203,10 +203,10 @@ impl ArtifactStore for MemoryActivityStore {
         let mut stored = self
             .artifacts
             .lock()
-            .map_err(|_| AgentError::new("artifact store lock poisoned"))?;
+            .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
         let artifact = stored
             .get_mut(id)
-            .ok_or_else(|| AgentError::new(format!("artifact not found: {id}")))?;
+            .ok_or_else(|| AgentError::not_found("artifact", id.as_str()))?;
         artifact.sync_state = sync_state;
         Ok(artifact.clone())
     }
@@ -265,7 +265,7 @@ fn ensure_manifest(base: &Path) -> AgentResult<()> {
     if path.exists() {
         let manifest: StoreManifest = read_json(&path)?;
         if manifest.schema_version != STORE_SCHEMA_VERSION {
-            return Err(AgentError::new(format!(
+            return Err(AgentError::config(format!(
                 "unsupported store schema version {}; expected {}",
                 manifest.schema_version, STORE_SCHEMA_VERSION
             )));
@@ -339,7 +339,7 @@ impl ArtifactStore for FsActivityStore {
 
     fn get_artifact(&self, id: &ArtifactId) -> AgentResult<Artifact> {
         read_json(&artifact_path(&self.base, id))
-            .map_err(|error| AgentError::new(format!("artifact not found: {id}: {error}")))
+            .map_err(|error| AgentError::not_found("artifact", format!("{id}: {error}")))
     }
 
     fn update_artifact_sync_state(
@@ -388,5 +388,5 @@ fn next_numeric_suffix(dir: &Path, prefix: &str) -> AgentResult<u64> {
 }
 
 fn fs_error(context: &'static str) -> impl FnOnce(std::io::Error) -> AgentError {
-    move |error| AgentError::new(format!("{context}: {error}"))
+    move |error| AgentError::io(context, error)
 }

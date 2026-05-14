@@ -43,7 +43,7 @@ impl ProcessedReviewStore for MemoryProcessedReviewStore {
         let reviews = self
             .reviews
             .lock()
-            .map_err(|_| AgentError::new("processed review store lock poisoned"))?;
+            .map_err(|_| AgentError::io("processed review store lock", "poisoned"))?;
         Ok(reviews.get(&processed_key(request)).cloned())
     }
 
@@ -51,7 +51,7 @@ impl ProcessedReviewStore for MemoryProcessedReviewStore {
         let mut reviews = self
             .reviews
             .lock()
-            .map_err(|_| AgentError::new("processed review store lock poisoned"))?;
+            .map_err(|_| AgentError::io("processed review store lock", "poisoned"))?;
         reviews.insert(processed_review_key(review), review.clone());
         Ok(())
     }
@@ -60,7 +60,7 @@ impl ProcessedReviewStore for MemoryProcessedReviewStore {
         let reviews = self
             .reviews
             .lock()
-            .map_err(|_| AgentError::new("processed review store lock poisoned"))?;
+            .map_err(|_| AgentError::io("processed review store lock", "poisoned"))?;
         Ok(reviews.values().cloned().collect())
     }
 }
@@ -73,7 +73,7 @@ impl FsProcessedReviewStore {
     pub fn new(base: impl AsRef<Path>) -> AgentResult<Self> {
         let base = base.as_ref().to_path_buf();
         fs::create_dir_all(&base)
-            .map_err(|error| AgentError::new(format!("create processed review dir: {error}")))?;
+            .map_err(|error| AgentError::io_path("create processed review dir", &base, error))?;
         Ok(Self { base })
     }
 }

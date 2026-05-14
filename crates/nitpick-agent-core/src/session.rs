@@ -37,7 +37,7 @@ impl std::str::FromStr for AgentProviderKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
-            value => Err(crate::AgentError::new(format!(
+            value => Err(crate::AgentError::invalid_input(format!(
                 "unknown agent provider `{value}`"
             ))),
         }

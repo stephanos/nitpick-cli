@@ -6,7 +6,7 @@ pub trait AgentProvider: Send + Sync {
     fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String>;
 
     fn attach_session(&self, _session: &AgentSession) -> AgentResult<()> {
-        Err(AgentError::new(
+        Err(AgentError::provider(
             "agent provider does not support session resume",
         ))
     }
