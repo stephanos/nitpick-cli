@@ -269,6 +269,24 @@ fn validate_review_output_file_rejects_paths_that_escape_repo() {
 }
 
 #[test]
+fn validate_review_output_file_rejects_directory_comment_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    fs::create_dir(repo_dir.join("src")).expect("source dir");
+    let output_path = repo_dir.join(".nitpick-review.json");
+    fs::write(
+        &output_path,
+        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src\",\"line\":0,\"body\":\"directory note\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}",
+    )
+    .expect("write output");
+
+    let error = validate_review_output_file(&repo_dir, &output_path).expect_err("directory path");
+
+    assert_eq!(error.to_string(), "review comment path is not a file: src");
+}
+
+#[test]
 fn validate_review_output_file_accepts_line_zero_for_file_in_diff_changeset() {
     let dir = tempfile::tempdir().expect("temp dir");
     let repo_dir = dir.path().join("repo");
@@ -315,6 +333,27 @@ fn validate_review_output_file_rejects_comment_line_outside_diff_changeset() {
         error.to_string(),
         "review comment line is outside the diff changeset: src.rs:2"
     );
+}
+
+#[test]
+fn validate_review_output_file_uses_target_path_for_renamed_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    fs::write(repo_dir.join("new.rs"), "fn renamed() {}\n").expect("repo file");
+    let output_path = repo_dir.join(".nitpick-review.json");
+    fs::write(
+        &output_path,
+        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"new.rs\",\"line\":1,\"body\":\"renamed file note\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}",
+    )
+    .expect("write output");
+
+    validate_review_output_file_for_diff(
+        &repo_dir,
+        &output_path,
+        "diff --git a/old.rs b/new.rs\nsimilarity index 90%\nrename from old.rs\nrename to new.rs\n--- a/old.rs\n+++ b/new.rs\n@@ -1 +1 @@\n+fn renamed() {}\n",
+    )
+    .expect("target path is accepted");
 }
 
 #[test]

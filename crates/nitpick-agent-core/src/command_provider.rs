@@ -1,5 +1,4 @@
 use std::{
-    env, fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -276,42 +275,20 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
         });
     }
 
-    let path = env::var_os("PATH")
-        .ok_or_else(|| AgentError::new("resolve provider command: PATH is not set"))?;
-    for directory in env::split_paths(&path) {
-        let candidate = directory.join(command);
-        if is_executable_file(&candidate) {
-            return candidate.canonicalize().map_err(|error| {
-                AgentError::new(format!(
-                    "resolve provider command `{}`: {error}",
-                    candidate.display()
-                ))
-            });
-        }
-    }
-
-    Err(AgentError::new(format!(
-        "provider command `{}` not found on PATH",
-        command.display()
-    )))
-}
-
-fn is_executable_file(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    which::which(command)
+        .map_err(|_| {
+            AgentError::new(format!(
+                "provider command `{}` not found on PATH",
+                command.display()
+            ))
+        })?
+        .canonicalize()
+        .map_err(|error| {
+            AgentError::new(format!(
+                "resolve provider command `{}`: {error}",
+                command.display()
+            ))
+        })
 }
 
 impl AgentProvider for CommandAgentProvider {

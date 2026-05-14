@@ -1259,11 +1259,8 @@ impl FromStr for PullRequestRef {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let trimmed = value.trim();
-        if let Some(path) = trimmed.strip_prefix("https://github.com/") {
-            return parse_github_pull_path(path);
-        }
-        if let Some(path) = trimmed.strip_prefix("http://github.com/") {
-            return parse_github_pull_path(path);
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return parse_github_pull_url(trimmed);
         }
 
         let (repo, number) = trimmed
@@ -1309,27 +1306,34 @@ impl std::fmt::Display for ParsePullRequestRefError {
 
 impl std::error::Error for ParsePullRequestRefError {}
 
-fn parse_github_pull_path(path: &str) -> Result<PullRequestRef, ParsePullRequestRefError> {
-    let mut segments = path.trim_matches('/').split('/');
+fn parse_github_pull_url(value: &str) -> Result<PullRequestRef, ParsePullRequestRefError> {
+    let url = url::Url::parse(value).map_err(|_| ParsePullRequestRefError::new(value))?;
+    if url.domain() != Some("github.com") {
+        return Err(ParsePullRequestRefError::new(value));
+    }
+
+    let mut segments = url
+        .path_segments()
+        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
     let owner = segments
         .next()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(path))?;
+        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
     let repo = segments
         .next()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(path))?;
+        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
     let kind = segments
         .next()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(path))?;
+        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
     let number = segments
         .next()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(path))?;
+        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
 
     if kind != "pull" {
-        return Err(ParsePullRequestRefError::new(path));
+        return Err(ParsePullRequestRefError::new(value));
     }
 
     Ok(PullRequestRef {
@@ -1337,7 +1341,7 @@ fn parse_github_pull_path(path: &str) -> Result<PullRequestRef, ParsePullRequest
         repo: repo.to_owned(),
         number: number
             .parse::<u64>()
-            .map_err(|_| ParsePullRequestRefError::new(path))?,
+            .map_err(|_| ParsePullRequestRefError::new(value))?,
     })
 }
 

@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{AgentError, AgentResult, ReviewOutput};
+use unidiff::PatchSet;
 
 pub const REVIEW_OUTPUT_RELATIVE_PATH: &str = ".nitpick/review-output.json";
 
@@ -50,11 +51,8 @@ pub fn validate_review_output_file_for_diff(
     output_path: impl AsRef<Path>,
     diff: &str,
 ) -> AgentResult<ReviewOutput> {
-    validate_review_output_file_with_changes(
-        repo_dir,
-        output_path,
-        Some(&DiffChangeset::parse(diff)),
-    )
+    let changeset = DiffChangeset::parse(diff)?;
+    validate_review_output_file_with_changes(repo_dir, output_path, Some(&changeset))
 }
 
 fn validate_review_output_file_with_changes(
@@ -119,6 +117,12 @@ fn validate_review_output(
                 comment.path
             )));
         }
+        if !comment_file.is_file() {
+            return Err(AgentError::new(format!(
+                "review comment path is not a file: {}",
+                comment.path
+            )));
+        }
         if let Some(changeset) = changeset {
             changeset.validate_comment_location(&comment.path, comment.line)?;
         }
@@ -175,45 +179,33 @@ struct DiffChangeset {
 }
 
 impl DiffChangeset {
-    fn parse(diff: &str) -> Self {
+    fn parse(diff: &str) -> AgentResult<Self> {
+        let mut patch = PatchSet::new();
+        patch
+            .parse(diff)
+            .map_err(|error| AgentError::new(format!("invalid review diff: {error}")))?;
+
         let mut changeset = Self::default();
-        let mut current_path = None::<String>;
-        let mut new_line = None::<u32>;
-
-        for line in diff.lines() {
-            if let Some(path) = line.strip_prefix("+++ ") {
-                current_path = normalized_diff_path(path);
-                continue;
-            }
-
-            if let Some(header) = line.strip_prefix("@@ ") {
-                new_line = parse_hunk_new_start(header);
-                continue;
-            }
-
-            let Some(path) = current_path.as_ref() else {
+        for file in patch {
+            let Some(path) = normalized_target_path(&file.target_file) else {
                 continue;
             };
-            let Some(line_number) = new_line.as_mut() else {
-                continue;
-            };
-
-            if line.starts_with('+') && !line.starts_with("+++") {
-                changeset
-                    .changed_lines
-                    .entry(path.clone())
-                    .or_default()
-                    .insert(*line_number);
-                *line_number += 1;
-            } else if (line.starts_with('-') && !line.starts_with("---")) || line.starts_with('\\')
-            {
-                continue;
-            } else {
-                *line_number += 1;
+            for hunk in file.hunks() {
+                for line in hunk.lines() {
+                    if line.is_added() {
+                        let line_number = u32::try_from(line.target_line_no.unwrap_or(0))
+                            .map_err(|_| AgentError::new("review diff line number is too large"))?;
+                        changeset
+                            .changed_lines
+                            .entry(path.clone())
+                            .or_default()
+                            .insert(line_number);
+                    }
+                }
             }
         }
 
-        changeset
+        Ok(changeset)
     }
 
     fn validate_comment_location(&self, path: &str, line: u32) -> AgentResult<()> {
@@ -233,27 +225,9 @@ impl DiffChangeset {
     }
 }
 
-fn normalized_diff_path(path: &str) -> Option<String> {
-    let path = path.trim();
+fn normalized_target_path(path: &str) -> Option<String> {
     if path == "/dev/null" {
         return None;
     }
-    Some(
-        path.strip_prefix("b/")
-            .or_else(|| path.strip_prefix("a/"))
-            .unwrap_or(path)
-            .to_owned(),
-    )
-}
-
-fn parse_hunk_new_start(header: &str) -> Option<u32> {
-    let plus = header
-        .split_whitespace()
-        .find(|part| part.starts_with('+'))?;
-    let number = plus
-        .trim_start_matches('+')
-        .split_once(',')
-        .map(|(start, _)| start)
-        .unwrap_or_else(|| plus.trim_start_matches('+'));
-    number.parse().ok()
+    Some(path.strip_prefix("b/").unwrap_or(path).to_owned())
 }
