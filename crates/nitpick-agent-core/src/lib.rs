@@ -1,4 +1,5 @@
 mod activity;
+mod app_paths;
 mod artifact;
 mod clock;
 mod command_provider;
@@ -15,6 +16,10 @@ mod store;
 mod sync;
 
 pub use activity::{Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus};
+pub use app_paths::{
+    checkout_root_from_env_values, config_path_from_env_value, data_dir_from_env_value,
+    default_checkout_root, default_config_path, default_data_dir,
+};
 pub use artifact::{Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState};
 pub use clock::{Clock, SystemClock};
 pub use command_provider::{CommandAgentProvider, CommandSandboxConfig};

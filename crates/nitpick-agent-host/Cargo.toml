@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 axum.workspace = true
-directories = "6.0.0"
 fs-err = "3.3.0"
 nitpick-agent-core.workspace = true
 nitpick-agent-github = { path = "../nitpick-agent-github" }

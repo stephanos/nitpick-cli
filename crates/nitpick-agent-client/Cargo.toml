@@ -7,6 +7,5 @@ edition.workspace = true
 nitpick-agent-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-serde_path_to_error = "0.1.20"
 thiserror = "2.0.18"
 ureq = { version = "3.3.0", default-features = false, features = ["json"] }

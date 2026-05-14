@@ -1,7 +1,47 @@
 use std::time::Duration;
 
-use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput, ReviewRequest};
+use nitpick_agent_core::{
+    Activity, Artifact, ChatInput, ReviewInput, ReviewRequest, parse_json_str,
+};
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum HostClientError {
+    #[error("nitpick-agent-host unavailable at {addr}: {message}")]
+    Unavailable { addr: String, message: String },
+    #[error("unexpected host status: {status}")]
+    HttpStatus { status: String },
+    #[error("unexpected host status: {status}: {body}")]
+    HttpStatusWithBody { status: String, body: String },
+    #[error("read nitpick-agent-host response from {addr}{path}: {message}")]
+    ReadResponse {
+        addr: String,
+        path: String,
+        message: String,
+    },
+    #[error("invalid host response at {path}: {message}")]
+    InvalidJson { path: String, message: String },
+    #[error("serialize host request: {message}")]
+    SerializeRequest { message: String },
+    #[error("GET host request cannot include a body")]
+    GetWithBody,
+    #[error("unsupported host request method: {method}")]
+    UnsupportedMethod { method: String },
+}
+
+impl HostClientError {
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable { .. })
+    }
+}
+
+impl From<HostClientError> for String {
+    fn from(error: HostClientError) -> Self {
+        error.to_string()
+    }
+}
+
+pub type HostClientResult<T> = Result<T, HostClientError>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct HostStatus {
@@ -42,33 +82,33 @@ impl HostClient {
         Self::new("127.0.0.1:19783")
     }
 
-    pub fn status(&self) -> Result<HostStatus, String> {
+    pub fn status(&self) -> HostClientResult<HostStatus> {
         self.get_json("/status")
     }
 
-    pub fn activities(&self) -> Result<Vec<Activity>, String> {
+    pub fn activities(&self) -> HostClientResult<Vec<Activity>> {
         self.get_json("/activities")
     }
 
-    pub fn activity_artifacts(&self, activity_id: &str) -> Result<Vec<Artifact>, String> {
+    pub fn activity_artifacts(&self, activity_id: &str) -> HostClientResult<Vec<Artifact>> {
         self.get_json(&format!("/activities/{activity_id}/artifacts"))
     }
 
-    pub fn artifact(&self, artifact_id: &str) -> Result<Artifact, String> {
+    pub fn artifact(&self, artifact_id: &str) -> HostClientResult<Artifact> {
         self.get_json(&format!("/artifacts/{artifact_id}"))
     }
 
     pub fn pending_sync_artifacts(
         &self,
         destination: Option<&str>,
-    ) -> Result<Vec<Artifact>, String> {
+    ) -> HostClientResult<Vec<Artifact>> {
         match destination {
             Some(destination) => self.get_json(&format!("/sync/pending?destination={destination}")),
             None => self.get_json("/sync/pending"),
         }
     }
 
-    pub fn review_requests(&self, only_new: bool) -> Result<Vec<ReviewRequest>, String> {
+    pub fn review_requests(&self, only_new: bool) -> HostClientResult<Vec<ReviewRequest>> {
         if only_new {
             self.get_json("/review-requests?filter=new")
         } else {
@@ -81,7 +121,7 @@ impl HostClient {
         artifact_id: &str,
         destination: &str,
         target: Option<&str>,
-    ) -> Result<Artifact, String> {
+    ) -> HostClientResult<Artifact> {
         self.post_json(
             &format!("/artifacts/{artifact_id}/sync"),
             &ArtifactSyncInput {
@@ -96,7 +136,7 @@ impl HostClient {
         activity_id: &str,
         destination: &str,
         target: Option<&str>,
-    ) -> Result<Vec<Artifact>, String> {
+    ) -> HostClientResult<Vec<Artifact>> {
         self.post_json(
             &format!("/activities/{activity_id}/artifact-sync"),
             &ArtifactSyncInput {
@@ -106,19 +146,19 @@ impl HostClient {
         )
     }
 
-    pub fn review(&self, input: &ReviewInput) -> Result<Activity, String> {
+    pub fn review(&self, input: &ReviewInput) -> HostClientResult<Activity> {
         self.post_json("/reviews", input)
     }
 
-    pub fn chat(&self, input: &ChatInput) -> Result<Activity, String> {
+    pub fn chat(&self, input: &ChatInput) -> HostClientResult<Activity> {
         self.post_json("/chats", input)
     }
 
-    pub fn cleanup_checkouts(&self) -> Result<CleanupCheckoutsResult, String> {
+    pub fn cleanup_checkouts(&self) -> HostClientResult<CleanupCheckoutsResult> {
         self.post_json("/maintenance/cleanup-checkouts", &serde_json::json!({}))
     }
 
-    fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+    fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> HostClientResult<T> {
         let body = request_host(&self.agent, &self.addr, "GET", path, None)?;
         parse_json(&body)
     }
@@ -127,8 +167,11 @@ impl HostClient {
         &self,
         path: &str,
         input: &impl serde::Serialize,
-    ) -> Result<T, String> {
-        let body = serde_json::to_vec(input).map_err(|error| error.to_string())?;
+    ) -> HostClientResult<T> {
+        let body =
+            serde_json::to_vec(input).map_err(|error| HostClientError::SerializeRequest {
+                message: error.to_string(),
+            })?;
         let response = request_host(&self.agent, &self.addr, "POST", path, Some(&body))?;
         parse_json(&response)
     }
@@ -152,7 +195,7 @@ fn request_host(
     method: &str,
     path: &str,
     body: Option<&[u8]>,
-) -> Result<String, String> {
+) -> HostClientResult<String> {
     let url = format!("http://{addr}{path}");
     let result = match (method, body) {
         ("GET", None) => agent.get(&url).call(),
@@ -161,23 +204,29 @@ fn request_host(
             .header("Content-Type", "application/json")
             .send(body),
         ("POST", None) => agent.post(&url).send(&[]),
-        ("GET", Some(_)) => return Err("GET host request cannot include a body".to_owned()),
-        _ => return Err(format!("unsupported host request method: {method}")),
+        ("GET", Some(_)) => return Err(HostClientError::GetWithBody),
+        _ => {
+            return Err(HostClientError::UnsupportedMethod {
+                method: method.to_owned(),
+            });
+        }
     };
     let mut response = match result {
         Ok(response) => response,
         Err(error) => {
-            return Err(format!("nitpick-agent-host unavailable at {addr}: {error}"));
+            return Err(HostClientError::Unavailable {
+                addr: addr.to_owned(),
+                message: error.to_string(),
+            });
         }
     };
     response
         .body_mut()
         .read_to_string()
-        .map_err(|error| {
-            format!(
-                "read nitpick-agent-host response from {addr}{path}: {}",
-                error
-            )
+        .map_err(|error| HostClientError::ReadResponse {
+            addr: addr.to_owned(),
+            path: path.to_owned(),
+            message: error.to_string(),
         })
         .and_then(|body| {
             let status = response.status();
@@ -186,21 +235,79 @@ fn request_host(
             } else {
                 let details = body.trim();
                 if details.is_empty() {
-                    Err(format!("unexpected host status: {status}"))
+                    Err(HostClientError::HttpStatus {
+                        status: status.to_string(),
+                    })
                 } else {
-                    Err(format!("unexpected host status: {status}: {details}"))
+                    Err(HostClientError::HttpStatusWithBody {
+                        status: status.to_string(),
+                        body: details.to_owned(),
+                    })
                 }
             }
         })
 }
 
-fn parse_json<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, String> {
-    let mut deserializer = serde_json::Deserializer::from_str(body);
-    serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-        format!(
-            "invalid host response at {}: {}",
-            error.path(),
-            error.inner()
-        )
+fn parse_json<T: serde::de::DeserializeOwned>(body: &str) -> HostClientResult<T> {
+    parse_json_str(body, "invalid host response").map_err(|error| match error {
+        nitpick_agent_core::AgentError::Json { path, error, .. } => HostClientError::InvalidJson {
+            path,
+            message: error,
+        },
+        error => HostClientError::InvalidJson {
+            path: "$".to_owned(),
+            message: error.to_string(),
+        },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    use super::{HostClientError, HostStatus, parse_json, request_host};
+
+    #[test]
+    fn parse_json_reports_field_path() {
+        let error = parse_json::<HostStatus>(r#"{"activity_count":"wrong"}"#)
+            .expect_err("invalid field type");
+
+        assert!(matches!(
+            error,
+            HostClientError::InvalidJson { path, .. } if path == "activity_count"
+        ));
+    }
+
+    #[test]
+    fn request_host_includes_error_response_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 512];
+            let _ = stream.read(&mut request).expect("read request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\nConnection: close\r\n\r\nbad request details",
+                )
+                .expect("write response");
+        });
+
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        let error = request_host(&agent, &addr.to_string(), "GET", "/status", None)
+            .expect_err("status error");
+        handle.join().expect("server thread");
+
+        assert!(matches!(
+            error,
+            HostClientError::HttpStatusWithBody { body, .. } if body == "bad request details"
+        ));
+    }
 }

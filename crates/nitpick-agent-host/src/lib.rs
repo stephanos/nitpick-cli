@@ -197,6 +197,7 @@ impl HostDaemon {
         Ok(activity)
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn cleanup_checkouts(&self) -> AgentResult<CleanupCheckoutsResult> {
         let github = self.config.github_discovery_client();
         let mut cleaned = Vec::new();
@@ -218,6 +219,7 @@ impl HostDaemon {
             ));
         }
 
+        tracing::info!(removed_count = cleaned.len(), "checkout cleanup completed");
         Ok(CleanupCheckoutsResult {
             removed_count: cleaned.len(),
             cleaned,
@@ -522,8 +524,10 @@ impl HostDaemon {
             .collect()
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn poll_review_requests(&self) -> AgentResult<ReviewSourcePollResult> {
         if !self.config.github_discovery.enabled {
+            tracing::debug!("review source poll skipped because discovery is disabled");
             return Ok(ReviewSourcePollResult::skipped("disabled"));
         }
 
@@ -536,6 +540,7 @@ impl HostDaemon {
             if let Some(last_poll) = *last_poll
                 && now.saturating_sub(last_poll) < self.config.github_discovery.interval_seconds
             {
+                tracing::debug!("review source poll skipped because interval has not elapsed");
                 return Ok(ReviewSourcePollResult::skipped("interval"));
             }
             *last_poll = Some(now);
@@ -577,6 +582,11 @@ impl HostDaemon {
             skipped_reason: None,
         };
         self.record_review_source_poll_result(now, &result)?;
+        tracing::info!(
+            discovered_count = result.discovered_count,
+            enqueued_count = result.enqueued_count,
+            "review source poll completed"
+        );
         Ok(result)
     }
 
@@ -713,8 +723,9 @@ impl ReviewSourcePoller {
             Ok(result) => result,
             Err(error) => {
                 let now = self.daemon.clock.now_unix();
-                self.daemon
-                    .record_review_source_poll_error(now, error.message())?;
+                let message = error.message();
+                tracing::warn!(error = %message, "review source poll failed");
+                self.daemon.record_review_source_poll_error(now, &message)?;
                 return Err(error);
             }
         };
@@ -724,6 +735,7 @@ impl ReviewSourcePoller {
                     result.cleanup_removed_count = cleanup.removed_count;
                 }
                 Err(error) => {
+                    tracing::warn!(error = %error, "automatic checkout cleanup failed");
                     result.cleanup_error = Some(error.to_string());
                 }
             }

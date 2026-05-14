@@ -4,25 +4,25 @@ use std::path::PathBuf;
 pub enum AgentError {
     #[error("{message}")]
     Message { message: String },
-    #[error("{context}: {source}")]
-    Io { context: String, source: String },
-    #[error("{context} at {path}: {source}")]
+    #[error("{context}: {error}")]
+    Io { context: String, error: String },
+    #[error("{context} at {path}: {error}")]
     Json {
         context: String,
         path: String,
-        source: String,
+        error: String,
     },
     #[error("{resource} not found: {id}")]
     NotFound { resource: String, id: String },
-    #[error("invalid input: {message}")]
+    #[error("{message}")]
     InvalidInput { message: String },
-    #[error("provider command failed: {message}")]
+    #[error("{message}")]
     Provider { message: String },
-    #[error("sandbox error: {message}")]
+    #[error("{message}")]
     Sandbox { message: String },
-    #[error("config error: {message}")]
+    #[error("{message}")]
     Config { message: String },
-    #[error("GitHub CLI failed: {message}")]
+    #[error("{message}")]
     GitHubCli { message: String },
 }
 
@@ -36,7 +36,7 @@ impl AgentError {
     pub fn io(context: impl Into<String>, source: impl std::fmt::Display) -> Self {
         Self::Io {
             context: context.into(),
-            source: source.to_string(),
+            error: source.to_string(),
         }
     }
 
@@ -47,7 +47,7 @@ impl AgentError {
     ) -> Self {
         Self::Io {
             context: format!("{} {}", context.as_ref(), path.into().display()),
-            source: source.to_string(),
+            error: source.to_string(),
         }
     }
 
@@ -59,7 +59,7 @@ impl AgentError {
         Self::Json {
             context: context.into(),
             path: path.to_string(),
-            source: source.to_string(),
+            error: source.to_string(),
         }
     }
 

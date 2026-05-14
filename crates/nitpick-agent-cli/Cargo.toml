@@ -9,7 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-directories = "6.0.0"
 nitpick-agent-client = { path = "../nitpick-agent-client" }
 nitpick-agent-core.workspace = true
 nitpick-agent-github = { path = "../nitpick-agent-github" }

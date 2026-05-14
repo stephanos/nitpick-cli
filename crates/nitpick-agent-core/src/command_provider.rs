@@ -2,6 +2,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Instant,
 };
 
 use crate::{
@@ -113,13 +114,20 @@ impl CommandAgentProvider {
         if let Some(review_output_path) = review_output_path {
             command.env("NITPICK_REVIEW_OUTPUT", review_output_path);
         }
+        tracing::debug!(
+            provider = %self.kind,
+            command = %self.command.display(),
+            sandbox = sandbox.enabled,
+            "running provider command"
+        );
+        let started = Instant::now();
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
-                AgentError::new(format!(
+                AgentError::provider(format!(
                     "failed to start {} provider command `{}`: {error}",
                     self.kind,
                     self.command.display()
@@ -129,16 +137,23 @@ impl CommandAgentProvider {
         child
             .stdin
             .as_mut()
-            .ok_or_else(|| AgentError::new("provider command stdin unavailable"))?
+            .ok_or_else(|| AgentError::provider("provider command stdin unavailable"))?
             .write_all(prompt.as_bytes())
-            .map_err(|error| AgentError::new(format!("write provider prompt: {error}")))?;
+            .map_err(|error| AgentError::provider(format!("write provider prompt: {error}")))?;
 
         let output = child
             .wait_with_output()
-            .map_err(|error| AgentError::new(format!("wait for provider command: {error}")))?;
+            .map_err(|error| AgentError::provider(format!("wait for provider command: {error}")))?;
+        tracing::debug!(
+            provider = %self.kind,
+            command = %self.command.display(),
+            status = %output.status,
+            duration_ms = started.elapsed().as_millis(),
+            "provider command finished"
+        );
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(AgentError::new(format!(
+            return Err(AgentError::provider(format!(
                 "{} provider command failed with status {}{}",
                 self.kind,
                 output.status,
@@ -172,7 +187,7 @@ impl CommandAgentProvider {
         #[cfg(target_os = "macos")]
         {
             let repo_dir = repo_dir.ok_or_else(|| {
-                AgentError::new("sandboxed provider execution requires a repository directory")
+                AgentError::sandbox("sandboxed provider execution requires a repository directory")
             })?;
             let provider_command = self.resolved_command()?;
             let mut command = Command::new("sandbox-exec");
@@ -188,7 +203,7 @@ impl CommandAgentProvider {
         {
             let _ = repo_dir;
             let _ = args;
-            Err(AgentError::new(
+            Err(AgentError::sandbox(
                 "sandboxed provider execution is only implemented on macOS",
             ))
         }
@@ -207,23 +222,36 @@ impl CommandAgentProvider {
         if let Some(current_dir) = current_dir {
             command.current_dir(current_dir);
         }
+        tracing::debug!(
+            provider = %self.kind,
+            command = %self.command.display(),
+            "running interactive provider command"
+        );
+        let started = Instant::now();
         let output = command
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| {
-                AgentError::new(format!(
+                AgentError::provider(format!(
                     "failed to start {} provider command `{}`: {error}",
                     self.kind,
                     self.command.display()
                 ))
             })?
             .wait_with_output()
-            .map_err(|error| AgentError::new(format!("wait for provider command: {error}")))?;
+            .map_err(|error| AgentError::provider(format!("wait for provider command: {error}")))?;
+        tracing::debug!(
+            provider = %self.kind,
+            command = %self.command.display(),
+            status = %output.status,
+            duration_ms = started.elapsed().as_millis(),
+            "interactive provider command finished"
+        );
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(AgentError::new(format!(
+            return Err(AgentError::provider(format!(
                 "{} provider command failed with status {}{}",
                 self.kind,
                 output.status,
@@ -248,7 +276,7 @@ impl CommandAgentProvider {
         repo_dir
             .canonicalize()
             .map_err(|error| {
-                AgentError::new(format!(
+                AgentError::sandbox(format!(
                     "canonicalize sandbox repository {}: {error}",
                     repo_dir.display()
                 ))
@@ -268,7 +296,7 @@ impl CommandAgentProvider {
 fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
     if command.components().count() > 1 || command.is_absolute() {
         return command.canonicalize().map_err(|error| {
-            AgentError::new(format!(
+            AgentError::provider(format!(
                 "resolve provider command `{}`: {error}",
                 command.display()
             ))
@@ -277,14 +305,14 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
 
     which::which(command)
         .map_err(|_| {
-            AgentError::new(format!(
+            AgentError::provider(format!(
                 "provider command `{}` not found on PATH",
                 command.display()
             ))
         })?
         .canonicalize()
         .map_err(|error| {
-            AgentError::new(format!(
+            AgentError::provider(format!(
                 "resolve provider command `{}`: {error}",
                 command.display()
             ))
@@ -297,22 +325,25 @@ impl AgentProvider for CommandAgentProvider {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_sandbox(input.disable_sandbox);
         let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
-            AgentError::new(format!(
+            AgentError::provider(format!(
                 "canonicalize review repository {}: {error}",
                 input.repo_dir.display()
             ))
         })?;
         let output_path = repo_dir.join(REVIEW_OUTPUT_RELATIVE_PATH);
         fs_err::create_dir_all(output_path.parent().ok_or_else(|| {
-            AgentError::new(format!(
+            AgentError::provider(format!(
                 "review output path has no parent: {}",
                 output_path.display()
             ))
         })?)
-        .map_err(|error| AgentError::new(format!("create review output directory: {error}")))?;
+        .map_err(|error| {
+            AgentError::provider(format!("create review output directory: {error}"))
+        })?;
         if output_path.exists() {
-            fs_err::remove_file(&output_path)
-                .map_err(|error| AgentError::new(format!("remove stale review output: {error}")))?;
+            fs_err::remove_file(&output_path).map_err(|error| {
+                AgentError::provider(format!("remove stale review output: {error}"))
+            })?;
         }
         let prompt = review_prompt(self.model.as_deref(), input, REVIEW_OUTPUT_RELATIVE_PATH);
         let args = self.review_args(session);
@@ -399,7 +430,7 @@ fn chat_prompt(model: Option<&str>, input: &ChatInput) -> String {
 fn macos_sandbox_profile(repo_dir: &Path, provider_command: &Path) -> AgentResult<String> {
     let repo_dir = repo_dir
         .canonicalize()
-        .map_err(|error| AgentError::new(format!("canonicalize sandbox repo dir: {error}")))?;
+        .map_err(|error| AgentError::sandbox(format!("canonicalize sandbox repo dir: {error}")))?;
     let repo = escape_sandbox_string(&repo_dir.to_string_lossy());
     let command = provider_command
         .canonicalize()

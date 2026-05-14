@@ -754,7 +754,6 @@ name = "nitpick-agent-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "directories",
  "nitpick-agent-client",
  "nitpick-agent-core",
  "nitpick-agent-github",
@@ -771,7 +770,6 @@ dependencies = [
  "nitpick-agent-core",
  "serde",
  "serde_json",
- "serde_path_to_error",
  "thiserror",
  "ureq",
 ]
@@ -782,6 +780,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-write-file",
  "camino",
+ "directories",
  "fs-err",
  "serde",
  "serde_json",
@@ -797,12 +796,10 @@ dependencies = [
 name = "nitpick-agent-github"
 version = "0.1.0"
 dependencies = [
- "directories",
  "fs-err",
  "nitpick-agent-core",
  "serde",
  "serde_json",
- "serde_path_to_error",
  "tempfile",
  "tracing",
  "url",
@@ -813,7 +810,6 @@ name = "nitpick-agent-host"
 version = "0.1.0"
 dependencies = [
  "axum",
- "directories",
  "fs-err",
  "nitpick-agent-core",
  "nitpick-agent-github",

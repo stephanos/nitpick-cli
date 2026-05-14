@@ -1,5 +1,4 @@
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
-use directories::ProjectDirs;
 use serde::Deserialize;
 use std::{path::Path, process::Command};
 
@@ -7,6 +6,7 @@ use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, Artifact,
     ArtifactContent, ChatInput, FsActivityStore, ReviewInput, ReviewRequest, ReviewSubject,
+    config_path_from_env_value, data_dir_from_env_value,
 };
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
 
@@ -563,25 +563,11 @@ pub fn chat_input(prompt: String, repo_dir: std::path::PathBuf, context: String)
 pub fn config_path_from_env(
     nitpick_agent_config: Option<std::ffi::OsString>,
 ) -> std::path::PathBuf {
-    if let Some(path) = nitpick_agent_config {
-        return std::path::PathBuf::from(path);
-    }
-    project_dirs()
-        .map(|dirs| dirs.config_dir().join("config.toml"))
-        .unwrap_or_else(|| std::path::PathBuf::from("config.toml"))
+    config_path_from_env_value(nitpick_agent_config)
 }
 
 pub fn data_dir_from_env(nitpick_agent_data_dir: Option<std::ffi::OsString>) -> std::path::PathBuf {
-    if let Some(path) = nitpick_agent_data_dir {
-        return std::path::PathBuf::from(path);
-    }
-    project_dirs()
-        .map(|dirs| dirs.data_dir().to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-}
-
-fn project_dirs() -> Option<ProjectDirs> {
-    ProjectDirs::from("dev", "nitpick", "nitpick-agent")
+    data_dir_from_env_value(nitpick_agent_data_dir)
 }
 
 pub fn daemon_log_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -708,11 +694,11 @@ pub fn run_cli_command_with_options(
         CliCommand::Version => Ok(format!("nitpick {}", env!("CARGO_PKG_VERSION"))),
         CliCommand::Status => match client.status() {
             Ok(status) => Ok(format_host_status(&host_status(status))),
-            Err(error) if error.starts_with("nitpick-agent-host unavailable") => Ok(format!(
+            Err(error) if error.is_unavailable() => Ok(format!(
                 "nitpick-agent-host: not connected\naddress: {}",
                 context.host_addr
             )),
-            Err(error) => Err(error),
+            Err(error) => Err(error.to_string()),
         },
         CliCommand::ReviewRequests { only_new } => {
             Ok(format_review_requests(&client.review_requests(only_new)?))
@@ -1364,11 +1350,10 @@ mod tests {
             super::config_path_from_env(Some("/tmp/config.toml".into())),
             std::path::PathBuf::from("/tmp/config.toml")
         );
-        let expected = directories::ProjectDirs::from("dev", "nitpick", "nitpick-agent")
-            .expect("project dirs")
-            .config_dir()
-            .join("config.toml");
-        assert_eq!(super::config_path_from_env(None), expected);
+        assert_eq!(
+            super::config_path_from_env(None),
+            nitpick_agent_core::default_config_path()
+        );
     }
 
     #[test]
@@ -1377,11 +1362,10 @@ mod tests {
             super::data_dir_from_env(Some("/tmp/data".into())),
             std::path::PathBuf::from("/tmp/data")
         );
-        let expected = directories::ProjectDirs::from("dev", "nitpick", "nitpick-agent")
-            .expect("project dirs")
-            .data_dir()
-            .to_path_buf();
-        assert_eq!(super::data_dir_from_env(None), expected);
+        assert_eq!(
+            super::data_dir_from_env(None),
+            nitpick_agent_core::default_data_dir()
+        );
     }
 
     #[test]

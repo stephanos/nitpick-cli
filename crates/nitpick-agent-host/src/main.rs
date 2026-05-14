@@ -2,8 +2,9 @@ use std::{
     env, net::SocketAddr, path::PathBuf, process::ExitCode, sync::Arc, thread, time::Duration,
 };
 
-use directories::ProjectDirs;
-use nitpick_agent_core::{FsActivityStore, FsProcessedReviewStore};
+use nitpick_agent_core::{
+    FsActivityStore, FsProcessedReviewStore, config_path_from_env_value, data_dir_from_env_value,
+};
 use nitpick_agent_host::{AgentConfig, HostDaemon, ReviewSourcePoller, api_router};
 
 #[tokio::main]
@@ -139,25 +140,9 @@ fn host_addr() -> Result<SocketAddr, String> {
 }
 
 fn data_dir() -> PathBuf {
-    if let Some(path) = env::var_os("NITPICK_AGENT_DATA_DIR") {
-        return PathBuf::from(path);
-    }
-
-    project_dirs()
-        .map(|dirs| dirs.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
+    data_dir_from_env_value(env::var_os("NITPICK_AGENT_DATA_DIR"))
 }
 
 fn config_path() -> PathBuf {
-    if let Some(path) = env::var_os("NITPICK_AGENT_CONFIG") {
-        return PathBuf::from(path);
-    }
-
-    project_dirs()
-        .map(|dirs| dirs.config_dir().join("config.toml"))
-        .unwrap_or_else(|| PathBuf::from("config.toml"))
-}
-
-fn project_dirs() -> Option<ProjectDirs> {
-    ProjectDirs::from("dev", "nitpick", "nitpick-agent")
+    config_path_from_env_value(env::var_os("NITPICK_AGENT_CONFIG"))
 }
