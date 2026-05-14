@@ -24,15 +24,23 @@ fn github_polling_creates_local_review_and_marks_pr_head_processed() {
     assert_eq!(result.discovered_count, 1);
     assert_eq!(result.enqueued_count, 1);
     let activities = harness.store.list().expect("activities");
-    assert_eq!(activities.len(), 1);
-    assert_eq!(activities[0].kind, ActivityKind::Review);
-    assert_eq!(activities[0].status, ActivityStatus::Completed);
+    assert_eq!(activities.len(), 2);
+    let discovery = activities
+        .iter()
+        .find(|activity| activity.kind == ActivityKind::Discovery)
+        .expect("discovery activity");
+    assert_eq!(discovery.status, ActivityStatus::Completed);
     assert_eq!(
-        harness
-            .store
-            .list_artifacts_for(&activities[0].id)
-            .unwrap()
-            .len(),
+        discovery.label.as_deref(),
+        Some("detected review request stephanos/nitpick-agent#42")
+    );
+    let review = activities
+        .iter()
+        .find(|activity| activity.kind == ActivityKind::Review)
+        .expect("review activity");
+    assert_eq!(review.status, ActivityStatus::Completed);
+    assert_eq!(
+        harness.store.list_artifacts_for(&review.id).unwrap().len(),
         1
     );
     assert!(
@@ -96,6 +104,15 @@ fn github_polling_tick_records_review_source_errors_in_status() {
         status.review_source_last_poll_summary.as_deref(),
         Some("github unavailable: failed to start GitHub CLI `gh`: No such file or directory")
     );
+    let activities = harness.store.list().expect("activities");
+    assert_eq!(activities.len(), 1);
+    assert_eq!(activities[0].kind, ActivityKind::Discovery);
+    assert_eq!(activities[0].status, ActivityStatus::Error);
+    assert_eq!(activities[0].label.as_deref(), Some("discovery poll"));
+    assert_eq!(
+        activities[0].error.as_deref(),
+        Some("failed to start GitHub CLI `gh`: No such file or directory")
+    );
 }
 
 #[test]
@@ -133,7 +150,7 @@ fn github_polling_skips_until_interval_passes_and_rereviews_changed_heads() {
             .enqueued_count,
         1
     );
-    assert_eq!(harness.activity_count(), 2);
+    assert_eq!(harness.activity_count(), 4);
 }
 
 #[test]
@@ -215,7 +232,7 @@ fn github_polling_skips_already_processed_prs_after_store_reopen() {
 
     assert_eq!(result.discovered_count, 0);
     assert_eq!(result.enqueued_count, 0);
-    assert_eq!(reopened_store.list().expect("activities").len(), 1);
+    assert_eq!(reopened_store.list().expect("activities").len(), 2);
 }
 
 #[test]
@@ -253,8 +270,19 @@ fn github_polling_does_not_mark_failed_reviews_processed() {
     );
 
     let activities = harness.store.list().expect("activities");
-    assert_eq!(activities.len(), 1);
-    assert_eq!(activities[0].status, ActivityStatus::Error);
+    assert_eq!(activities.len(), 2);
+    assert!(
+        activities
+            .iter()
+            .any(|activity| activity.kind == ActivityKind::Discovery
+                && activity.status == ActivityStatus::Completed)
+    );
+    assert!(
+        activities
+            .iter()
+            .any(|activity| activity.kind == ActivityKind::Review
+                && activity.status == ActivityStatus::Error)
+    );
     assert!(
         harness
             .processed
@@ -283,7 +311,7 @@ fn github_polling_reviews_multiple_prs_and_only_rereviews_changed_heads() {
             .enqueued_count,
         2
     );
-    assert_eq!(harness.activity_count(), 2);
+    assert_eq!(harness.activity_count(), 4);
     assert!(
         !harness
             .processed
@@ -312,7 +340,7 @@ fn github_polling_reviews_multiple_prs_and_only_rereviews_changed_heads() {
             .enqueued_count,
         1
     );
-    assert_eq!(harness.activity_count(), 3);
+    assert_eq!(harness.activity_count(), 6);
 }
 
 #[test]

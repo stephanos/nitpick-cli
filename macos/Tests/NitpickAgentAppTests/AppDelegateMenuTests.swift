@@ -13,9 +13,11 @@ final class AppDelegateMenuTests: XCTestCase {
         let quitItem = try XCTUnwrap(menu.items.last)
 
         let titles = menu.items.map { $0.title }
-        XCTAssertEqual(titles[1], "Open Config")
-        XCTAssertEqual(titles[2], "Reload Config")
-        XCTAssertEqual(NSStringFromSelector(menu.items[2].action!), "reloadConfig:")
+        XCTAssertEqual(titles[1], "")
+        XCTAssertFalse(menu.items[1].isEnabled)
+        XCTAssertEqual(titles[2], "Open Config")
+        XCTAssertEqual(titles[3], "Reload Config")
+        XCTAssertEqual(NSStringFromSelector(menu.items[3].action!), "reloadConfig:")
         XCTAssertEqual(quitItem.title, "Quit")
         XCTAssertTrue(["quit:", "terminate:"].contains(NSStringFromSelector(quitItem.action!)))
         XCTAssertNil(quitItem.image)
@@ -24,7 +26,7 @@ final class AppDelegateMenuTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusMenuItemShowsClickableErrorState() {
+    func testStatusMenuItemDoesNotShowDiscoveryErrorsAsStatusErrors() {
         let appDelegate = AppDelegate()
         let menu = appDelegate.makeMenuForTesting()
 
@@ -42,13 +44,10 @@ final class AppDelegateMenuTests: XCTestCase {
         )
 
         let statusItem = menu.items[0]
-        XCTAssertEqual(statusItem.title, "Status: Discovery error")
-        XCTAssertTrue(statusItem.isEnabled)
-        XCTAssertEqual(NSStringFromSelector(statusItem.action!), "showStatusDetails:")
-        XCTAssertNotNil(statusItem.image)
-        XCTAssertEqual(
-            appDelegate.statusDetailsForTesting(),
-            "github unavailable: failed to start GitHub CLI `gh`: No such file or directory"
-        )
+        XCTAssertEqual(statusItem.title, "status: idle")
+        XCTAssertFalse(statusItem.isEnabled)
+        XCTAssertNil(statusItem.action)
+        XCTAssertNil(statusItem.image)
+        XCTAssertNil(appDelegate.statusDetailsForTesting())
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     thread,
 };
 
@@ -36,6 +36,7 @@ pub struct HostDaemon {
     automatic_checkout_cleanup: bool,
     last_review_source_poll_unix: Arc<Mutex<Option<u64>>>,
     last_review_source_poll_summary: Arc<Mutex<Option<String>>>,
+    review_slots: Arc<(Mutex<usize>, Condvar)>,
 }
 
 impl HostDaemon {
@@ -56,6 +57,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: true,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
+            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
         }
     }
 
@@ -76,6 +78,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: true,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
+            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
         }
     }
 
@@ -92,6 +95,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: true,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
+            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
         }
     }
 
@@ -113,6 +117,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: false,
             last_review_source_poll_unix: Arc::new(Mutex::new(None)),
             last_review_source_poll_summary: Arc::new(Mutex::new(None)),
+            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
         }
     }
 
@@ -191,6 +196,21 @@ impl HostDaemon {
         activity.label = Some(format!(
             "{}/{}#{} cleaned up",
             pull_request.owner, pull_request.repo, pull_request.number
+        ));
+        activity.touch();
+        self.store.save(&activity)?;
+        Ok(activity)
+    }
+
+    pub fn record_review_request_detected_activity(
+        &self,
+        request: &ReviewRequest,
+    ) -> AgentResult<Activity> {
+        let mut activity = self.store.create(ActivityKind::Discovery)?;
+        activity.status = ActivityStatus::Completed;
+        activity.label = Some(format!(
+            "detected review request {}",
+            request.display_reference()
         ));
         activity.touch();
         self.store.save(&activity)?;
@@ -549,6 +569,9 @@ impl HostDaemon {
 
         let requests = self.discover_new_review_requests()?;
         let discovered_count = requests.len();
+        for request in &requests {
+            self.record_review_request_detected_activity(request)?;
+        }
         if !self.config.github_discovery.auto_review {
             let result = ReviewSourcePollResult {
                 discovered_count,
@@ -602,10 +625,15 @@ impl HostDaemon {
 
     pub fn enqueue_review(&self, input: ReviewInput) -> AgentResult<Activity> {
         let runtime = self.runtime();
-        let activity = runtime.create_review_activity()?;
+        let mut activity = runtime.create_queued_review_activity(&input)?;
+        let slot_acquired = self.try_acquire_review_slot()?;
+        if slot_acquired {
+            activity = runtime.mark_activity_running(activity)?;
+        }
         let queued = activity.clone();
+        let daemon = self.clone();
         thread::spawn(move || {
-            let _ = runtime.run_review(activity, input);
+            let _ = daemon.run_enqueued_review(activity, input, slot_acquired);
         });
         Ok(queued)
     }
@@ -626,6 +654,56 @@ impl HostDaemon {
 
     fn runtime(&self) -> AgentRuntime {
         AgentRuntime::new(self.provider.clone(), self.store.clone())
+    }
+
+    fn run_enqueued_review(
+        &self,
+        activity: Activity,
+        input: ReviewInput,
+        slot_acquired: bool,
+    ) -> AgentResult<Activity> {
+        if !slot_acquired {
+            self.wait_for_review_slot()?;
+        }
+        let result = self.runtime().run_review(activity, input);
+        self.release_review_slot()?;
+        result
+    }
+
+    fn try_acquire_review_slot(&self) -> AgentResult<bool> {
+        let (running, _) = self.review_slots.as_ref();
+        let mut running = running
+            .lock()
+            .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
+        if *running >= self.config.max_concurrent_reviews.max(1) {
+            return Ok(false);
+        }
+        *running += 1;
+        Ok(true)
+    }
+
+    fn wait_for_review_slot(&self) -> AgentResult<()> {
+        let (running, changed) = self.review_slots.as_ref();
+        let mut running = running
+            .lock()
+            .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
+        while *running >= self.config.max_concurrent_reviews.max(1) {
+            running = changed
+                .wait(running)
+                .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
+        }
+        *running += 1;
+        Ok(())
+    }
+
+    fn release_review_slot(&self) -> AgentResult<()> {
+        let (running, changed) = self.review_slots.as_ref();
+        let mut running = running
+            .lock()
+            .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
+        *running = running.saturating_sub(1);
+        changed.notify_one();
+        Ok(())
     }
 
     fn record_review_source_poll_result(
@@ -655,6 +733,12 @@ impl HostDaemon {
             .lock()
             .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? =
             Some(review_source_error_summary(error));
+        let mut activity = self.store.create(ActivityKind::Discovery)?;
+        activity.status = ActivityStatus::Error;
+        activity.label = Some("discovery poll".into());
+        activity.error = Some(error.into());
+        activity.touch();
+        self.store.save(&activity)?;
         Ok(())
     }
 }
@@ -1005,15 +1089,34 @@ fn api_error_status(error: &AgentError) -> StatusCode {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+pub const CONFIG_TEMPLATE: &str = include_str!("../../../config.example.toml");
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentConfig {
     pub provider: AgentProviderKind,
     pub model: Option<String>,
     pub command: Option<String>,
     pub github_command: Option<String>,
     pub checkout_dir: Option<String>,
+    pub max_concurrent_reviews: usize,
     pub sandbox: AgentSandboxConfig,
     pub github_discovery: GitHubDiscoveryConfig,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            provider: AgentProviderKind::default(),
+            model: None,
+            command: None,
+            github_command: None,
+            checkout_dir: None,
+            max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
+            sandbox: AgentSandboxConfig::default(),
+            github_discovery: GitHubDiscoveryConfig::default(),
+        }
+    }
 }
 
 impl AgentConfig {
@@ -1021,6 +1124,8 @@ impl AgentConfig {
         let raw = toml::from_str::<RawConfig>(input)
             .map_err(|error| nitpick_agent_core::AgentError::config(error.to_string()))?;
         let agent = raw.agent.unwrap_or_default();
+        let reviews = raw.reviews.unwrap_or_default();
+        let github = raw.github.unwrap_or_default();
         let provider = match agent.provider {
             Some(provider) => provider.parse()?,
             None => AgentProviderKind::default(),
@@ -1033,36 +1138,24 @@ impl AgentConfig {
             .command
             .map(|command| command.trim().to_owned())
             .filter(|command| !command.is_empty());
-        let github_command = agent
-            .github_command
+        let github_discovery = GitHubDiscoveryConfig::from_raw(&github);
+        let github_command = github
+            .command
             .map(|command| command.trim().to_owned())
             .filter(|command| !command.is_empty());
-        let checkout_dir = agent
-            .checkout_dir
-            .map(|path| path.trim().to_owned())
-            .filter(|path| !path.is_empty());
-        let sandbox = agent
-            .sandbox
-            .map(AgentSandboxConfig::from_raw)
-            .transpose()?
-            .unwrap_or_default();
-        let source_github_discovery = raw
-            .sources
-            .and_then(|sources| sources.github)
-            .and_then(|github| github.discovery);
-        let legacy_github_discovery = raw.github.and_then(|github| github.discovery);
-        let github_discovery = source_github_discovery
-            .or(legacy_github_discovery)
-            .map(GitHubDiscoveryConfig::from_raw)
-            .transpose()?
-            .unwrap_or_default();
+        let max_concurrent_reviews = reviews
+            .max_concurrent
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_REVIEWS)
+            .max(1);
+        let sandbox = AgentSandboxConfig::from_mode(agent.sandbox)?;
 
         Ok(Self {
             provider,
             model,
             command,
             github_command,
-            checkout_dir,
+            checkout_dir: None,
+            max_concurrent_reviews,
             sandbox,
             github_discovery,
         })
@@ -1077,6 +1170,36 @@ impl AgentConfig {
             ))
         })?;
         Self::from_toml(&input)
+    }
+
+    pub fn init_template_file(path: impl AsRef<Path>) -> AgentResult<()> {
+        let path = path.as_ref();
+        if path.exists() {
+            let metadata = fs::metadata(path).map_err(|error| {
+                nitpick_agent_core::AgentError::config(format!(
+                    "failed to inspect config {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if metadata.len() > 0 {
+                return Ok(());
+            }
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                nitpick_agent_core::AgentError::config(format!(
+                    "failed to create config directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(path, CONFIG_TEMPLATE).map_err(|error| {
+            nitpick_agent_core::AgentError::config(format!(
+                "failed to write config template {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(())
     }
 
     pub fn load_or_default(path: impl AsRef<Path>) -> AgentResult<Self> {
@@ -1186,31 +1309,26 @@ fn github_pull_request_from_review_request(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawConfig {
     agent: Option<RawAgentConfig>,
-    sources: Option<RawSourcesConfig>,
+    reviews: Option<RawReviewsConfig>,
     github: Option<RawGitHubConfig>,
-}
-
-#[derive(Deserialize)]
-struct RawSourcesConfig {
-    github: Option<RawGitHubConfig>,
-}
-
-#[derive(Default, Deserialize)]
-struct RawAgentConfig {
-    provider: Option<String>,
-    model: Option<String>,
-    command: Option<String>,
-    github_command: Option<String>,
-    checkout_dir: Option<String>,
-    sandbox: Option<RawAgentSandboxConfig>,
 }
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawAgentSandboxConfig {
-    mode: Option<String>,
+struct RawAgentConfig {
+    provider: Option<String>,
+    model: Option<String>,
+    command: Option<String>,
+    sandbox: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReviewsConfig {
+    max_concurrent: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1227,10 +1345,9 @@ impl Default for AgentSandboxConfig {
 }
 
 impl AgentSandboxConfig {
-    fn from_raw(raw: RawAgentSandboxConfig) -> AgentResult<Self> {
+    fn from_mode(mode: Option<String>) -> AgentResult<Self> {
         let default = Self::default();
-        let mode = raw
-            .mode
+        let mode = mode
             .map(|mode| mode.trim().to_owned())
             .filter(|mode| !mode.is_empty())
             .unwrap_or(default.mode);
@@ -1286,19 +1403,19 @@ impl GitHubDiscoveryConfig {
         allowed && !denied
     }
 
-    fn from_raw(raw: RawGitHubDiscoveryConfig) -> AgentResult<Self> {
+    fn from_raw(raw: &RawGitHubConfig) -> Self {
         let default = Self::default();
         let interval_seconds = raw
             .interval_seconds
             .unwrap_or(default.interval_seconds)
             .max(1);
-        Ok(Self {
-            enabled: raw.enabled.unwrap_or(default.enabled),
+        Self {
+            enabled: raw.discovery.unwrap_or(default.enabled),
             auto_review: raw.auto_review.unwrap_or(default.auto_review),
             interval_seconds,
-            allowlist: clean_patterns(raw.allowlist),
-            denylist: clean_patterns(raw.denylist),
-        })
+            allowlist: clean_patterns(raw.allowlist.clone()),
+            denylist: clean_patterns(raw.denylist.clone()),
+        }
     }
 }
 
@@ -1347,14 +1464,11 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
     pattern_index == pattern.len()
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawGitHubConfig {
-    discovery: Option<RawGitHubDiscoveryConfig>,
-}
-
-#[derive(Deserialize)]
-struct RawGitHubDiscoveryConfig {
-    enabled: Option<bool>,
+    command: Option<String>,
+    discovery: Option<bool>,
     auto_review: Option<bool>,
     interval_seconds: Option<u64>,
     allowlist: Option<Vec<String>>,

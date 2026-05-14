@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
+    private var lastDiscoveryRefreshMenuItem: NSMenuItem?
+    private var ongoingReviewMenuItems: [NSMenuItem] = []
     private var openAtLoginMenuItem: NSMenuItem?
     private var openAtLoginMessageItem: NSMenuItem?
     private var activityMenuItems: [NSMenuItem] = []
@@ -55,10 +57,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let statusMenuItem = NSMenuItem(title: "Status: Starting", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "status: starting", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         self.statusMenuItem = statusMenuItem
         menu.addItem(statusMenuItem)
+
+        let lastDiscoveryRefreshMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        lastDiscoveryRefreshMenuItem.isEnabled = false
+        self.lastDiscoveryRefreshMenuItem = lastDiscoveryRefreshMenuItem
+        menu.addItem(lastDiscoveryRefreshMenuItem)
 
         let configItem = NSMenuItem(
             title: "Open Config",
@@ -75,6 +82,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         reloadConfigItem.target = self
         menu.addItem(reloadConfigItem)
+
+        for _ in 0 ..< 6 {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            item.isHidden = true
+            ongoingReviewMenuItems.append(item)
+            menu.addItem(item)
+        }
 
         menu.addItem(NSMenuItem.separator())
 
@@ -157,10 +172,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             localOnlyArtifactCount: latestHostStatus?.localOnlyArtifactCount ?? 0,
             pendingSyncArtifactCount: latestHostStatus?.pendingSyncArtifactCount ?? 0,
             reviewSourceEnabled: latestHostStatus?.reviewSourceEnabled ?? false,
+            reviewSourceLastPollUnix: latestHostStatus?.reviewSourceLastPollUnix,
             reviewSourceLastPollSummary: latestHostStatus?.reviewSourceLastPollSummary,
             activities: latestActivities
         )
         configureStatusMenuItem(snapshot)
+        configureLastDiscoveryRefreshMenuItem(snapshot)
+        updateOngoingReviewItems(snapshot.ongoingReviewTitles)
         updateActivityItems(snapshot.recentActivityTitles)
         updateOpenAtLoginItems()
         statusItem?.button?.toolTip = snapshot.statusTitle
@@ -180,10 +198,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
     }
 
+    private func configureLastDiscoveryRefreshMenuItem(_ snapshot: MenuSnapshot) {
+        guard let title = snapshot.lastDiscoveryRefreshTitle else {
+            lastDiscoveryRefreshMenuItem?.isHidden = true
+            lastDiscoveryRefreshMenuItem?.title = ""
+            return
+        }
+        lastDiscoveryRefreshMenuItem?.isHidden = false
+        lastDiscoveryRefreshMenuItem?.title = title
+        lastDiscoveryRefreshMenuItem?.isEnabled = false
+    }
+
     private func updateActivityItems(_ titles: [String]) {
         let font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        for index in activityMenuItems.indices {
-            let item = activityMenuItems[index]
+        updateMenuItems(activityMenuItems, titles: titles, font: font)
+    }
+
+    private func updateOngoingReviewItems(_ titles: [String]) {
+        updateMenuItems(
+            ongoingReviewMenuItems,
+            titles: titles,
+            font: NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        )
+    }
+
+    private func updateMenuItems(_ items: [NSMenuItem], titles: [String], font: NSFont) {
+        for index in items.indices {
+            let item = items[index]
             guard index < titles.count else {
                 item.isHidden = true
                 item.title = ""
@@ -213,10 +254,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             at: directoryURL,
             withIntermediateDirectories: true
         )
-
-        if !FileManager.default.fileExists(atPath: configFile.url.path) {
-            FileManager.default.createFile(atPath: configFile.url.path, contents: nil)
-        }
 
         NSWorkspace.shared.open(configFile.url)
     }

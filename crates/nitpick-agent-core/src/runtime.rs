@@ -18,16 +18,37 @@ impl AgentRuntime {
     }
 
     pub fn start_review(&self, input: ReviewInput) -> AgentResult<Activity> {
-        let activity = self.create_review_activity()?;
+        let activity = self.create_review_activity(&input)?;
 
         self.run_review(activity, input)
     }
 
-    pub fn create_review_activity(&self) -> AgentResult<Activity> {
-        self.create_running_activity(ActivityKind::Review)
+    pub fn create_review_activity(&self, input: &ReviewInput) -> AgentResult<Activity> {
+        let activity = self.create_queued_review_activity(input)?;
+        self.mark_activity_running(activity)
+    }
+
+    pub fn create_queued_review_activity(&self, input: &ReviewInput) -> AgentResult<Activity> {
+        let mut activity = self.store.create(ActivityKind::Review)?;
+        activity.label_review(input);
+        if activity.session.provider_session_id.is_none() {
+            activity.session.provider_session_id = Some(review_session_id(input));
+        }
+        activity.touch();
+        self.store.save(&activity)?;
+        Ok(activity)
+    }
+
+    pub fn mark_activity_running(&self, mut activity: Activity) -> AgentResult<Activity> {
+        activity.status = ActivityStatus::Running;
+        activity.session.status = SessionStatus::Running;
+        activity.touch();
+        self.store.save(&activity)?;
+        Ok(activity)
     }
 
     pub fn run_review(&self, mut activity: Activity, input: ReviewInput) -> AgentResult<Activity> {
+        activity = self.mark_activity_running(activity)?;
         activity.label_review(&input);
         if activity.session.provider_session_id.is_none() {
             activity.session.provider_session_id = Some(review_session_id(&input));

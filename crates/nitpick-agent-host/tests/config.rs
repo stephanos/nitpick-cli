@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nitpick_agent_core::{ActivityKind, ActivityStore, AgentProviderKind, MemoryActivityStore};
 use nitpick_agent_host::{
-    AgentConfig, AgentSandboxConfig, GitHubDiscoveryConfig, HostDaemon, HostStatus,
+    AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon, HostStatus,
 };
 
 #[test]
@@ -12,6 +12,57 @@ fn default_config_uses_claude_without_model_pin() {
     assert_eq!(config.provider, AgentProviderKind::Claude);
     assert_eq!(config.model, None);
     assert_eq!(config.github_discovery.interval_seconds, 60);
+    assert_eq!(config.max_concurrent_reviews, 3);
+}
+
+#[test]
+fn config_template_parses() {
+    let config = AgentConfig::from_toml(CONFIG_TEMPLATE).expect("template parses");
+
+    assert_eq!(config.provider, AgentProviderKind::Claude);
+    assert_eq!(config.github_discovery.interval_seconds, 60);
+    assert_eq!(config.max_concurrent_reviews, 3);
+}
+
+#[test]
+fn init_template_file_creates_missing_config_with_template() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("nested/config.toml");
+
+    AgentConfig::init_template_file(&path).expect("init template");
+
+    assert_eq!(
+        std::fs::read_to_string(path).expect("config"),
+        CONFIG_TEMPLATE
+    );
+}
+
+#[test]
+fn init_template_file_does_not_overwrite_existing_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[agent]\nprovider = \"codex\"\n").expect("write config");
+
+    AgentConfig::init_template_file(&path).expect("init template");
+
+    assert_eq!(
+        std::fs::read_to_string(path).expect("config"),
+        "[agent]\nprovider = \"codex\"\n"
+    );
+}
+
+#[test]
+fn init_template_file_replaces_empty_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "").expect("write empty config");
+
+    AgentConfig::init_template_file(&path).expect("init template");
+
+    assert_eq!(
+        std::fs::read_to_string(path).expect("config"),
+        CONFIG_TEMPLATE
+    );
 }
 
 #[test]
@@ -22,8 +73,13 @@ fn parses_agent_provider_and_model_from_toml() {
 provider = "codex"
 model = "gpt-5.3-codex"
 command = "/opt/bin/codex"
-github_command = "/opt/bin/gh"
-checkout_dir = "/var/tmp/nitpick-checkouts"
+sandbox = "none"
+
+[reviews]
+max_concurrent = 5
+
+[github]
+command = "/opt/bin/gh"
 "#,
     )
     .expect("config parses");
@@ -32,29 +88,14 @@ checkout_dir = "/var/tmp/nitpick-checkouts"
     assert_eq!(config.model.as_deref(), Some("gpt-5.3-codex"));
     assert_eq!(config.command.as_deref(), Some("/opt/bin/codex"));
     assert_eq!(config.github_command.as_deref(), Some("/opt/bin/gh"));
-    assert_eq!(
-        config.checkout_dir.as_deref(),
-        Some("/var/tmp/nitpick-checkouts")
-    );
-    assert_eq!(config.sandbox, AgentSandboxConfig::default());
-}
-
-#[test]
-fn parses_agent_sandbox_config_from_toml() {
-    let config = AgentConfig::from_toml(
-        r#"
-[agent.sandbox]
-mode = "none"
-"#,
-    )
-    .expect("config parses");
-
+    assert_eq!(config.checkout_dir, None);
     assert_eq!(
         config.sandbox,
         AgentSandboxConfig {
             mode: "none".into(),
         }
     );
+    assert_eq!(config.max_concurrent_reviews, 5);
 }
 
 #[test]
@@ -79,8 +120,8 @@ command = "/tmp/fake-claude"
 fn parses_github_discovery_config_from_toml() {
     let config = AgentConfig::from_toml(
         r#"
-[github.discovery]
-enabled = true
+[github]
+discovery = true
 auto_review = true
 interval_seconds = 60
 allowlist = ["stephanos/*", "acme/platform"]
@@ -102,29 +143,42 @@ denylist = ["*/archive-*", "evil/*"]
 }
 
 #[test]
-fn parses_github_discovery_config_from_sources_toml() {
-    let config = AgentConfig::from_toml(
+fn rejects_github_checkout_dir_config() {
+    let error = AgentConfig::from_toml(
+        r#"
+[github]
+checkout_dir = "/var/tmp/nitpick-checkouts"
+"#,
+    )
+    .expect_err("checkout_dir is rejected");
+
+    assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn rejects_legacy_nested_config() {
+    let error = AgentConfig::from_toml(
         r#"
 [sources.github.discovery]
 enabled = true
-auto_review = true
-interval_seconds = 120
-allowlist = ["stephanos/*"]
-denylist = ["*/archive-*"]
 "#,
     )
-    .expect("config parses");
+    .expect_err("legacy config is rejected");
 
-    assert_eq!(
-        config.github_discovery,
-        GitHubDiscoveryConfig {
-            enabled: true,
-            auto_review: true,
-            interval_seconds: 120,
-            allowlist: vec!["stephanos/*".into()],
-            denylist: vec!["*/archive-*".into()],
-        }
-    );
+    assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn rejects_legacy_agent_sandbox_table() {
+    let error = AgentConfig::from_toml(
+        r#"
+[agent.sandbox]
+mode = "none"
+"#,
+    )
+    .expect_err("legacy config is rejected");
+
+    assert!(error.to_string().contains("invalid type"));
 }
 
 #[test]

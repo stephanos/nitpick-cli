@@ -71,6 +71,7 @@ pub enum ActivityKind {
     Review,
     Chat,
     Maintenance,
+    Discovery,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

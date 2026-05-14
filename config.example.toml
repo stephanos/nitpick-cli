@@ -2,20 +2,20 @@
 provider = "claude"
 # model = "claude-opus-4-6"
 # command = "claude"
-github_command = "gh"
-# checkout_dir = "/Users/you/Library/Application Support/dev.nitpick.nitpick-agent/checkouts"
-
-[agent.sandbox]
-mode = "macos-seatbelt"
+sandbox = "macos-seatbelt"
 
 # To use Codex instead:
 # provider = "codex"
 # model = "gpt-5.3-codex"
 # command = "codex"
 
-[sources.github.discovery]
-enabled = false
+[reviews]
+max_concurrent = 3
+
+[github]
+command = "gh"
+discovery = false
 auto_review = false
-interval_seconds = 300
+interval_seconds = 60
 allowlist = []
 denylist = []

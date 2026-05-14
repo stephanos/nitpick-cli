@@ -1,8 +1,12 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use nitpick_agent_core::{
-    ActivityKind, ActivityStatus, ActivityStore, AgentProviderKind, ArtifactContent, ArtifactKind,
-    ArtifactSyncState, FsActivityStore, MemoryActivityStore, SessionStatus,
+    ActivityKind, ActivityStatus, ActivityStore, AgentProvider, AgentProviderKind, AgentResult,
+    AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, FsActivityStore,
+    MemoryActivityStore, ReviewInput, ReviewOutput, SessionStatus,
 };
 use nitpick_agent_github::PullRequestRef;
 use nitpick_agent_host::{HostDaemon, HostStatus};
@@ -147,4 +151,99 @@ fn daemon_records_completed_checkout_cleanup_activity() {
             .as_deref(),
         Some("acme/platform#42 cleaned up")
     );
+}
+
+#[test]
+fn enqueue_review_limits_running_reviews_to_configured_default() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(BlockingProvider::default());
+    let daemon = HostDaemon::with_provider(store.clone(), provider.clone());
+
+    for number in 1..=4 {
+        daemon
+            .enqueue_review(ReviewInput {
+                subject: nitpick_agent_core::ReviewSubject {
+                    repository: "acme/platform".into(),
+                    number: Some(number),
+                    ..nitpick_agent_core::ReviewSubject::default()
+                },
+                ..ReviewInput::default()
+            })
+            .expect("enqueue review");
+    }
+
+    wait_until(|| provider.started.load(Ordering::SeqCst) >= 3);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let activities = store.list().expect("activities");
+    assert_eq!(
+        activities
+            .iter()
+            .filter(|activity| activity.status == ActivityStatus::Running)
+            .count(),
+        3
+    );
+    assert_eq!(
+        activities
+            .iter()
+            .filter(|activity| activity.status == ActivityStatus::Queued)
+            .count(),
+        1
+    );
+
+    provider.release();
+    wait_until(|| {
+        store
+            .list()
+            .expect("activities")
+            .iter()
+            .all(|activity| activity.status == ActivityStatus::Completed)
+    });
+}
+
+fn wait_until(condition: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if condition() {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "condition timed out");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[derive(Default)]
+struct BlockingProvider {
+    started: AtomicUsize,
+    released: Mutex<bool>,
+    release_changed: Condvar,
+}
+
+impl BlockingProvider {
+    fn release(&self) {
+        *self.released.lock().expect("release lock") = true;
+        self.release_changed.notify_all();
+    }
+}
+
+impl AgentProvider for BlockingProvider {
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let mut released = self.released.lock().expect("release lock");
+        while !*released {
+            released = self.release_changed.wait(released).expect("release wait");
+        }
+        Ok(ReviewOutput {
+            summary: "done".into(),
+            ..ReviewOutput::default()
+        })
+    }
+
+    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+        Ok("done".into())
+    }
 }

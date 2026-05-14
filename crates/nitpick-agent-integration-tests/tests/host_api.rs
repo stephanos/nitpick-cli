@@ -47,10 +47,20 @@ async fn host_api_exposes_discovery_polling_activities_artifacts_and_pending_syn
     );
 
     let activities = client.activities().expect("activities");
-    assert_eq!(activities.len(), 1);
-    assert_eq!(activities[0].status, ActivityStatus::Completed);
+    assert_eq!(activities.len(), 2);
+    assert!(
+        activities
+            .iter()
+            .any(|activity| activity.kind == ActivityKind::Discovery
+                && activity.status == ActivityStatus::Completed)
+    );
+    let activity = activities
+        .iter()
+        .find(|activity| activity.kind == ActivityKind::Review)
+        .expect("review activity");
+    assert_eq!(activity.status, ActivityStatus::Completed);
     let artifacts = client
-        .activity_artifacts(&activities[0].id.to_string())
+        .activity_artifacts(&activity.id.to_string())
         .expect("activity artifacts");
     assert_eq!(artifacts.len(), 1);
 
@@ -94,8 +104,8 @@ async fn local_artifact_sync_lifecycle_marks_pending_then_synced() {
         .activities()
         .expect("activities")
         .into_iter()
-        .next()
-        .expect("activity");
+        .find(|activity| activity.kind == ActivityKind::Review)
+        .expect("review activity");
     let artifact = client
         .activity_artifacts(&activity.id.to_string())
         .expect("artifacts")

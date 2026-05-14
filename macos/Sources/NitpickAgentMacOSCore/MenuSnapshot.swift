@@ -8,6 +8,7 @@ public struct MenuSnapshot: Equatable {
     public var localOnlyArtifactCount: Int
     public var pendingSyncArtifactCount: Int
     public var reviewSourceEnabled: Bool
+    public var reviewSourceLastPollUnix: UInt64?
     public var reviewSourceLastPollSummary: String?
     public var activities: [ActivitySnapshot]
     public var currentUnix: UInt64
@@ -20,6 +21,7 @@ public struct MenuSnapshot: Equatable {
         localOnlyArtifactCount: Int = 0,
         pendingSyncArtifactCount: Int = 0,
         reviewSourceEnabled: Bool = false,
+        reviewSourceLastPollUnix: UInt64? = nil,
         reviewSourceLastPollSummary: String? = nil,
         activities: [ActivitySnapshot] = [],
         currentUnix: UInt64 = UInt64(Date().timeIntervalSince1970)
@@ -31,6 +33,7 @@ public struct MenuSnapshot: Equatable {
         self.localOnlyArtifactCount = localOnlyArtifactCount
         self.pendingSyncArtifactCount = pendingSyncArtifactCount
         self.reviewSourceEnabled = reviewSourceEnabled
+        self.reviewSourceLastPollUnix = reviewSourceLastPollUnix
         self.reviewSourceLastPollSummary = reviewSourceLastPollSummary
         self.activities = activities
         self.currentUnix = currentUnix
@@ -38,40 +41,44 @@ public struct MenuSnapshot: Equatable {
 
     public var statusTitle: String {
         guard hostIsRunning else {
-            return "Status: Host stopped"
-        }
-        if statusDetails != nil {
-            return "Status: Discovery error"
+            return "status: host stopped"
         }
         if runningActivityCount == 1 {
-            return artifactSuffix("Status: 1 running")
+            return artifactSuffix("status: 1 running")
         }
         if runningActivityCount > 1 {
-            return artifactSuffix("Status: \(runningActivityCount) running")
+            return artifactSuffix("status: \(runningActivityCount) running")
         }
 
         if !reviewSourceEnabled, activityCount == 0 {
-            return "Status: Discovery disabled"
+            return "status: discovery disabled"
         }
 
         switch activityCount {
         case 0:
-            return "Status: Idle"
+            return "status: idle"
         case 1:
-            return artifactSuffix("Status: 1 activity")
+            return artifactSuffix("status: 1 activity")
         default:
-            return artifactSuffix("Status: \(activityCount) activities")
+            return artifactSuffix("status: \(activityCount) activities")
         }
     }
 
     public var statusDetails: String? {
-        guard reviewSourceEnabled,
-              let reviewSourceLastPollSummary,
-              isReviewSourceError(reviewSourceLastPollSummary)
-        else {
+        nil
+    }
+
+    public var lastDiscoveryRefreshTitle: String? {
+        guard hostIsRunning else {
             return nil
         }
-        return reviewSourceLastPollSummary
+        guard reviewSourceEnabled else {
+            return "last discovery: disabled"
+        }
+        guard let reviewSourceLastPollUnix else {
+            return "last discovery: never"
+        }
+        return "last discovery: \(relativeTime(reviewSourceLastPollUnix))"
     }
 
     public var recentActivityTitles: [String] {
@@ -86,6 +93,30 @@ public struct MenuSnapshot: Equatable {
             .map(activityTitle)
     }
 
+    public var ongoingReviewTitles: [String] {
+        let activeReviews = activities
+            .filter { activity in
+                activity.kind == "Review" && (activity.status == "Running" || activity.status == "Queued")
+            }
+            .sorted { lhs, rhs in
+                if lhs.status != rhs.status {
+                    return lhs.status == "Running"
+                }
+                if lhs.updatedAtUnix == rhs.updatedAtUnix {
+                    return lhs.id > rhs.id
+                }
+                return lhs.updatedAtUnix > rhs.updatedAtUnix
+            }
+        let visible = activeReviews.prefix(5).map(ongoingReviewTitle)
+        let hiddenQueuedCount = activeReviews.dropFirst(5).filter { activity in
+            activity.status == "Queued"
+        }.count
+        if hiddenQueuedCount == 0 {
+            return Array(visible)
+        }
+        return Array(visible) + ["\(hiddenQueuedCount) more queued..."]
+    }
+
     private func activityTitle(_ activity: ActivitySnapshot) -> String {
         let verb = activityVerb(activity)
         let label = activity.label ?? fallbackLabel(activity)
@@ -97,6 +128,9 @@ public struct MenuSnapshot: Equatable {
 
     private func activityVerb(_ activity: ActivitySnapshot) -> String {
         if activity.status == "Completed", activity.label?.hasSuffix(" cleaned up") == true {
+            return ""
+        }
+        if activity.kind == "Discovery", activity.status == "Completed" {
             return ""
         }
 
@@ -114,12 +148,26 @@ public struct MenuSnapshot: Equatable {
         }
     }
 
+    private func ongoingReviewTitle(_ activity: ActivitySnapshot) -> String {
+        let label = activity.label ?? fallbackLabel(activity)
+        switch activity.status {
+        case "Running":
+            return "Running \(label)"
+        case "Queued":
+            return "Queued \(label)"
+        default:
+            return "\(activity.status) \(label)"
+        }
+    }
+
     private func fallbackLabel(_ activity: ActivitySnapshot) -> String {
         switch activity.kind {
         case "Review":
             return "review"
         case "Chat":
             return "chat"
+        case "Discovery":
+            return "discovery"
         default:
             return activity.kind.lowercased()
         }
@@ -154,11 +202,5 @@ public struct MenuSnapshot: Equatable {
         }
 
         return "\(title), \(parts.joined(separator: ", "))"
-    }
-
-    private func isReviewSourceError(_ summary: String) -> Bool {
-        summary.hasPrefix("github unavailable:")
-            || summary.hasPrefix("review source failed:")
-            || summary.contains("failed:")
     }
 }

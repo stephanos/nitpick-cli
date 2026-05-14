@@ -6,7 +6,7 @@ final class MenuSnapshotTests: XCTestCase {
     func testStoppedHostStatusTitle() {
         let snapshot = MenuSnapshot(hostIsRunning: false, activityCount: 3)
 
-        XCTAssertEqual(snapshot.statusTitle, "Status: Host stopped")
+        XCTAssertEqual(snapshot.statusTitle, "status: host stopped")
     }
 
     func testIdleStatusTitle() {
@@ -16,7 +16,7 @@ final class MenuSnapshotTests: XCTestCase {
             reviewSourceEnabled: true
         )
 
-        XCTAssertEqual(snapshot.statusTitle, "Status: Idle")
+        XCTAssertEqual(snapshot.statusTitle, "status: idle")
     }
 
     func testDisabledDiscoveryStatusTitle() {
@@ -26,10 +26,10 @@ final class MenuSnapshotTests: XCTestCase {
             reviewSourceEnabled: false
         )
 
-        XCTAssertEqual(snapshot.statusTitle, "Status: Discovery disabled")
+        XCTAssertEqual(snapshot.statusTitle, "status: discovery disabled")
     }
 
-    func testReviewSourceErrorStatusTitle() {
+    func testReviewSourceErrorDoesNotReplaceStatusTitle() {
         let snapshot = MenuSnapshot(
             hostIsRunning: true,
             activityCount: 0,
@@ -37,7 +37,31 @@ final class MenuSnapshotTests: XCTestCase {
             reviewSourceLastPollSummary: "github unavailable: failed to start GitHub CLI `gh`: No such file or directory"
         )
 
-        XCTAssertEqual(snapshot.statusTitle, "Status: Discovery error")
+        XCTAssertEqual(snapshot.statusTitle, "status: idle")
+        XCTAssertNil(snapshot.statusDetails)
+    }
+
+    func testLastDiscoveryRefreshTitle() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 0,
+            reviewSourceEnabled: true,
+            reviewSourceLastPollUnix: 940,
+            currentUnix: 1_000
+        )
+
+        XCTAssertEqual(snapshot.lastDiscoveryRefreshTitle, "last discovery: 1m ago")
+    }
+
+    func testLastDiscoveryRefreshTitleBeforeFirstPoll() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 0,
+            reviewSourceEnabled: true,
+            currentUnix: 1_000
+        )
+
+        XCTAssertEqual(snapshot.lastDiscoveryRefreshTitle, "last discovery: never")
     }
 
     func testRunningStatusTitle() {
@@ -47,7 +71,7 @@ final class MenuSnapshotTests: XCTestCase {
             runningActivityCount: 1
         )
 
-        XCTAssertEqual(snapshot.statusTitle, "Status: 1 running")
+        XCTAssertEqual(snapshot.statusTitle, "status: 1 running")
     }
 
     func testPluralActivityStatusTitle() {
@@ -60,7 +84,7 @@ final class MenuSnapshotTests: XCTestCase {
             pendingSyncArtifactCount: 1
         )
 
-        XCTAssertEqual(snapshot.statusTitle, "Status: 2 activities, 3 local, 1 pending")
+        XCTAssertEqual(snapshot.statusTitle, "status: 2 activities, 3 local, 1 pending")
     }
 
     func testRecentActivityTitlesAreLatestFirstWithRelativeTime() {
@@ -126,6 +150,76 @@ final class MenuSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.recentActivityTitles[2], "1m ago   failed chat")
     }
 
+    func testOngoingReviewTitlesShowRunningThenQueuedWithOverflow() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 7,
+            activities: [
+                ActivitySnapshot(
+                    id: "activity-1",
+                    kind: "Review",
+                    status: "Queued",
+                    label: "review on org/repo#1",
+                    createdAtUnix: 900,
+                    updatedAtUnix: 900
+                ),
+                ActivitySnapshot(
+                    id: "activity-2",
+                    kind: "Review",
+                    status: "Running",
+                    label: "review on org/repo#2",
+                    createdAtUnix: 910,
+                    updatedAtUnix: 910
+                ),
+                ActivitySnapshot(
+                    id: "activity-3",
+                    kind: "Review",
+                    status: "Queued",
+                    label: "review on org/repo#3",
+                    createdAtUnix: 920,
+                    updatedAtUnix: 920
+                ),
+                ActivitySnapshot(
+                    id: "activity-4",
+                    kind: "Review",
+                    status: "Queued",
+                    label: "review on org/repo#4",
+                    createdAtUnix: 930,
+                    updatedAtUnix: 930
+                ),
+                ActivitySnapshot(
+                    id: "activity-5",
+                    kind: "Review",
+                    status: "Queued",
+                    label: "review on org/repo#5",
+                    createdAtUnix: 940,
+                    updatedAtUnix: 940
+                ),
+                ActivitySnapshot(
+                    id: "activity-6",
+                    kind: "Review",
+                    status: "Queued",
+                    label: "review on org/repo#6",
+                    createdAtUnix: 950,
+                    updatedAtUnix: 950
+                ),
+                ActivitySnapshot(
+                    id: "activity-7",
+                    kind: "Chat",
+                    status: "Running",
+                    label: nil,
+                    createdAtUnix: 960,
+                    updatedAtUnix: 960
+                ),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.ongoingReviewTitles.count, 6)
+        XCTAssertEqual(snapshot.ongoingReviewTitles[0], "Running review on org/repo#2")
+        XCTAssertEqual(snapshot.ongoingReviewTitles[1], "Queued review on org/repo#6")
+        XCTAssertEqual(snapshot.ongoingReviewTitles[5], "1 more queued...")
+    }
+
     func testCompletedCleanupActivityUsesLabelAsEventText() {
         let snapshot = MenuSnapshot(
             hostIsRunning: true,
@@ -144,5 +238,28 @@ final class MenuSnapshotTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.recentActivityTitles[0], "10s ago  acme/platform#42 cleaned up")
+    }
+
+    func testDetectedReviewRequestActivityUsesLabelAsEventText() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 1,
+            activities: [
+                ActivitySnapshot(
+                    id: "activity-1",
+                    kind: "Discovery",
+                    status: "Completed",
+                    label: "detected review request acme/platform#42",
+                    createdAtUnix: 990,
+                    updatedAtUnix: 990
+                ),
+            ],
+            currentUnix: 1_000
+        )
+
+        XCTAssertEqual(
+            snapshot.recentActivityTitles[0],
+            "10s ago  detected review request acme/platform#42"
+        )
     }
 }

@@ -45,10 +45,10 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     std::fs::write(
         &config_path,
         format!(
-            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\ngithub_command = \"{}\"\n",
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n\n[github]\ncommand = \"{}\"\n",
             fake_claude.display(),
             fake_gh.display()
-        ) + "\n[agent.sandbox]\nmode = \"none\"\n",
+        ),
     )
     .expect("config");
     let data_dir = temp.path().join("data");
@@ -119,7 +119,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("reviews command");
-    assert!(reviews.contains("Completed review on stephanos/nitpick-agent#42 activity-1"));
+    assert!(reviews.contains("Completed review on stephanos/nitpick-agent#42 activity-"));
 
     let logs = run_cli_command(
         CliCommand::Logs {
@@ -133,13 +133,13 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("logs command");
-    assert!(logs.contains("activity: activity-1"));
+    assert!(logs.contains("activity: activity-2"));
     assert!(logs.contains("session: github:stephanos/nitpick-agent#42"));
     assert!(logs.contains("review complete"));
 
     let review_sync = run_cli_command(
         CliCommand::ReviewSync {
-            activity_id: "activity-1".into(),
+            activity_id: "activity-2".into(),
             target: "stephanos/nitpick-agent#42".into(),
         },
         &host_addr,
@@ -217,9 +217,9 @@ async fn resume_clears_missing_provider_session_id() {
     std::fs::write(
         &config_path,
         format!(
-            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\n",
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n",
             fake_claude.display(),
-        ) + "\n[agent.sandbox]\nmode = \"none\"\n",
+        ),
     )
     .expect("config");
     let data_dir = temp.path().join("data");
