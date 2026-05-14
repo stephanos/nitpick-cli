@@ -10,9 +10,23 @@ final class MenuSnapshotTests: XCTestCase {
     }
 
     func testIdleStatusTitle() {
-        let snapshot = MenuSnapshot(hostIsRunning: true, activityCount: 0)
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 0,
+            reviewSourceEnabled: true
+        )
 
         XCTAssertEqual(snapshot.statusTitle, "Status: Idle")
+    }
+
+    func testDisabledDiscoveryStatusTitle() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 0,
+            reviewSourceEnabled: false
+        )
+
+        XCTAssertEqual(snapshot.statusTitle, "Status: Discovery disabled")
     }
 
     func testReviewSourceErrorStatusTitle() {
@@ -23,10 +37,7 @@ final class MenuSnapshotTests: XCTestCase {
             reviewSourceLastPollSummary: "github unavailable: failed to start GitHub CLI `gh`: No such file or directory"
         )
 
-        XCTAssertEqual(
-            snapshot.statusTitle,
-            "Status: github unavailable: failed to start GitHub CLI `gh`: No such file or directory"
-        )
+        XCTAssertEqual(snapshot.statusTitle, "Status: Discovery error")
     }
 
     func testRunningStatusTitle() {

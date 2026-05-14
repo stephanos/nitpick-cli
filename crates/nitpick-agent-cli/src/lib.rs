@@ -1,11 +1,11 @@
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::{path::Path, process::Command};
 
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentProvider,
-    Artifact, ArtifactContent, ChatInput, FsActivityStore, ReviewInput, ReviewRequest,
-    ReviewSubject,
+    Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, Artifact,
+    ArtifactContent, ChatInput, FsActivityStore, ReviewInput, ReviewRequest, ReviewSubject,
 };
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
 
@@ -20,7 +20,7 @@ pub enum CliCommand {
         pull_request: String,
     },
     Chat {
-        prompt: String,
+        target: String,
     },
     Status,
     ReviewRequests {
@@ -57,101 +57,145 @@ pub enum CliCommand {
     CleanupCheckouts,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CliOptions {
+    pub disable_sandbox: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CliInvocation {
+    pub command: CliCommand,
+    pub options: CliOptions,
+}
+
+#[derive(Parser)]
+#[command(name = "nitpick", disable_help_flag = true, disable_version_flag = true)]
+struct ClapCli {
+    #[arg(long = "no-sandbox")]
+    no_sandbox: bool,
+    #[command(subcommand)]
+    command: Option<ClapCommand>,
+}
+
+#[derive(Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum ClapCommand {
+    Status,
+    ReviewRequests {
+        #[arg(long = "new")]
+        only_new: bool,
+    },
+    Activities,
+    Reviews {
+        #[arg(long = "all")]
+        include_all: bool,
+    },
+    Logs {
+        target: String,
+    },
+    Resume {
+        target: String,
+    },
+    Artifacts {
+        activity_id: String,
+    },
+    Artifact {
+        artifact_id: String,
+    },
+    ArtifactSync {
+        artifact_id: String,
+        destination: String,
+        target: Option<String>,
+    },
+    ReviewSync {
+        activity_id: String,
+        target: String,
+    },
+    SyncPending {
+        destination: Option<String>,
+    },
+    CleanupCheckouts,
+    Inspect {
+        pull_request: String,
+    },
+    Review {
+        subject: String,
+    },
+    Chat {
+        target: String,
+    },
+}
+
+pub fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<CliInvocation, String> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    if matches!(args.first().map(String::as_str), None | Some("-h") | Some("--help")) {
+        return Ok(CliInvocation {
+            command: CliCommand::Help,
+            options: CliOptions::default(),
+        });
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("-V") | Some("--version") | Some("version")
+    ) {
+        return Ok(CliInvocation {
+            command: CliCommand::Version,
+            options: CliOptions::default(),
+        });
+    }
+    let cli = ClapCli::try_parse_from(std::iter::once("nitpick".to_owned()).chain(args))
+        .map_err(|error| error.to_string())?;
+    Ok(CliInvocation {
+        command: cli.command.map(CliCommand::from).unwrap_or(CliCommand::Help),
+        options: CliOptions {
+            disable_sandbox: cli.no_sandbox,
+        },
+    })
+}
+
 pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand, String> {
-    let mut args = args.into_iter();
-    match args.next().as_deref() {
-        None | Some("-h") | Some("--help") => Ok(CliCommand::Help),
-        Some("-V") | Some("--version") | Some("version") => Ok(CliCommand::Version),
-        Some("status") => Ok(CliCommand::Status),
-        Some("review-requests") => match args.next().as_deref() {
-            None => Ok(CliCommand::ReviewRequests { only_new: false }),
-            Some("--new") => Ok(CliCommand::ReviewRequests { only_new: true }),
-            Some(_) => Err("usage: nitpick review-requests [--new]".into()),
-        },
-        Some("activities") => Ok(CliCommand::Activities),
-        Some("reviews") => match args.next().as_deref() {
-            None => Ok(CliCommand::Reviews { include_all: false }),
-            Some("--all") => Ok(CliCommand::Reviews { include_all: true }),
-            Some(_) => Err("usage: nitpick reviews [--all]".into()),
-        },
-        Some("logs") => {
-            let target = args
-                .next()
-                .ok_or_else(|| "usage: nitpick logs <activity-id|pr-ref>".to_owned())?;
-            Ok(CliCommand::Logs { target })
-        }
-        Some("resume") => {
-            let target = args
-                .next()
-                .ok_or_else(|| "usage: nitpick resume <activity-id|pr-ref>".to_owned())?;
-            Ok(CliCommand::Resume { target })
-        }
-        Some("artifacts") => {
-            let activity_id = args
-                .next()
-                .ok_or_else(|| "usage: nitpick artifacts <activity-id>".to_owned())?;
-            Ok(CliCommand::Artifacts { activity_id })
-        }
-        Some("artifact") => {
-            let artifact_id = args
-                .next()
-                .ok_or_else(|| "usage: nitpick artifact <artifact-id>".to_owned())?;
-            Ok(CliCommand::Artifact { artifact_id })
-        }
-        Some("artifact-sync") => {
-            let artifact_id = args.next().ok_or_else(|| {
-                "usage: nitpick artifact-sync <artifact-id> <destination>".to_owned()
-            })?;
-            let destination = args.next().ok_or_else(|| {
-                "usage: nitpick artifact-sync <artifact-id> <destination>".to_owned()
-            })?;
-            Ok(CliCommand::ArtifactSync {
+    parse_invocation(args).map(|invocation| invocation.command)
+}
+
+impl From<ClapCommand> for CliCommand {
+    fn from(command: ClapCommand) -> Self {
+        match command {
+            ClapCommand::Status => Self::Status,
+            ClapCommand::ReviewRequests { only_new } => Self::ReviewRequests { only_new },
+            ClapCommand::Activities => Self::Activities,
+            ClapCommand::Reviews { include_all } => Self::Reviews { include_all },
+            ClapCommand::Logs { target } => Self::Logs { target },
+            ClapCommand::Resume { target } => Self::Resume { target },
+            ClapCommand::Artifacts { activity_id } => Self::Artifacts { activity_id },
+            ClapCommand::Artifact { artifact_id } => Self::Artifact { artifact_id },
+            ClapCommand::ArtifactSync {
                 artifact_id,
                 destination,
-                target: args.next(),
-            })
-        }
-        Some("review-sync") => {
-            let activity_id = args
-                .next()
-                .ok_or_else(|| "usage: nitpick review-sync <activity-id> <pr-ref>".to_owned())?;
-            let target = args
-                .next()
-                .ok_or_else(|| "usage: nitpick review-sync <activity-id> <pr-ref>".to_owned())?;
-            Ok(CliCommand::ReviewSync {
+                target,
+            } => Self::ArtifactSync {
+                artifact_id,
+                destination,
+                target,
+            },
+            ClapCommand::ReviewSync {
                 activity_id,
                 target,
-            })
+            } => Self::ReviewSync {
+                activity_id,
+                target,
+            },
+            ClapCommand::SyncPending { destination } => Self::SyncPending { destination },
+            ClapCommand::CleanupCheckouts => Self::CleanupCheckouts,
+            ClapCommand::Inspect { pull_request } => Self::Inspect { pull_request },
+            ClapCommand::Review { subject } => Self::Review { subject },
+            ClapCommand::Chat { target } => Self::Chat { target },
         }
-        Some("sync-pending") => Ok(CliCommand::SyncPending {
-            destination: args.next(),
-        }),
-        Some("cleanup-checkouts") => Ok(CliCommand::CleanupCheckouts),
-        Some("inspect") => {
-            let pull_request = args
-                .next()
-                .ok_or_else(|| "usage: nitpick inspect <pr-ref>".to_owned())?;
-            Ok(CliCommand::Inspect { pull_request })
-        }
-        Some("review") => {
-            let subject = args
-                .next()
-                .ok_or_else(|| "usage: nitpick review <subject>".to_owned())?;
-            Ok(CliCommand::Review { subject })
-        }
-        Some("chat") => {
-            let prompt = args
-                .next()
-                .ok_or_else(|| "usage: nitpick chat <prompt>".to_owned())?;
-            Ok(CliCommand::Chat { prompt })
-        }
-        Some(command) => Err(format!("unknown command `{command}`")),
     }
 }
 
 pub fn help_text(version: &str) -> String {
     format!(
-        "nitpick {version}\n\nUsage: nitpick <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  logs <activity-id|pr-ref>                          Show review logs for an activity or PR\n  resume <activity-id|pr-ref>                        Reopen a supported provider session\n  review-sync <activity-id> <pr-ref>                 Stage an activity as one GitHub draft review\n  review-requests [--new]                            List review requests from enabled sources\n  chat <prompt>                                      Start a chat activity\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
+        "nitpick {version}\n\nUsage: nitpick [--no-sandbox] <command>\n\nCommands:\n  review <subject>                                   Start a review activity\n  inspect <pr-ref>                                   Open a reviewed PR checkout in an editor\n  reviews [--all]                                    List review activities\n  logs <activity-id|pr-ref>                          Show review logs for an activity or PR\n  resume <activity-id|pr-ref>                        Reopen a supported provider session\n  review-sync <activity-id> <pr-ref>                 Stage an activity as one GitHub draft review\n  review-requests [--new]                            List review requests from enabled sources\n  chat <pr-ref>                                      Open a new interactive provider session for a PR checkout\n  status                                             Show local activity status\n  activities                                         List local activities\n  artifacts <activity-id>                            List local artifacts for an activity\n  artifact <artifact-id>                             Show one local artifact\n  artifact-sync <artifact-id> <destination> [target]  Sync an artifact to a destination\n  sync-pending [destination]                         List artifacts pending sync\n  cleanup-checkouts                                  Remove closed or merged PR checkouts\n  version                                            Print version\n\nOptions:\n  --no-sandbox                                       Run provider command without sandboxing\n  -h, --help                                         Print help\n  -V, --version                                      Print version"
     )
 }
 
@@ -598,6 +642,28 @@ pub fn run_cli_command(
     config_path: std::path::PathBuf,
     data_dir: std::path::PathBuf,
 ) -> Result<String, String> {
+    run_cli_command_with_options(
+        command,
+        host_addr,
+        repo_dir,
+        diff,
+        context,
+        config_path,
+        data_dir,
+        CliOptions::default(),
+    )
+}
+
+pub fn run_cli_command_with_options(
+    command: CliCommand,
+    host_addr: &str,
+    repo_dir: std::path::PathBuf,
+    diff: String,
+    context: String,
+    config_path: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
+    options: CliOptions,
+) -> Result<String, String> {
     let client = HostClient::new(host_addr);
     match command {
         CliCommand::Help => Ok(help_text(env!("CARGO_PKG_VERSION"))),
@@ -629,11 +695,16 @@ pub fn run_cli_command(
             let activities = client.activities()?;
             let activity = resolve_log_activity(&activities, &target)?;
             ensure_resumable_activity(activity)?;
-            let config = nitpick_agent_host::AgentConfig::load_or_default(&config_path)
+            let mut config = nitpick_agent_host::AgentConfig::load_or_default(&config_path)
                 .map_err(|error| error.to_string())?;
+            if options.disable_sandbox {
+                config.sandbox = nitpick_agent_host::AgentSandboxConfig {
+                    mode: "none".into(),
+                };
+            }
             config
                 .command_provider()
-                .attach_session(&activity.session)
+                .attach_session_in_repo(&activity.session, &repo_dir)
                 .map_err(|error| handle_resume_error(activity, &data_dir, error.to_string()))?;
             Ok(String::new())
         }
@@ -668,7 +739,9 @@ pub fn run_cli_command(
             inspect_checkout_with_discovery(&pull_request, &GitHubCliDiscovery::new("gh"), None)
         }
         CliCommand::Review { subject } => {
-            let activity = client.review(&review_input(subject, repo_dir, diff))?;
+            let mut input = review_input(subject, repo_dir, diff);
+            input.disable_sandbox = options.disable_sandbox;
+            let activity = client.review(&input)?;
             let output = format_activity(&activity);
             if let Some(error) = activity.error {
                 return Err(error);
@@ -676,7 +749,9 @@ pub fn run_cli_command(
             Ok(output)
         }
         CliCommand::Chat { prompt } => {
-            let activity = client.chat(&chat_input(prompt, repo_dir, context))?;
+            let mut input = chat_input(prompt, repo_dir, context);
+            input.disable_sandbox = options.disable_sandbox;
+            let activity = client.chat(&input)?;
             let output = format_activity(&activity);
             if let Some(error) = activity.error {
                 return Err(error);

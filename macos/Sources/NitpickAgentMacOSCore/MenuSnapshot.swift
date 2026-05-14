@@ -40,14 +40,18 @@ public struct MenuSnapshot: Equatable {
         guard hostIsRunning else {
             return "Status: Host stopped"
         }
-        if reviewSourceEnabled, let reviewSourceLastPollSummary, isReviewSourceError(reviewSourceLastPollSummary) {
-            return "Status: \(reviewSourceLastPollSummary)"
+        if statusDetails != nil {
+            return "Status: Discovery error"
         }
         if runningActivityCount == 1 {
             return artifactSuffix("Status: 1 running")
         }
         if runningActivityCount > 1 {
             return artifactSuffix("Status: \(runningActivityCount) running")
+        }
+
+        if !reviewSourceEnabled, activityCount == 0 {
+            return "Status: Discovery disabled"
         }
 
         switch activityCount {
@@ -58,6 +62,16 @@ public struct MenuSnapshot: Equatable {
         default:
             return artifactSuffix("Status: \(activityCount) activities")
         }
+    }
+
+    public var statusDetails: String? {
+        guard reviewSourceEnabled,
+              let reviewSourceLastPollSummary,
+              isReviewSourceError(reviewSourceLastPollSummary)
+        else {
+            return nil
+        }
+        return reviewSourceLastPollSummary
     }
 
     public var recentActivityTitles: [String] {

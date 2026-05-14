@@ -449,7 +449,9 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         ArtifactSyncState::Pending {
             destination: "github-review".into(),
             remote_id: Some("99".into()),
-            remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            )
         }
     );
     assert_eq!(
@@ -457,7 +459,9 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         ArtifactSyncState::Pending {
             destination: "github-review".into(),
             remote_id: Some("99".into()),
-            remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            )
         }
     );
 }
@@ -493,7 +497,9 @@ printf '{"id":100,"html_url":"https://github.com/acme/platform/pull/42#pullreque
             ArtifactContent::ReviewSummary("summary body".into()),
         )
         .expect("summary artifact");
-    store.save_artifacts(&[summary.clone()]).expect("save artifacts");
+    store
+        .save_artifacts(std::slice::from_ref(&summary))
+        .expect("save artifacts");
     store
         .update_artifact_sync_state(
             &summary.id,
@@ -561,7 +567,9 @@ exit 1
             ArtifactContent::ReviewSummary("summary body".into()),
         )
         .expect("summary artifact");
-    store.save_artifacts(&[summary.clone()]).expect("save artifacts");
+    store
+        .save_artifacts(std::slice::from_ref(&summary))
+        .expect("save artifacts");
     store
         .update_artifact_sync_state(
             &summary.id,
@@ -677,10 +685,12 @@ exit 1
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = json_body(response).await;
-    assert!(body["error"]
-        .as_str()
-        .expect("error text")
-        .contains("submit or clear the draft review"));
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error text")
+            .contains("submit or clear the draft review")
+    );
 }
 
 #[tokio::test]
@@ -802,7 +812,7 @@ fn review_source_poller_runs_checkout_cleanup_after_due_poll() {
     fs::write(
         &gh,
         r#"#!/bin/sh
-if [ "$1 $2 $3" = "search prs user-review-requested:@me" ]; then
+if [ "$1 $2" = "search prs" ]; then
   printf '[]'
   exit 0
 fi
@@ -862,7 +872,7 @@ async fn github_review_requests_endpoint_lists_requested_reviews() {
     fs::write(
         &gh,
         r#"#!/bin/sh
-if [ "$1 $2 $3" = "search prs user-review-requested:@me" ]; then
+if [ "$1 $2" = "search prs" ]; then
   printf '[{"repository":{"nameWithOwner":"acme/platform"},"number":42}]'
   exit 0
 fi
@@ -913,7 +923,7 @@ async fn github_review_requests_endpoint_can_filter_processed_reviews() {
     fs::write(
         &gh,
         r#"#!/bin/sh
-if [ "$1 $2 $3" = "search prs user-review-requested:@me" ]; then
+if [ "$1 $2" = "search prs" ]; then
   printf '[{"repository":{"nameWithOwner":"acme/platform"},"number":42},{"repository":{"nameWithOwner":"octo/widgets"},"number":7}]'
   exit 0
 fi

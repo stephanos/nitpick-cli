@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use nitpick_agent_cli::{CliCommand, run_cli_command};
-use nitpick_agent_core::{ActivityStore, FsActivityStore};
 use nitpick_agent_core::FsProcessedReviewStore;
+use nitpick_agent_core::{ActivityStore, FsActivityStore};
 use nitpick_agent_host::{HostDaemon, api_router};
 use nitpick_agent_integration_tests::support::{
     ManualClock, RecordingProvider, StubDiscovery, github_auto_review_config, pull_request,
@@ -48,7 +48,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
             "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\ngithub_command = \"{}\"\n",
             fake_claude.display(),
             fake_gh.display()
-        ),
+        ) + "\n[agent.sandbox]\nmode = \"none\"\n",
     )
     .expect("config");
     let data_dir = temp.path().join("data");
@@ -219,13 +219,14 @@ async fn resume_clears_missing_provider_session_id() {
         format!(
             "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\n",
             fake_claude.display(),
-        ),
+        ) + "\n[agent.sandbox]\nmode = \"none\"\n",
     )
     .expect("config");
     let data_dir = temp.path().join("data");
     let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
-    let processed =
-        Arc::new(FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"));
+    let processed = Arc::new(
+        FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
+    );
     let mut activity = store
         .create(nitpick_agent_core::ActivityKind::Review)
         .expect("activity");

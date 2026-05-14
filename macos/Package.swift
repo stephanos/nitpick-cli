@@ -27,5 +27,9 @@ let package = Package(
             name: "NitpickAgentMacOSCoreTests",
             dependencies: ["NitpickAgentMacOSCore"]
         ),
+        .testTarget(
+            name: "NitpickAgentAppTests",
+            dependencies: ["NitpickAgentApp"]
+        ),
     ]
 )

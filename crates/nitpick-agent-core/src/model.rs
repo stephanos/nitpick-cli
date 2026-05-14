@@ -8,6 +8,8 @@ pub struct ReviewInput {
     pub instructions: String,
     pub subject: ReviewSubject,
     pub diff: String,
+    #[serde(default)]
+    pub disable_sandbox: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,4 +70,6 @@ pub struct ChatInput {
     pub repo_dir: PathBuf,
     pub prompt: String,
     pub context: String,
+    #[serde(default)]
+    pub disable_sandbox: bool,
 }

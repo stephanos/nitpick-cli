@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use nitpick_agent_core::{ActivityKind, ActivityStore, AgentProviderKind, MemoryActivityStore};
-use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon, HostStatus};
+use nitpick_agent_host::{
+    AgentConfig, AgentSandboxConfig, GitHubDiscoveryConfig, HostDaemon, HostStatus,
+};
 
 #[test]
 fn default_config_uses_claude_without_model_pin() {
@@ -32,6 +34,25 @@ checkout_dir = "/var/tmp/nitpick-checkouts"
     assert_eq!(
         config.checkout_dir.as_deref(),
         Some("/var/tmp/nitpick-checkouts")
+    );
+    assert_eq!(config.sandbox, AgentSandboxConfig::default());
+}
+
+#[test]
+fn parses_agent_sandbox_config_from_toml() {
+    let config = AgentConfig::from_toml(
+        r#"
+[agent.sandbox]
+mode = "none"
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(
+        config.sandbox,
+        AgentSandboxConfig {
+            mode: "none".into(),
+        }
     );
 }
 

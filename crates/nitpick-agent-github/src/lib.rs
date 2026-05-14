@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env, fs,
     io::Write,
     path::{Path, PathBuf},
@@ -168,6 +169,13 @@ pub struct GitHubCliDiscovery {
     command: PathBuf,
     git_command: PathBuf,
     checkout_root: PathBuf,
+    review_request_scopes: Vec<ReviewRequestScope>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ReviewRequestScope {
+    Owner(String),
+    Repo(String),
 }
 
 pub trait ReviewRequestDiscovery: Send + Sync {
@@ -182,6 +190,7 @@ impl GitHubCliDiscovery {
             command: command.into(),
             git_command: PathBuf::from("git"),
             checkout_root: default_checkout_root(),
+            review_request_scopes: Vec::new(),
         }
     }
 
@@ -194,7 +203,13 @@ impl GitHubCliDiscovery {
             command: command.into(),
             git_command: git_command.into(),
             checkout_root: checkout_root.into(),
+            review_request_scopes: Vec::new(),
         }
+    }
+
+    pub fn with_allowlist(mut self, allowlist: &[String]) -> Self {
+        self.review_request_scopes = review_request_scopes(allowlist);
+        self
     }
 
     pub fn requested_reviews(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
@@ -373,41 +388,21 @@ impl ReviewSource for GitHubCliDiscovery {
 
 impl ReviewRequestDiscovery for GitHubCliDiscovery {
     fn requested_reviews(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
-        let output = Command::new(&self.command)
-            .args([
-                "search",
-                "prs",
-                "user-review-requested:@me",
-                "--state=open",
-                "--limit",
-                "100",
-                "--json",
-                "repository,number",
-            ])
-            .output()
-            .map_err(|error| {
-                AgentError::new(format!(
-                    "failed to start GitHub CLI `{}`: {error}",
-                    self.command.display()
-                ))
-            })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(AgentError::new(format!(
-                "GitHub CLI failed with status {}{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {stderr}")
+        let records = if self.review_request_scopes.is_empty() {
+            search_pull_requests(&self.command, None)?
+        } else {
+            let mut records = Vec::new();
+            let mut seen = HashSet::new();
+            for scope in &self.review_request_scopes {
+                for record in search_pull_requests(&self.command, Some(scope))? {
+                    let key = (record.repository.name_with_owner.clone(), record.number);
+                    if seen.insert(key) {
+                        records.push(record);
+                    }
                 }
-            )));
-        }
-
-        let records: Vec<SearchPullRequest> =
-            serde_json::from_slice(&output.stdout).map_err(|error| {
-                AgentError::new(format!("invalid GitHub review request response: {error}"))
-            })?;
+            }
+            records
+        };
         records
             .into_iter()
             .map(|record| self.discover_with_head_sha(record))
@@ -449,6 +444,90 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
             diff,
         })
     }
+}
+
+fn search_pull_requests(
+    command: &Path,
+    scope: Option<&ReviewRequestScope>,
+) -> AgentResult<Vec<SearchPullRequest>> {
+    let mut args = vec![
+        "search".to_owned(),
+        "prs".to_owned(),
+        "--review-requested".to_owned(),
+        "@me".to_owned(),
+        "--state".to_owned(),
+        "open".to_owned(),
+    ];
+    if let Some(scope) = scope {
+        match scope {
+            ReviewRequestScope::Owner(owner) => {
+                args.push("--owner".to_owned());
+                args.push(owner.clone());
+            }
+            ReviewRequestScope::Repo(repo) => {
+                args.push("--repo".to_owned());
+                args.push(repo.clone());
+            }
+        }
+    }
+    args.extend([
+        "--limit".to_owned(),
+        "100".to_owned(),
+        "--json".to_owned(),
+        "repository,number".to_owned(),
+    ]);
+    let output = Command::new(command)
+        .args(&args)
+        .output()
+        .map_err(|error| {
+            AgentError::new(format!(
+                "failed to start GitHub CLI `{}`: {error}",
+                command.display()
+            ))
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(AgentError::new(format!(
+            "GitHub CLI failed with status {}{}",
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        AgentError::new(format!("invalid GitHub review request response: {error}"))
+    })
+}
+
+fn review_request_scopes(allowlist: &[String]) -> Vec<ReviewRequestScope> {
+    let mut scopes = Vec::new();
+    let mut seen = HashSet::new();
+    for pattern in allowlist {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            continue;
+        }
+        let Some((owner, repo)) = pattern.split_once('/') else {
+            continue;
+        };
+        let scope = if repo == "*" && !owner.contains('*') {
+            Some(ReviewRequestScope::Owner(owner.to_owned()))
+        } else if !owner.contains('*') && !repo.contains('*') {
+            Some(ReviewRequestScope::Repo(format!("{owner}/{repo}")))
+        } else {
+            None
+        };
+        if let Some(scope) = scope
+            && seen.insert(scope.clone())
+        {
+            scopes.push(scope);
+        }
+    }
+    scopes
 }
 
 fn default_checkout_root() -> PathBuf {
@@ -1078,13 +1157,18 @@ fn sync_pending_review_with_github_cli(
     })
 }
 
-fn github_review_from_cli(command: &Path, endpoint_args: &[&str]) -> AgentResult<GitHubReviewResponse> {
+fn github_review_from_cli(
+    command: &Path,
+    endpoint_args: &[&str],
+) -> AgentResult<GitHubReviewResponse> {
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
     let output = Command::new(command)
         .args(&args)
         .output()
-        .map_err(|error| AgentError::new(format!("run GitHub CLI `{}`: {error}", command.display())))?;
+        .map_err(|error| {
+            AgentError::new(format!("run GitHub CLI `{}`: {error}", command.display()))
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(AgentError::new(format!(

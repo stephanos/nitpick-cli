@@ -1,7 +1,8 @@
 use std::{env, process::ExitCode};
 
 use nitpick_agent_cli::{
-    config_path_from_env, data_dir_from_env, host_addr_from_env, parse_command, run_cli_command,
+    config_path_from_env, data_dir_from_env, host_addr_from_env, parse_invocation,
+    run_cli_command_with_options,
 };
 
 fn main() -> ExitCode {
@@ -15,7 +16,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let command = parse_command(env::args().skip(1))?;
+    let invocation = parse_invocation(env::args().skip(1))?;
     let addr = host_addr_from_env(env::var("NITPICK_AGENT_HOST_ADDR").ok());
     let repo_dir = current_dir()?;
     let diff = git_output(&repo_dir, &["diff"]).unwrap_or_default();
@@ -30,14 +31,15 @@ fn run() -> Result<(), String> {
         env::var_os("XDG_DATA_HOME"),
         env::var_os("HOME"),
     );
-    let output = run_cli_command(
-        command,
+    let output = run_cli_command_with_options(
+        invocation.command,
         &addr,
         repo_dir,
         diff,
         context,
         config_path,
         data_dir,
+        invocation.options,
     )?;
     if !output.is_empty() {
         println!("{output}");

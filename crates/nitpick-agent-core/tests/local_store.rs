@@ -111,7 +111,10 @@ fn filesystem_store_persists_pending_sync_remote_handle() {
 
     let reopened = FsActivityStore::new(dir.path()).expect("reopen store");
     assert_eq!(
-        reopened.get_artifact(&artifact_id).expect("artifact").sync_state,
+        reopened
+            .get_artifact(&artifact_id)
+            .expect("artifact")
+            .sync_state,
         ArtifactSyncState::Pending {
             destination: "github-review".into(),
             remote_id: Some("99".into()),

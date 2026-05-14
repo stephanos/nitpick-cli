@@ -289,7 +289,9 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         == ArtifactSyncState::Pending {
             destination: "github-review".into(),
             remote_id: Some("99".into()),
-            remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            )
         }));
 }
 

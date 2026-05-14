@@ -16,8 +16,8 @@ use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent, ArtifactId,
     ArtifactSyncDestination, ArtifactSyncState, ChatInput, Clock, CommandAgentProvider,
-    MemoryProcessedReviewStore,
-    ProcessedReviewStore, ReviewInput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
+    CommandSandboxConfig, MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput,
+    ReviewRequest, ReviewSource, SessionStatus, SystemClock,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -361,12 +361,11 @@ impl HostDaemon {
             } => review_id.clone(),
             _ => return Ok(None),
         };
-        let target = target.ok_or_else(|| {
-            AgentError::new("github-review sync requires a pull request target")
-        })?;
-        let target = target.parse::<PullRequestRef>().map_err(|error| {
-            AgentError::new(format!("invalid GitHub sync target: {error}"))
-        })?;
+        let target = target
+            .ok_or_else(|| AgentError::new("github-review sync requires a pull request target"))?;
+        let target = target
+            .parse::<PullRequestRef>()
+            .map_err(|error| AgentError::new(format!("invalid GitHub sync target: {error}")))?;
         let destination = GitHubCliReviewSyncDestination::new(
             target,
             self.config.github_command.as_deref().unwrap_or("gh"),
@@ -406,10 +405,12 @@ impl HostDaemon {
             }
 
             let remote_url = review.html_url.clone().or_else(|| {
-                pending_artifacts.iter().find_map(|artifact| match &artifact.sync_state {
-                    ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
-                    _ => None,
-                })
+                pending_artifacts
+                    .iter()
+                    .find_map(|artifact| match &artifact.sync_state {
+                        ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
+                        _ => None,
+                    })
             });
             let local_summary = artifacts.iter().find_map(|artifact| {
                 if artifact.sync_state != ArtifactSyncState::LocalOnly {
@@ -445,10 +446,12 @@ impl HostDaemon {
             return Ok(Some(updated));
         }
         let remote_id = review.html_url.or_else(|| {
-            pending_artifacts.iter().find_map(|artifact| match &artifact.sync_state {
-                ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
-                _ => None,
-            })
+            pending_artifacts
+                .iter()
+                .find_map(|artifact| match &artifact.sync_state {
+                    ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
+                    _ => None,
+                })
         });
         let mut updated = Vec::with_capacity(artifacts.len());
         for artifact in artifacts {
@@ -966,6 +969,7 @@ pub struct AgentConfig {
     pub command: Option<String>,
     pub github_command: Option<String>,
     pub checkout_dir: Option<String>,
+    pub sandbox: AgentSandboxConfig,
     pub github_discovery: GitHubDiscoveryConfig,
 }
 
@@ -994,6 +998,11 @@ impl AgentConfig {
             .checkout_dir
             .map(|path| path.trim().to_owned())
             .filter(|path| !path.is_empty());
+        let sandbox = agent
+            .sandbox
+            .map(AgentSandboxConfig::from_raw)
+            .transpose()?
+            .unwrap_or_default();
         let source_github_discovery = raw
             .sources
             .and_then(|sources| sources.github)
@@ -1011,6 +1020,7 @@ impl AgentConfig {
             command,
             github_command,
             checkout_dir,
+            sandbox,
             github_discovery,
         })
     }
@@ -1039,12 +1049,13 @@ impl AgentConfig {
     }
 
     pub fn command_provider(&self) -> CommandAgentProvider {
-        match &self.command {
+        let provider = match &self.command {
             Some(command) => {
                 CommandAgentProvider::new(self.provider.clone(), self.model.clone(), command)
             }
             None => CommandAgentProvider::for_kind(self.provider.clone(), self.model.clone()),
-        }
+        };
+        provider.with_sandbox(self.sandbox.command_sandbox_config())
     }
 
     fn provider(&self) -> Arc<dyn AgentProvider> {
@@ -1056,14 +1067,15 @@ impl AgentConfig {
     }
 
     fn github_discovery_client(&self) -> GitHubCliDiscovery {
-        match &self.checkout_dir {
+        let client = match &self.checkout_dir {
             Some(checkout_dir) => GitHubCliDiscovery::with_checkout_commands(
                 self.github_command.as_deref().unwrap_or("gh"),
                 "git",
                 checkout_dir,
             ),
             None => GitHubCliDiscovery::new(self.github_command.as_deref().unwrap_or("gh")),
-        }
+        };
+        client.with_allowlist(&self.github_discovery.allowlist)
     }
 
     fn sync_destination(
@@ -1149,6 +1161,51 @@ struct RawAgentConfig {
     command: Option<String>,
     github_command: Option<String>,
     checkout_dir: Option<String>,
+    sandbox: Option<RawAgentSandboxConfig>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAgentSandboxConfig {
+    mode: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSandboxConfig {
+    pub mode: String,
+}
+
+impl Default for AgentSandboxConfig {
+    fn default() -> Self {
+        Self {
+            mode: "macos-seatbelt".into(),
+        }
+    }
+}
+
+impl AgentSandboxConfig {
+    fn from_raw(raw: RawAgentSandboxConfig) -> AgentResult<Self> {
+        let default = Self::default();
+        let mode = raw
+            .mode
+            .map(|mode| mode.trim().to_owned())
+            .filter(|mode| !mode.is_empty())
+            .unwrap_or(default.mode);
+        if !matches!(mode.as_str(), "macos-seatbelt" | "none") {
+            return Err(AgentError::new(format!(
+                "unsupported agent sandbox mode `{mode}`"
+            )));
+        }
+        Ok(Self { mode })
+    }
+
+    fn command_sandbox_config(&self) -> CommandSandboxConfig {
+        if self.mode == "macos-seatbelt" {
+            CommandSandboxConfig::macos_seatbelt()
+        } else {
+            CommandSandboxConfig::unsandboxed()
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

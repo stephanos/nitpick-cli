@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var latestHostStatus: HostStatus?
     private var latestActivities: [ActivitySnapshot] = []
     private var openAtLoginState = OpenAtLoginViewState.make(status: .notRegistered)
+    private var currentStatusDetails: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -67,6 +68,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configItem.target = self
         menu.addItem(configItem)
 
+        let reloadConfigItem = NSMenuItem(
+            title: "Reload Config",
+            action: #selector(reloadConfig(_:)),
+            keyEquivalent: ""
+        )
+        reloadConfigItem.target = self
+        menu.addItem(reloadConfigItem)
+
         menu.addItem(NSMenuItem.separator())
 
         for _ in 0 ..< 5 {
@@ -108,9 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let quitItem = NSMenuItem(
             title: "Quit",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
+            action: #selector(quit(_:)),
+            keyEquivalent: ""
         )
+        quitItem.target = self
+        quitItem.keyEquivalentModifierMask = []
         menu.addItem(quitItem)
 
         return menu
@@ -148,10 +159,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reviewSourceLastPollSummary: latestHostStatus?.reviewSourceLastPollSummary,
             activities: latestActivities
         )
-        statusMenuItem?.title = snapshot.statusTitle
+        configureStatusMenuItem(snapshot)
         updateActivityItems(snapshot.recentActivityTitles)
         updateOpenAtLoginItems()
         statusItem?.button?.toolTip = snapshot.statusTitle
+    }
+
+    private func configureStatusMenuItem(_ snapshot: MenuSnapshot) {
+        currentStatusDetails = snapshot.statusDetails
+        statusMenuItem?.title = snapshot.statusTitle
+        statusMenuItem?.isEnabled = snapshot.statusDetails != nil
+        statusMenuItem?.target = snapshot.statusDetails == nil ? nil : self
+        statusMenuItem?.action = snapshot.statusDetails == nil ? nil : #selector(showStatusDetails(_:))
+        statusMenuItem?.image = snapshot.statusDetails == nil
+            ? nil
+            : NSImage(
+                systemSymbolName: "exclamationmark.triangle.fill",
+                accessibilityDescription: "Discovery error"
+            )
     }
 
     private func updateActivityItems(_ titles: [String]) {
@@ -193,6 +218,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSWorkspace.shared.open(configFile.url)
+    }
+
+    @objc private func reloadConfig(_ sender: Any?) {
+        latestHostStatus = nil
+        latestActivities = []
+        host.stop()
+        host.start()
+        refreshMenu()
+    }
+
+    @objc private func showStatusDetails(_ sender: Any?) {
+        guard let currentStatusDetails else {
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Discovery error"
+        alert.informativeText = currentStatusDetails
+        alert.addButton(withTitle: "OK")
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    @objc private func quit(_ sender: Any?) {
+        NSApp.terminate(sender)
     }
 
     private func updateOpenAtLoginItems() {
@@ -279,3 +328,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent(name)
     }
 }
+
+#if DEBUG
+extension AppDelegate {
+    func makeMenuForTesting() -> NSMenu {
+        makeMenu()
+    }
+
+    func applyMenuSnapshotForTesting(_ snapshot: MenuSnapshot) {
+        configureStatusMenuItem(snapshot)
+    }
+
+    func setStatusForTesting(hostStatus: HostStatus?) {
+        latestHostStatus = hostStatus
+        latestActivities = []
+        updateMenu()
+    }
+
+    func statusDetailsForTesting() -> String? {
+        currentStatusDetails
+    }
+}
+#endif
