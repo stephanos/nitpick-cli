@@ -7,7 +7,7 @@ use std::{
 use axum::{
     Json, Router,
     extract::{Path as PathParam, Query, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -969,11 +969,39 @@ impl From<nitpick_agent_core::AgentError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
+        let retry_after_seconds = match &self.0 {
+            AgentError::GitHubRateLimited {
+                retry_after_seconds,
+                ..
+            } => *retry_after_seconds,
+            _ => None,
+        };
+        let status = api_error_status(&self.0);
+        let mut response = (
+            status,
             Json(serde_json::json!({ "error": self.0.to_string() })),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = retry_after_seconds
+            && let Ok(value) = HeaderValue::from_str(&seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        response
+    }
+}
+
+fn api_error_status(error: &AgentError) -> StatusCode {
+    match error {
+        AgentError::InvalidInput { .. } | AgentError::Config { .. } => StatusCode::BAD_REQUEST,
+        AgentError::NotFound { .. } => StatusCode::NOT_FOUND,
+        AgentError::GitHubRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+        AgentError::Message { .. }
+        | AgentError::Io { .. }
+        | AgentError::Json { .. }
+        | AgentError::Provider { .. }
+        | AgentError::Sandbox { .. }
+        | AgentError::GitHubCli { .. } => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

@@ -9,10 +9,10 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use nitpick_agent_core::{
-    ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentProvider, AgentProviderKind,
-    AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput,
-    MemoryActivityStore, ProcessedReviewStore, ReviewInput, ReviewOutput, ReviewRequest,
-    ReviewSubject,
+    ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
+    AgentProviderKind, AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState,
+    ChatInput, MemoryActivityStore, MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput,
+    ReviewOutput, ReviewRequest, ReviewSource, ReviewSubject, SystemClock,
 };
 use nitpick_agent_host::{
     AgentConfig, GitHubDiscoveryConfig, HostDaemon, ReviewSourcePoller, api_router,
@@ -240,7 +240,7 @@ async fn artifact_sync_endpoint_rejects_unknown_destination() {
         .await
         .expect("response");
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = json_body(response).await;
     assert_eq!(body["error"], "unknown sync destination `slack`");
 }
@@ -683,7 +683,7 @@ exit 1
         .await
         .expect("response");
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = json_body(response).await;
     assert!(
         body["error"]
@@ -862,6 +862,69 @@ exit 1
             .review_source_last_poll_summary
             .as_deref(),
         Some("reviewed 0 of 0 PRs, cleaned up 1 checkout(s)")
+    );
+}
+
+#[tokio::test]
+async fn review_requests_endpoint_rejects_unknown_filter() {
+    let app = api_router(HostDaemon::new(Arc::new(MemoryActivityStore::default())));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/review-requests?filter=stale")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "unknown review request filter `stale`");
+}
+
+#[tokio::test]
+async fn review_requests_endpoint_maps_rate_limit_to_429() {
+    let app = api_router(HostDaemon::with_dependencies(
+        Arc::new(MemoryActivityStore::default()),
+        AgentConfig {
+            github_discovery: GitHubDiscoveryConfig {
+                enabled: true,
+                ..GitHubDiscoveryConfig::default()
+            },
+            ..AgentConfig::default()
+        },
+        Arc::new(MemoryProcessedReviewStore::default()),
+        Arc::new(FakeProvider),
+        Arc::new(RateLimitedReviewSource),
+        Arc::new(SystemClock),
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/review-requests")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("60")
+    );
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error text")
+            .contains("rate limited")
     );
 }
 
@@ -1110,5 +1173,24 @@ impl AgentProvider for FakeProvider {
 
     fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
         Ok("chat response".into())
+    }
+}
+
+struct RateLimitedReviewSource;
+
+impl ReviewSource for RateLimitedReviewSource {
+    fn name(&self) -> &'static str {
+        "github"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        Err(AgentError::github_rate_limited(
+            "GitHub rate limited the request; retry after 60 seconds.",
+            Some(60),
+        ))
+    }
+
+    fn review_input(&self, _request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        Err(AgentError::invalid_input("review input is not available"))
     }
 }

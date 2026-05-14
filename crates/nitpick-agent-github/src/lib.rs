@@ -924,9 +924,14 @@ fn command_status_error(command: &str, output: &std::process::Output) -> AgentEr
     );
     if command == "GitHub CLI" {
         if is_github_rate_limit_error(&stderr) {
-            return AgentError::github_rate_limited(format!(
-                "GitHub rate limited the request; retry after the rate limit resets: {message}"
-            ));
+            let retry_after_seconds = parse_retry_after_seconds(&stderr);
+            let retry_hint = retry_after_seconds
+                .map(|seconds| format!(" retry after {seconds} seconds."))
+                .unwrap_or_else(|| " retry after the rate limit resets.".to_owned());
+            return AgentError::github_rate_limited(
+                format!("GitHub rate limited the request;{retry_hint} {message}"),
+                retry_after_seconds,
+            );
         }
         AgentError::github_cli(message)
     } else {
@@ -941,6 +946,29 @@ fn is_github_rate_limit_error(stderr: &str) -> bool {
         || stderr.contains(" 429")
         || stderr.contains("api rate limit exceeded")
         || stderr.contains("secondary rate limit")
+}
+
+fn parse_retry_after_seconds(stderr: &str) -> Option<u64> {
+    let lower = stderr.to_ascii_lowercase();
+    for marker in ["retry-after:", "retry after"] {
+        let Some(start) = lower.find(marker) else {
+            continue;
+        };
+        let rest = &lower[start + marker.len()..];
+        if let Some(seconds) = first_number(rest) {
+            return Some(seconds);
+        }
+    }
+    None
+}
+
+fn first_number(value: &str) -> Option<u64> {
+    let start = value.find(|character: char| character.is_ascii_digit())?;
+    let digits = value[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
 }
 
 fn parse_github_json<T: serde::de::DeserializeOwned>(
@@ -1444,7 +1472,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt as _;
 
-    use super::{command_status_error, is_github_rate_limit_error};
+    use super::{command_status_error, is_github_rate_limit_error, parse_retry_after_seconds};
 
     #[test]
     fn detects_github_rate_limit_errors() {
@@ -1453,20 +1481,33 @@ mod tests {
         assert!(!is_github_rate_limit_error("HTTP 404: Not Found"));
     }
 
+    #[test]
+    fn parses_retry_after_seconds() {
+        assert_eq!(parse_retry_after_seconds("Retry-After: 60"), Some(60));
+        assert_eq!(
+            parse_retry_after_seconds("retry after 120 seconds"),
+            Some(120)
+        );
+        assert_eq!(parse_retry_after_seconds("HTTP 429"), None);
+    }
+
     #[cfg(unix)]
     #[test]
     fn github_cli_status_error_uses_rate_limit_variant_for_429s() {
         let output = std::process::Output {
             status: std::process::ExitStatus::from_raw(1 << 8),
             stdout: Vec::new(),
-            stderr: b"HTTP 429: API rate limit exceeded".to_vec(),
+            stderr: b"HTTP 429: API rate limit exceeded\nRetry-After: 60".to_vec(),
         };
 
         let error = command_status_error("GitHub CLI", &output);
 
         assert!(matches!(
             error,
-            nitpick_agent_core::AgentError::GitHubRateLimited { .. }
+            nitpick_agent_core::AgentError::GitHubRateLimited {
+                retry_after_seconds: Some(60),
+                ..
+            }
         ));
     }
 }

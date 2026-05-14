@@ -25,7 +25,10 @@ pub enum AgentError {
     #[error("{message}")]
     GitHubCli { message: String },
     #[error("{message}")]
-    GitHubRateLimited { message: String },
+    GitHubRateLimited {
+        message: String,
+        retry_after_seconds: Option<u64>,
+    },
 }
 
 impl AgentError {
@@ -102,9 +105,13 @@ impl AgentError {
         }
     }
 
-    pub fn github_rate_limited(message: impl Into<String>) -> Self {
+    pub fn github_rate_limited(
+        message: impl Into<String>,
+        retry_after_seconds: Option<u64>,
+    ) -> Self {
         Self::GitHubRateLimited {
             message: message.into(),
+            retry_after_seconds,
         }
     }
 
