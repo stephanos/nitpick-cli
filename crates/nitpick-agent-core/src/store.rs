@@ -1,12 +1,15 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
+
+use atomic_write_file::AtomicWriteFile;
+use fs_err as fs;
 
 use crate::{
     Activity, ActivityId, ActivityKind, AgentError, AgentResult, Artifact, ArtifactContent,
@@ -370,17 +373,24 @@ fn artifact_path(base: &Path, id: &ArtifactId) -> PathBuf {
 }
 
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> AgentResult<()> {
-    let tmp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| AgentError::new(format!("serialize {}: {error}", path.display())))?;
-    fs::write(&tmp, bytes).map_err(fs_error("write temp json"))?;
-    fs::rename(&tmp, path).map_err(fs_error("replace json"))
+    let mut file = AtomicWriteFile::open(path).map_err(fs_error("open atomic json"))?;
+    file.write_all(&bytes).map_err(fs_error("write json"))?;
+    file.commit().map_err(fs_error("replace json"))
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> AgentResult<T> {
     let bytes = fs::read(path).map_err(fs_error("read json"))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| AgentError::new(format!("parse {}: {error}", path.display())))
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        AgentError::new(format!(
+            "parse {} at {}: {}",
+            path.display(),
+            error.path(),
+            error.inner()
+        ))
+    })
 }
 
 fn read_json_dir<T: serde::de::DeserializeOwned>(dir: &Path) -> AgentResult<Vec<T>> {

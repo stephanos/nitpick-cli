@@ -292,6 +292,7 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
 }
 
 impl AgentProvider for CommandAgentProvider {
+    #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
     fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_sandbox(input.disable_sandbox);
@@ -302,7 +303,7 @@ impl AgentProvider for CommandAgentProvider {
             ))
         })?;
         let output_path = repo_dir.join(REVIEW_OUTPUT_RELATIVE_PATH);
-        std::fs::create_dir_all(output_path.parent().ok_or_else(|| {
+        fs_err::create_dir_all(output_path.parent().ok_or_else(|| {
             AgentError::new(format!(
                 "review output path has no parent: {}",
                 output_path.display()
@@ -310,7 +311,7 @@ impl AgentProvider for CommandAgentProvider {
         })?)
         .map_err(|error| AgentError::new(format!("create review output directory: {error}")))?;
         if output_path.exists() {
-            std::fs::remove_file(&output_path)
+            fs_err::remove_file(&output_path)
                 .map_err(|error| AgentError::new(format!("remove stale review output: {error}")))?;
         }
         let prompt = review_prompt(self.model.as_deref(), input, REVIEW_OUTPUT_RELATIVE_PATH);
@@ -325,6 +326,7 @@ impl AgentProvider for CommandAgentProvider {
         validate_review_output_file_for_diff(&repo_dir, &output_path, &input.diff)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.kind, repo_dir = %input.repo_dir.display()))]
     fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_sandbox(input.disable_sandbox);
@@ -338,6 +340,7 @@ impl AgentProvider for CommandAgentProvider {
         )
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.kind))]
     fn attach_session(&self, session: &AgentSession) -> AgentResult<()> {
         let session_id = session
             .provider_session_id

@@ -1,9 +1,3 @@
-use std::{
-    io::{Read, Write},
-    net::TcpStream,
-    time::Duration,
-};
-
 use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput, ReviewRequest};
 use serde::{Deserialize, Serialize};
 
@@ -116,7 +110,7 @@ impl HostClient {
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, String> {
         let body = request_host(&self.addr, "GET", path, None)?;
-        serde_json::from_str(&body).map_err(|error| error.to_string())
+        parse_json(&body)
     }
 
     fn post_json<T: serde::de::DeserializeOwned>(
@@ -126,7 +120,7 @@ impl HostClient {
     ) -> Result<T, String> {
         let body = serde_json::to_vec(input).map_err(|error| error.to_string())?;
         let response = request_host(&self.addr, "POST", path, Some(&body))?;
-        serde_json::from_str(&response).map_err(|error| error.to_string())
+        parse_json(&response)
     }
 }
 
@@ -148,24 +142,40 @@ fn request_host(
     path: &str,
     body: Option<&[u8]>,
 ) -> Result<String, String> {
-    let mut stream = TcpStream::connect(addr)
-        .map_err(|error| format!("nitpick-agent-host unavailable at {addr}: {error}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| error.to_string())?;
-    let content_length = body.map_or(0, <[u8]>::len);
-    let content_type = if body.is_some() {
-        "Content-Type: application/json\r\n"
-    } else {
-        ""
+    let url = format!("http://{addr}{path}");
+    let request = match method {
+        "GET" => ureq::get(&url),
+        "POST" => ureq::post(&url),
+        _ => return Err(format!("unsupported host request method: {method}")),
     };
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: nitpick-agent-host\r\nConnection: close\r\n{content_type}Content-Length: {content_length}\r\n\r\n"
-    )
-    .map_err(|error| error.to_string())?;
-    if let Some(body) = body {
-        stream.write_all(body).map_err(|error| error.to_string())?;
+    let result = match body {
+        Some(body) => request
+            .header("Content-Type", "application/json")
+            .send(body),
+        None => request.call(),
+    };
+    let mut response = match result {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(status)) => {
+            return Err(format!("unexpected host status: {status}"));
+        }
+        Err(error) => {
+            return Err(format!("nitpick-agent-host unavailable at {addr}: {error}"));
+        }
+    };
+    response.body_mut().read_to_string().map_err(|error| {
+        format!(
+            "read nitpick-agent-host response from {addr}{path}: {}",
+            error
+        )
+    })
+}
+
+fn parse_json<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, String> {
+    let mut deserializer = serde_json::Deserializer::from_str(body);
+    serde_path_to_error::deserialize(&mut deserializer)
+        .map_err(|error| format!("invalid host response at {}: {}", error.path(), error.inner()))
+}
     }
 
     let mut response = String::new();

@@ -1,8 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
     path::{Component, Path},
 };
+
+use fs_err as fs;
 
 use crate::{AgentError, AgentResult, ReviewOutput};
 use unidiff::PatchSet;
@@ -81,8 +82,15 @@ fn validate_review_output_file_with_changes(
 
     let input = fs::read_to_string(&output_path)
         .map_err(|error| AgentError::new(format!("read review output file: {error}")))?;
-    let output: StrictReviewOutput = serde_json::from_str(&input)
-        .map_err(|error| AgentError::new(format!("invalid review output JSON: {error}")))?;
+    let mut deserializer = serde_json::Deserializer::from_str(&input);
+    let output: StrictReviewOutput =
+        serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+            AgentError::new(format!(
+                "invalid review output JSON at {}: {}",
+                error.path(),
+                error.inner()
+            ))
+        })?;
     validate_review_output(repo_dir.as_path(), output, changeset)
 }
 

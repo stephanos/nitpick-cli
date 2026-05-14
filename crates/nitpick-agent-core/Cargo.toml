@@ -4,8 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+atomic-write-file = "0.3.0"
+fs-err = "3.3.0"
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error = "0.1.20"
+thiserror = "2.0.18"
+tracing = "0.1.44"
 unidiff = "0.4.0"
 which = "8.0.2"
 

@@ -5,9 +5,12 @@ edition.workspace = true
 
 [dependencies]
 directories = "6.0.0"
+fs-err = "3.3.0"
 nitpick-agent-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error = "0.1.20"
+tracing = "0.1.44"
 url = "2.5.8"
 
 [dev-dependencies]

@@ -1,4 +1,5 @@
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
 pub struct AgentError {
     message: String,
 }
@@ -14,13 +15,5 @@ impl AgentError {
         &self.message
     }
 }
-
-impl std::fmt::Display for AgentError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for AgentError {}
 
 pub type AgentResult<T> = Result<T, AgentError>;
