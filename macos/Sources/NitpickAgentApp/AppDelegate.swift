@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         quitItem.target = self
+        quitItem.image = nil
         quitItem.keyEquivalentModifierMask = []
         menu.addItem(quitItem)
 

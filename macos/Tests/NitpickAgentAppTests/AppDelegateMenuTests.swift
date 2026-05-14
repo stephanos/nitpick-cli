@@ -18,6 +18,7 @@ final class AppDelegateMenuTests: XCTestCase {
         XCTAssertEqual(NSStringFromSelector(menu.items[2].action!), "reloadConfig:")
         XCTAssertEqual(quitItem.title, "Quit")
         XCTAssertTrue(["quit:", "terminate:"].contains(NSStringFromSelector(quitItem.action!)))
+        XCTAssertNil(quitItem.image)
         XCTAssertEqual(quitItem.keyEquivalent, "")
         XCTAssertEqual(quitItem.keyEquivalentModifierMask, [])
     }

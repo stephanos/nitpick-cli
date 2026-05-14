@@ -99,22 +99,6 @@ impl CommandAgentProvider {
         self.run_interactive_in_dir(&[], repo_dir.as_deref())
     }
 
-    fn run_prompt_in_dir(
-        &self,
-        prompt: &str,
-        args: &[String],
-        current_dir: Option<&Path>,
-        review_output_path: Option<&Path>,
-    ) -> AgentResult<String> {
-        self.run_prompt_in_dir_with_sandbox(
-            prompt,
-            args,
-            current_dir,
-            review_output_path,
-            &self.sandbox,
-        )
-    }
-
     fn run_prompt_in_dir_with_sandbox(
         &self,
         prompt: &str,

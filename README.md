@@ -47,7 +47,7 @@ nitpick review acme/platform#42
 nitpick inspect acme/platform#42
 nitpick review-requests
 nitpick review-requests --new
-nitpick chat "summarize this repo"
+nitpick chat acme/platform#42
 nitpick reviews
 nitpick reviews --all
 nitpick logs activity-1
@@ -103,9 +103,11 @@ For one-off CLI runs, pass `--no-sandbox` before the command:
 
 ```bash
 nitpick --no-sandbox review acme/platform#42
-nitpick --no-sandbox chat "summarize this repo"
+nitpick --no-sandbox chat acme/platform#42
 nitpick --no-sandbox resume acme/platform#42
 ```
+
+`chat <pr-ref>` opens a new interactive provider session in the cached PR checkout. It does not create or resume a stored provider session. `resume <activity-id|pr-ref>` reopens a previously stored provider session.
 
 PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Stored Claude and Codex sessions can be reopened with `nitpick resume <activity-id|pr-ref>` when the activity has a provider session ID. If the provider reports that the saved session no longer exists, nitpick clears the stale local session ID and reports that the activity is no longer resumable. GitHub posting uses `gh` by default; override it with `github_command`.
 
