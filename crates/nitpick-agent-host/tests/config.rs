@@ -11,6 +11,7 @@ fn default_config_uses_claude_without_model_pin() {
 
     assert_eq!(config.provider, AgentProviderKind::Claude);
     assert_eq!(config.model, None);
+    assert_eq!(config.github_discovery.interval_seconds, 60);
 }
 
 #[test]

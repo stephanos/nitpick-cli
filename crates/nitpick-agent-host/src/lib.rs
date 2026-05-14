@@ -1237,7 +1237,7 @@ impl Default for GitHubDiscoveryConfig {
         Self {
             enabled: false,
             auto_review: false,
-            interval_seconds: 300,
+            interval_seconds: 60,
             allowlist: Vec::new(),
             denylist: Vec::new(),
         }

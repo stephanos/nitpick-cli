@@ -493,16 +493,7 @@ fn search_pull_requests(
         "GitHub CLI finished"
     );
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(AgentError::github_cli(format!(
-            "GitHub CLI failed with status {}{}",
-            output.status,
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            }
-        )));
+        return Err(github_cli_status_error(&output));
     }
 
     parse_github_json(&output.stdout, "GitHub review request response")
@@ -734,16 +725,7 @@ fn pull_request_head_sha(
         "GitHub PR head SHA command finished"
     );
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(AgentError::github_cli(format!(
-            "GitHub CLI failed with status {}{}",
-            output.status,
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            }
-        )));
+        return Err(github_cli_status_error(&output));
     }
     let response: PullRequestHeadResponse =
         parse_github_json(&output.stdout, "GitHub PR response")?;
@@ -941,10 +923,24 @@ fn command_status_error(command: &str, output: &std::process::Output) -> AgentEr
         }
     );
     if command == "GitHub CLI" {
+        if is_github_rate_limit_error(&stderr) {
+            return AgentError::github_rate_limited(format!(
+                "GitHub rate limited the request; retry after the rate limit resets: {message}"
+            ));
+        }
         AgentError::github_cli(message)
     } else {
         AgentError::provider(message)
     }
+}
+
+fn is_github_rate_limit_error(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("http 429")
+        || stderr.contains("status 429")
+        || stderr.contains(" 429")
+        || stderr.contains("api rate limit exceeded")
+        || stderr.contains("secondary rate limit")
 }
 
 fn parse_github_json<T: serde::de::DeserializeOwned>(
@@ -1006,16 +1002,7 @@ impl ArtifactSyncDestination for GitHubCliSyncDestination {
             "GitHub PR comment command finished"
         );
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(AgentError::github_cli(format!(
-                "GitHub CLI failed with status {}{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {stderr}")
-                }
-            )));
+            return Err(github_cli_status_error(&output));
         }
         let remote_id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
 
@@ -1218,16 +1205,7 @@ fn sync_with_github_cli(
         "GitHub artifact sync command finished"
     );
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(AgentError::github_cli(format!(
-            "GitHub CLI failed with status {}{}",
-            output.status,
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            }
-        )));
+        return Err(github_cli_status_error(&output));
     }
     let remote_id = github_remote_id_from_stdout(&output.stdout);
 
@@ -1279,16 +1257,7 @@ fn github_review_from_cli(
         "GitHub review API command finished"
     );
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(AgentError::github_cli(format!(
-            "GitHub CLI failed with status {}{}",
-            output.status,
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            }
-        )));
+        return Err(github_cli_status_error(&output));
     }
     parse_github_json(&output.stdout, "GitHub review response")
 }
@@ -1341,16 +1310,7 @@ fn run_github_cli_with_input(command: &Path, args: &[&str], body: &str) -> Agent
         "GitHub CLI with stdin finished"
     );
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(AgentError::github_cli(format!(
-            "GitHub CLI failed with status {}{}",
-            output.status,
-            if stderr.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr}")
-            }
-        )));
+        return Err(github_cli_status_error(&output));
     }
     Ok(output)
 }
@@ -1476,5 +1436,37 @@ fn github_comment_body(artifact: &Artifact) -> String {
         ArtifactContent::ChatResponse(response) => {
             format!("<!-- nitpick-agent:{} -->\n\n{response}\n", artifact.id)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt as _;
+
+    use super::{command_status_error, is_github_rate_limit_error};
+
+    #[test]
+    fn detects_github_rate_limit_errors() {
+        assert!(is_github_rate_limit_error("HTTP 429: secondary rate limit"));
+        assert!(is_github_rate_limit_error("API rate limit exceeded"));
+        assert!(!is_github_rate_limit_error("HTTP 404: Not Found"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_cli_status_error_uses_rate_limit_variant_for_429s() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"HTTP 429: API rate limit exceeded".to_vec(),
+        };
+
+        let error = command_status_error("GitHub CLI", &output);
+
+        assert!(matches!(
+            error,
+            nitpick_agent_core::AgentError::GitHubRateLimited { .. }
+        ));
     }
 }

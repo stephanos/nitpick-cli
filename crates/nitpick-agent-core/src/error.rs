@@ -24,6 +24,8 @@ pub enum AgentError {
     Config { message: String },
     #[error("{message}")]
     GitHubCli { message: String },
+    #[error("{message}")]
+    GitHubRateLimited { message: String },
 }
 
 impl AgentError {
@@ -96,6 +98,12 @@ impl AgentError {
 
     pub fn github_cli(message: impl Into<String>) -> Self {
         Self::GitHubCli {
+            message: message.into(),
+        }
+    }
+
+    pub fn github_rate_limited(message: impl Into<String>) -> Self {
+        Self::GitHubRateLimited {
             message: message.into(),
         }
     }
