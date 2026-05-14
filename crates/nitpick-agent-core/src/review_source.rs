@@ -1,15 +1,16 @@
 use std::{
     collections::BTreeMap,
-    io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
-use atomic_write_file::AtomicWriteFile;
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentError, AgentResult, ReviewInput, ReviewRequest};
+use crate::{
+    AgentError, AgentResult, ReviewInput, ReviewRequest, read_json, read_json_dir,
+    write_json_atomic,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessedReview {
@@ -83,11 +84,11 @@ impl ProcessedReviewStore for FsProcessedReviewStore {
         if !path.exists() {
             return Ok(None);
         }
-        Ok(Some(read_processed_review(&path)?))
+        Ok(Some(read_json(&path)?))
     }
 
     fn save_processed(&self, review: &ProcessedReview) -> AgentResult<()> {
-        write_processed_review(
+        write_json_atomic(
             &self
                 .base
                 .join(format!("{}.json", processed_review_key(review))),
@@ -96,22 +97,7 @@ impl ProcessedReviewStore for FsProcessedReviewStore {
     }
 
     fn list_processed(&self) -> AgentResult<Vec<ProcessedReview>> {
-        let mut paths = fs::read_dir(&self.base)
-            .map_err(|error| AgentError::new(format!("read processed review dir: {error}")))?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                AgentError::new(format!("read processed review dir entry: {error}"))
-            })?;
-        paths.sort();
-
-        let mut reviews = Vec::new();
-        for path in paths {
-            if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-                reviews.push(read_processed_review(&path)?);
-            }
-        }
-        Ok(reviews)
+        read_json_dir(&self.base)
     }
 }
 
@@ -137,31 +123,6 @@ fn sanitize_key(value: &str) -> String {
             }
         })
         .collect()
-}
-
-fn write_processed_review(path: &Path, review: &ProcessedReview) -> AgentResult<()> {
-    let bytes = serde_json::to_vec_pretty(review)
-        .map_err(|error| AgentError::new(format!("serialize processed review: {error}")))?;
-    let mut file = AtomicWriteFile::open(path)
-        .map_err(|error| AgentError::new(format!("open processed review atomically: {error}")))?;
-    file.write_all(&bytes)
-        .map_err(|error| AgentError::new(format!("write processed review: {error}")))?;
-    file.commit()
-        .map_err(|error| AgentError::new(format!("replace processed review: {error}")))
-}
-
-fn read_processed_review(path: &Path) -> AgentResult<ProcessedReview> {
-    let bytes = fs::read(path)
-        .map_err(|error| AgentError::new(format!("read processed review: {error}")))?;
-    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
-    serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-        AgentError::new(format!(
-            "parse {} at {}: {}",
-            path.display(),
-            error.path(),
-            error.inner()
-        ))
-    })
 }
 
 pub trait ReviewSource: Send + Sync {

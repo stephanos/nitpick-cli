@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::Path,
     sync::{Arc, Mutex},
     thread,
@@ -12,6 +11,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use fs_err as fs;
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent, ArtifactId,

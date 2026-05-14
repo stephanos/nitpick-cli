@@ -8,6 +8,7 @@ use nitpick_agent_host::{AgentConfig, HostDaemon, ReviewSourcePoller, api_router
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    init_tracing();
     if env::args().nth(1).as_deref() == Some("daemon") {
         return run_daemon().await;
     }
@@ -75,6 +76,7 @@ async fn run_daemon() -> ExitCode {
     println!("config: {}", config_path.display());
     println!("data: {}", data_dir.display());
     spawn_review_source_poller(daemon.clone());
+    tracing::info!(%addr, "host daemon listening");
 
     match axum::serve(listener, api_router(daemon)).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -83,6 +85,15 @@ async fn run_daemon() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("nitpick_agent=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn build_daemon() -> Result<(HostDaemon, PathBuf, PathBuf), String> {

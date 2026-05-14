@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::{Component, Path},
+    path::Path,
 };
 
 use fs_err as fs;
 
-use crate::{AgentError, AgentResult, ReviewOutput};
+use crate::{AgentError, AgentResult, RepoPath, ReviewOutput, parse_json_str};
 use unidiff::PatchSet;
 
 pub const REVIEW_OUTPUT_RELATIVE_PATH: &str = ".nitpick/review-output.json";
@@ -82,15 +82,7 @@ fn validate_review_output_file_with_changes(
 
     let input = fs::read_to_string(&output_path)
         .map_err(|error| AgentError::new(format!("read review output file: {error}")))?;
-    let mut deserializer = serde_json::Deserializer::from_str(&input);
-    let output: StrictReviewOutput =
-        serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-            AgentError::new(format!(
-                "invalid review output JSON at {}: {}",
-                error.path(),
-                error.inner()
-            ))
-        })?;
+    let output: StrictReviewOutput = parse_json_str(&input, "invalid review output JSON")?;
     validate_review_output(repo_dir.as_path(), output, changeset)
 }
 
@@ -111,14 +103,14 @@ fn validate_review_output(
 
     let mut comments = Vec::with_capacity(output.comments.len());
     for comment in output.comments {
-        validate_relative_repo_path(&comment.path)?;
+        let comment_path = RepoPath::parse(&comment.path)?;
         if comment.body.trim().is_empty() {
             return Err(AgentError::new(format!(
                 "review comment body is empty: {}",
                 comment.path
             )));
         }
-        let comment_file = repo_dir.join(&comment.path);
+        let comment_file = repo_dir.join(comment_path.as_str());
         if !comment_file.exists() {
             return Err(AgentError::new(format!(
                 "review comment path does not exist in repository: {}",
@@ -132,10 +124,10 @@ fn validate_review_output(
             )));
         }
         if let Some(changeset) = changeset {
-            changeset.validate_comment_location(&comment.path, comment.line)?;
+            changeset.validate_comment_location(comment_path.as_str(), comment.line)?;
         }
         comments.push(crate::ReviewComment {
-            path: comment.path,
+            path: comment_path.as_str().to_owned(),
             line: comment.line,
             body: comment.body,
         });
@@ -157,28 +149,6 @@ fn validate_review_output(
                 .collect(),
         },
     })
-}
-
-fn validate_relative_repo_path(path: &str) -> AgentResult<()> {
-    let path_value = Path::new(path);
-    if path.trim().is_empty() || path_value.is_absolute() {
-        return Err(AgentError::new(format!(
-            "review comment path escapes repository: {path}"
-        )));
-    }
-
-    for component in path_value.components() {
-        if matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        ) {
-            return Err(AgentError::new(format!(
-                "review comment path escapes repository: {path}"
-            )));
-        }
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Default)]

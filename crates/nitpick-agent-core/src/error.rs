@@ -1,18 +1,107 @@
+use std::path::PathBuf;
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{message}")]
-pub struct AgentError {
-    message: String,
+pub enum AgentError {
+    #[error("{message}")]
+    Message { message: String },
+    #[error("{context}: {source}")]
+    Io { context: String, source: String },
+    #[error("{context} at {path}: {source}")]
+    Json {
+        context: String,
+        path: String,
+        source: String,
+    },
+    #[error("{resource} not found: {id}")]
+    NotFound { resource: String, id: String },
+    #[error("invalid input: {message}")]
+    InvalidInput { message: String },
+    #[error("provider command failed: {message}")]
+    Provider { message: String },
+    #[error("sandbox error: {message}")]
+    Sandbox { message: String },
+    #[error("config error: {message}")]
+    Config { message: String },
+    #[error("GitHub CLI failed: {message}")]
+    GitHubCli { message: String },
 }
 
 impl AgentError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self {
+        Self::Message {
             message: message.into(),
         }
     }
 
-    pub fn message(&self) -> &str {
-        &self.message
+    pub fn io(context: impl Into<String>, source: impl std::fmt::Display) -> Self {
+        Self::Io {
+            context: context.into(),
+            source: source.to_string(),
+        }
+    }
+
+    pub fn io_path(
+        context: impl AsRef<str>,
+        path: impl Into<PathBuf>,
+        source: impl std::fmt::Display,
+    ) -> Self {
+        Self::Io {
+            context: format!("{} {}", context.as_ref(), path.into().display()),
+            source: source.to_string(),
+        }
+    }
+
+    pub fn json(
+        context: impl Into<String>,
+        path: impl std::fmt::Display,
+        source: impl std::fmt::Display,
+    ) -> Self {
+        Self::Json {
+            context: context.into(),
+            path: path.to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    pub fn not_found(resource: impl Into<String>, id: impl Into<String>) -> Self {
+        Self::NotFound {
+            resource: resource.into(),
+            id: id.into(),
+        }
+    }
+
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::InvalidInput {
+            message: message.into(),
+        }
+    }
+
+    pub fn provider(message: impl Into<String>) -> Self {
+        Self::Provider {
+            message: message.into(),
+        }
+    }
+
+    pub fn sandbox(message: impl Into<String>) -> Self {
+        Self::Sandbox {
+            message: message.into(),
+        }
+    }
+
+    pub fn config(message: impl Into<String>) -> Self {
+        Self::Config {
+            message: message.into(),
+        }
+    }
+
+    pub fn github_cli(message: impl Into<String>) -> Self {
+        Self::GitHubCli {
+            message: message.into(),
+        }
+    }
+
+    pub fn message(&self) -> String {
+        self.to_string()
     }
 }
 

@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    io::Write,
     path::{Path, PathBuf},
     sync::{
         Mutex,
@@ -8,12 +7,11 @@ use std::{
     },
 };
 
-use atomic_write_file::AtomicWriteFile;
 use fs_err as fs;
 
 use crate::{
     Activity, ActivityId, ActivityKind, AgentError, AgentResult, Artifact, ArtifactContent,
-    ArtifactId, ArtifactKind, ArtifactSyncState,
+    ArtifactId, ArtifactKind, ArtifactSyncState, read_json, read_json_dir, write_json_atomic,
 };
 
 const STORE_SCHEMA_VERSION: u32 = 1;
@@ -275,7 +273,7 @@ fn ensure_manifest(base: &Path) -> AgentResult<()> {
         return Ok(());
     }
 
-    write_json(
+    write_json_atomic(
         &path,
         &StoreManifest {
             schema_version: STORE_SCHEMA_VERSION,
@@ -292,7 +290,7 @@ impl ActivityStore for FsActivityStore {
     }
 
     fn save(&self, activity: &Activity) -> AgentResult<()> {
-        write_json(&activity_path(&self.base, &activity.id), activity)
+        write_json_atomic(&activity_path(&self.base, &activity.id), activity)
     }
 
     fn get(&self, id: &ActivityId) -> AgentResult<Activity> {
@@ -322,7 +320,7 @@ impl ArtifactStore for FsActivityStore {
 
     fn save_artifacts(&self, artifacts: &[Artifact]) -> AgentResult<()> {
         for artifact in artifacts {
-            write_json(&artifact_path(&self.base, &artifact.id), artifact)?;
+            write_json_atomic(&artifact_path(&self.base, &artifact.id), artifact)?;
         }
         Ok(())
     }
@@ -351,7 +349,7 @@ impl ArtifactStore for FsActivityStore {
     ) -> AgentResult<Artifact> {
         let mut artifact = self.get_artifact(id)?;
         artifact.sync_state = sync_state;
-        write_json(&artifact_path(&self.base, id), &artifact)?;
+        write_json_atomic(&artifact_path(&self.base, id), &artifact)?;
         Ok(artifact)
     }
 }
@@ -370,45 +368,6 @@ fn activity_path(base: &Path, id: &ActivityId) -> PathBuf {
 
 fn artifact_path(base: &Path, id: &ArtifactId) -> PathBuf {
     artifact_dir(base).join(format!("{id}.json"))
-}
-
-fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> AgentResult<()> {
-    let bytes = serde_json::to_vec_pretty(value)
-        .map_err(|error| AgentError::new(format!("serialize {}: {error}", path.display())))?;
-    let mut file = AtomicWriteFile::open(path).map_err(fs_error("open atomic json"))?;
-    file.write_all(&bytes).map_err(fs_error("write json"))?;
-    file.commit().map_err(fs_error("replace json"))
-}
-
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> AgentResult<T> {
-    let bytes = fs::read(path).map_err(fs_error("read json"))?;
-    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
-    serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-        AgentError::new(format!(
-            "parse {} at {}: {}",
-            path.display(),
-            error.path(),
-            error.inner()
-        ))
-    })
-}
-
-fn read_json_dir<T: serde::de::DeserializeOwned>(dir: &Path) -> AgentResult<Vec<T>> {
-    let mut values = Vec::new();
-    let mut paths = fs::read_dir(dir)
-        .map_err(fs_error("read json dir"))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(fs_error("read json dir entry"))?;
-    paths.sort();
-
-    for path in paths {
-        if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-            values.push(read_json(&path)?);
-        }
-    }
-
-    Ok(values)
 }
 
 fn next_numeric_suffix(dir: &Path, prefix: &str) -> AgentResult<u64> {

@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -8,6 +8,7 @@ use std::{
 };
 
 use directories::ProjectDirs;
+use fs_err as fs;
 use nitpick_agent_core::{
     AgentError, AgentResult, Artifact, ArtifactContent, ArtifactSyncDestination,
     ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput, ReviewRequest,
@@ -388,6 +389,7 @@ impl ReviewSource for GitHubCliDiscovery {
 }
 
 impl ReviewRequestDiscovery for GitHubCliDiscovery {
+    #[tracing::instrument(skip_all, fields(source = "github"))]
     fn requested_reviews(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
         let records = if self.review_request_scopes.is_empty() {
             search_pull_requests(&self.command, None)?
@@ -410,6 +412,7 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
             .collect()
     }
 
+    #[tracing::instrument(skip_all, fields(repository = %pull_request.repository(), number = pull_request.number))]
     fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput> {
         let details = self.pull_request_details(pull_request)?;
         let diff = pull_request_diff(
@@ -500,9 +503,7 @@ fn search_pull_requests(
         )));
     }
 
-    serde_json::from_slice(&output.stdout).map_err(|error| {
-        AgentError::new(format!("invalid GitHub review request response: {error}"))
-    })
+    parse_github_json(&output.stdout, "GitHub review request response")
 }
 
 fn review_request_scopes(allowlist: &[String]) -> Vec<ReviewRequestScope> {
@@ -720,8 +721,8 @@ fn pull_request_head_sha(
             }
         )));
     }
-    let response: PullRequestHeadResponse = serde_json::from_slice(&output.stdout)
-        .map_err(|error| AgentError::new(format!("invalid GitHub PR response: {error}")))?;
+    let response: PullRequestHeadResponse =
+        parse_github_json(&output.stdout, "GitHub PR response")?;
     Ok(response.head_ref_oid)
 }
 
@@ -757,8 +758,8 @@ fn pull_request_details(
     if !output.status.success() {
         return Err(github_cli_status_error(&output));
     }
-    let response: PullRequestDetailsResponse = serde_json::from_slice(&output.stdout)
-        .map_err(|error| AgentError::new(format!("invalid GitHub PR response: {error}")))?;
+    let response: PullRequestDetailsResponse =
+        parse_github_json(&output.stdout, "GitHub PR response")?;
     Ok(response.into_details())
 }
 
@@ -844,8 +845,8 @@ fn pull_request_has_nitpick_review(
     if !output.status.success() {
         return Err(github_cli_status_error(&output));
     }
-    let reviews: Vec<PullRequestReviewResponse> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| AgentError::new(format!("invalid GitHub PR reviews response: {error}")))?;
+    let reviews: Vec<PullRequestReviewResponse> =
+        parse_github_json(&output.stdout, "GitHub PR reviews response")?;
     Ok(reviews.into_iter().any(|review| {
         review.commit_id == head_sha && review.body.is_some_and(|body| has_nitpick_marker(&body))
     }))
@@ -876,6 +877,20 @@ fn command_status_error(command: &str, output: &std::process::Output) -> AgentEr
             format!(": {stderr}")
         }
     ))
+}
+
+fn parse_github_json<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    context: &str,
+) -> AgentResult<T> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        AgentError::new(format!(
+            "invalid {context} at {}: {}",
+            error.path(),
+            error.inner()
+        ))
+    })
 }
 
 impl ArtifactSyncDestination for GitHubCliSyncDestination {
@@ -1143,8 +1158,7 @@ fn sync_pending_review_with_github_cli(
     destination: &str,
 ) -> AgentResult<ArtifactSyncOutcome> {
     let output = run_github_cli_with_input(command, args, body)?;
-    let review: GitHubReviewResponse = serde_json::from_slice(&output.stdout)
-        .map_err(|error| AgentError::new(format!("parse GitHub review response: {error}")))?;
+    let review: GitHubReviewResponse = parse_github_json(&output.stdout, "GitHub review response")?;
     Ok(ArtifactSyncOutcome {
         sync_state: ArtifactSyncState::Pending {
             destination: destination.into(),
@@ -1179,8 +1193,7 @@ fn github_review_from_cli(
             }
         )));
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|error| AgentError::new(format!("parse GitHub review response: {error}")))
+    parse_github_json(&output.stdout, "GitHub review response")
 }
 
 fn github_review_from_cli_with_input(
@@ -1191,8 +1204,7 @@ fn github_review_from_cli_with_input(
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
     let output = run_github_cli_with_input(command, &args, body)?;
-    serde_json::from_slice(&output.stdout)
-        .map_err(|error| AgentError::new(format!("parse GitHub review response: {error}")))
+    parse_github_json(&output.stdout, "GitHub review response")
 }
 
 fn run_github_cli_with_input(command: &Path, args: &[&str], body: &str) -> AgentResult<Output> {

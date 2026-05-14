@@ -3,8 +3,10 @@ mod artifact;
 mod clock;
 mod command_provider;
 mod error;
+mod json;
 mod model;
 mod provider;
+mod repo_path;
 mod review_output;
 mod review_source;
 mod runtime;
@@ -17,11 +19,13 @@ pub use artifact::{Artifact, ArtifactContent, ArtifactId, ArtifactKind, Artifact
 pub use clock::{Clock, SystemClock};
 pub use command_provider::{CommandAgentProvider, CommandSandboxConfig};
 pub use error::{AgentError, AgentResult};
+pub use json::{parse_json_bytes, parse_json_str, read_json, read_json_dir, write_json_atomic};
 pub use model::{
     ChatInput, ReviewComment, ReviewInput, ReviewJourney, ReviewJourneyStep, ReviewOutput,
     ReviewRequest, ReviewSubject,
 };
 pub use provider::AgentProvider;
+pub use repo_path::RepoPath;
 pub use review_output::{
     REVIEW_OUTPUT_RELATIVE_PATH, validate_review_output_file, validate_review_output_file_for_diff,
 };
