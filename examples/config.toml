@@ -11,6 +11,12 @@ sandbox = "macos-seatbelt"
 
 [reviews]
 max_concurrent = 3
+# Review prompt loaded by the daemon before starting each review.
+# Relative paths are resolved next to this config file.
+# The default review-prompt.md file is refreshed on every daemon start.
+prompt_path = "review-prompt.md"
+# Optional instructions appended to the loaded review prompt.
+extra_instructions = ""
 
 [github]
 command = "gh"

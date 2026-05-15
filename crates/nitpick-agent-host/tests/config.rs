@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use nitpick_agent_core::{ActivityKind, ActivityStore, AgentProviderKind, MemoryActivityStore};
 use nitpick_agent_host::{
-    AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon, HostStatus,
+    AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon,
+    HostStatus, REVIEW_PROMPT_TEMPLATE,
 };
 
 #[test]
@@ -13,6 +14,11 @@ fn default_config_uses_claude_without_model_pin() {
     assert_eq!(config.model, None);
     assert_eq!(config.github_discovery.interval_seconds, 60);
     assert_eq!(config.max_concurrent_reviews, 3);
+    assert_eq!(
+        config.review_prompt_path,
+        std::path::PathBuf::from("review-prompt.md")
+    );
+    assert_eq!(config.review_extra_instructions, "");
 }
 
 #[test]
@@ -22,6 +28,23 @@ fn config_template_parses() {
     assert_eq!(config.provider, AgentProviderKind::Claude);
     assert_eq!(config.github_discovery.interval_seconds, 60);
     assert_eq!(config.max_concurrent_reviews, 3);
+}
+
+#[test]
+fn init_review_prompt_file_overwrites_with_template() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let prompt_path = dir.path().join("review-prompt.md");
+    std::fs::write(&prompt_path, "old prompt").expect("write old prompt");
+
+    let initialized_path =
+        AgentConfig::init_review_prompt_file(&config_path).expect("init review prompt");
+
+    assert_eq!(initialized_path, prompt_path);
+    assert_eq!(
+        std::fs::read_to_string(prompt_path).expect("review prompt"),
+        REVIEW_PROMPT_TEMPLATE
+    );
 }
 
 #[test]
@@ -77,6 +100,8 @@ sandbox = "none"
 
 [reviews]
 max_concurrent = 5
+prompt_path = "prompts/review.md"
+extra_instructions = "focus on correctness"
 
 [github]
 command = "/opt/bin/gh"
@@ -96,6 +121,33 @@ command = "/opt/bin/gh"
         }
     );
     assert_eq!(config.max_concurrent_reviews, 5);
+    assert_eq!(
+        config.review_prompt_path,
+        std::path::PathBuf::from("prompts/review.md")
+    );
+    assert_eq!(config.review_extra_instructions, "focus on correctness");
+}
+
+#[test]
+fn load_resolves_relative_review_prompt_path_next_to_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("nested/config.toml");
+    std::fs::create_dir_all(config_path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(
+        &config_path,
+        r#"
+[reviews]
+prompt_path = "prompts/review.md"
+"#,
+    )
+    .expect("write config");
+
+    let config = AgentConfig::load(&config_path).expect("config");
+
+    assert_eq!(
+        config.review_prompt_path,
+        dir.path().join("nested/prompts/review.md")
+    );
 }
 
 #[test]

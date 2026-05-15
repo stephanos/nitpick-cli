@@ -749,20 +749,27 @@ async fn cleanup_checkouts_endpoint_removes_closed_checkouts_and_records_activit
     let checkout_root = dir.path().join("checkouts");
     fs::create_dir_all(checkout_root.join("acme/platform/pr-42/.git")).expect("closed checkout");
     fs::create_dir_all(checkout_root.join("octo/widgets/pr-7/.git")).expect("open checkout");
+    fs::create_dir_all(checkout_root.join("temporalio/temporal/pr-99/.git"))
+        .expect("denied checkout");
     let gh = dir.path().join("gh");
+    let log = dir.path().join("gh.log");
     fs::write(
         &gh,
-        r#"#!/bin/sh
+        format!(
+            r#"#!/bin/sh
+echo "$*" >> '{}'
 if [ "$1 $2" = "pr view" ] && [ "$3" = "42" ]; then
-  printf '{"title":"Closed PR","author":{"login":"stephan"},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}'
+  printf '{{"title":"Closed PR","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr view" ] && [ "$3" = "7" ]; then
-  printf '{"title":"Open PR","author":{"login":"octo"},"url":"https://github.com/octo/widgets/pull/7","headRefOid":"def456","headRefName":"open-branch","state":"OPEN","mergedAt":null}'
+  printf '{{"title":"Open PR","author":{{"login":"octo"}},"url":"https://github.com/octo/widgets/pull/7","headRefOid":"def456","headRefName":"open-branch","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 exit 1
 "#,
+            log.display()
+        ),
     )
     .expect("write fake gh");
     let mut permissions = fs::metadata(&gh).expect("metadata").permissions();
@@ -774,6 +781,10 @@ exit 1
         AgentConfig {
             github_command: Some(gh.display().to_string()),
             checkout_dir: Some(checkout_root.display().to_string()),
+            github_discovery: GitHubDiscoveryConfig {
+                allowlist: vec!["acme/*".into(), "octo/*".into()],
+                ..GitHubDiscoveryConfig::default()
+            },
             ..AgentConfig::default()
         },
     ));
@@ -795,6 +806,11 @@ exit 1
     assert_eq!(body["cleaned"][0], "acme/platform#42");
     assert!(!checkout_root.join("acme/platform/pr-42").exists());
     assert!(checkout_root.join("octo/widgets/pr-7").exists());
+    assert!(checkout_root.join("temporalio/temporal/pr-99").exists());
+    let commands = fs::read_to_string(log).expect("commands");
+    assert!(commands.contains("--repo acme/platform"));
+    assert!(commands.contains("--repo octo/widgets"));
+    assert!(!commands.contains("temporalio/temporal"));
     let activities = store.list().expect("activities");
     assert_eq!(activities.len(), 1);
     assert_eq!(

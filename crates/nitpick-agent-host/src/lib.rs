@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
     thread,
 };
@@ -223,6 +223,10 @@ impl HostDaemon {
         let mut cleaned = Vec::new();
 
         for pull_request in github.list_checkouts()? {
+            let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
+            if !self.config.github_discovery.allows_repository(&repository) {
+                continue;
+            }
             let details = github.pull_request_details(&pull_request)?;
             if !github.cleanup_checkout_for(&pull_request, &details)? {
                 continue;
@@ -620,10 +624,12 @@ impl HostDaemon {
     }
 
     pub fn start_review(&self, input: ReviewInput) -> AgentResult<Activity> {
+        let input = self.config.apply_review_prompt(input)?;
         self.runtime().start_review(input)
     }
 
     pub fn enqueue_review(&self, input: ReviewInput) -> AgentResult<Activity> {
+        let input = self.config.apply_review_prompt(input)?;
         let runtime = self.runtime();
         let mut activity = runtime.create_queued_review_activity(&input)?;
         let slot_acquired = self.try_acquire_review_slot()?;
@@ -1090,7 +1096,9 @@ fn api_error_status(error: &AgentError) -> StatusCode {
 }
 
 const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
-pub const CONFIG_TEMPLATE: &str = include_str!("../../../config.example.toml");
+pub const CONFIG_TEMPLATE: &str = include_str!("../../../examples/config.toml");
+pub const REVIEW_PROMPT_TEMPLATE: &str = include_str!("../../../examples/review-prompt.md");
+const DEFAULT_REVIEW_PROMPT_FILENAME: &str = "review-prompt.md";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentConfig {
@@ -1100,6 +1108,8 @@ pub struct AgentConfig {
     pub github_command: Option<String>,
     pub checkout_dir: Option<String>,
     pub max_concurrent_reviews: usize,
+    pub review_prompt_path: PathBuf,
+    pub review_extra_instructions: String,
     pub sandbox: AgentSandboxConfig,
     pub github_discovery: GitHubDiscoveryConfig,
 }
@@ -1113,6 +1123,8 @@ impl Default for AgentConfig {
             github_command: None,
             checkout_dir: None,
             max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
+            review_prompt_path: PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME),
+            review_extra_instructions: String::new(),
             sandbox: AgentSandboxConfig::default(),
             github_discovery: GitHubDiscoveryConfig::default(),
         }
@@ -1121,6 +1133,10 @@ impl Default for AgentConfig {
 
 impl AgentConfig {
     pub fn from_toml(input: &str) -> AgentResult<Self> {
+        Self::from_toml_with_config_dir(input, None)
+    }
+
+    fn from_toml_with_config_dir(input: &str, config_dir: Option<&Path>) -> AgentResult<Self> {
         let raw = toml::from_str::<RawConfig>(input)
             .map_err(|error| nitpick_agent_core::AgentError::config(error.to_string()))?;
         let agent = raw.agent.unwrap_or_default();
@@ -1147,6 +1163,12 @@ impl AgentConfig {
             .max_concurrent
             .unwrap_or(DEFAULT_MAX_CONCURRENT_REVIEWS)
             .max(1);
+        let review_prompt_path = review_prompt_path(reviews.prompt_path.as_deref(), config_dir);
+        let review_extra_instructions = reviews
+            .extra_instructions
+            .map(|instructions| instructions.trim().to_owned())
+            .filter(|instructions| !instructions.is_empty())
+            .unwrap_or_default();
         let sandbox = AgentSandboxConfig::from_mode(agent.sandbox)?;
 
         Ok(Self {
@@ -1156,6 +1178,8 @@ impl AgentConfig {
             github_command,
             checkout_dir: None,
             max_concurrent_reviews,
+            review_prompt_path,
+            review_extra_instructions,
             sandbox,
             github_discovery,
         })
@@ -1169,7 +1193,7 @@ impl AgentConfig {
                 path.display()
             ))
         })?;
-        Self::from_toml(&input)
+        Self::from_toml_with_config_dir(&input, path.parent())
     }
 
     pub fn init_template_file(path: impl AsRef<Path>) -> AgentResult<()> {
@@ -1202,10 +1226,29 @@ impl AgentConfig {
         Ok(())
     }
 
+    pub fn init_review_prompt_file(config_path: impl AsRef<Path>) -> AgentResult<PathBuf> {
+        let path = default_review_prompt_path(config_path.as_ref());
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                nitpick_agent_core::AgentError::config(format!(
+                    "failed to create review prompt directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(&path, REVIEW_PROMPT_TEMPLATE).map_err(|error| {
+            nitpick_agent_core::AgentError::config(format!(
+                "failed to write review prompt template {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(path)
+    }
+
     pub fn load_or_default(path: impl AsRef<Path>) -> AgentResult<Self> {
         let path = path.as_ref();
         match fs::read_to_string(path) {
-            Ok(input) => Self::from_toml(&input),
+            Ok(input) => Self::from_toml_with_config_dir(&input, path.parent()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(nitpick_agent_core::AgentError::config(format!(
                 "failed to read config {}: {error}",
@@ -1283,6 +1326,53 @@ impl AgentConfig {
     pub fn review_source_name(&self) -> String {
         "github".into()
     }
+
+    fn apply_review_prompt(&self, mut input: ReviewInput) -> AgentResult<ReviewInput> {
+        let mut prompt = match fs::read_to_string(&self.review_prompt_path) {
+            Ok(prompt) => prompt,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && self.review_prompt_path.file_name()
+                        == Some(std::ffi::OsStr::new(DEFAULT_REVIEW_PROMPT_FILENAME)) =>
+            {
+                REVIEW_PROMPT_TEMPLATE.into()
+            }
+            Err(error) => {
+                return Err(AgentError::config(format!(
+                    "failed to read review prompt {}: {error}",
+                    self.review_prompt_path.display()
+                )));
+            }
+        };
+        if !self.review_extra_instructions.is_empty() {
+            prompt.push_str("\n\nAdditional instructions:\n");
+            prompt.push_str(&self.review_extra_instructions);
+        }
+        input.review_prompt = prompt;
+        Ok(input)
+    }
+}
+
+fn default_review_prompt_path(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(DEFAULT_REVIEW_PROMPT_FILENAME)
+}
+
+fn review_prompt_path(raw_path: Option<&str>, config_dir: Option<&Path>) -> PathBuf {
+    let path = raw_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME));
+    if path.is_absolute() {
+        path
+    } else if let Some(config_dir) = config_dir {
+        config_dir.join(path)
+    } else {
+        path
+    }
 }
 
 fn github_pull_request_from_review_request(
@@ -1329,6 +1419,8 @@ struct RawAgentConfig {
 #[serde(deny_unknown_fields)]
 struct RawReviewsConfig {
     max_concurrent: Option<usize>,
+    prompt_path: Option<String>,
+    extra_instructions: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

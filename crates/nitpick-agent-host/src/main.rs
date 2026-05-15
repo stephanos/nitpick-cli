@@ -100,6 +100,7 @@ fn init_tracing() {
 fn build_daemon() -> Result<(HostDaemon, PathBuf, PathBuf), String> {
     let config_path = config_path();
     AgentConfig::init_template_file(&config_path).map_err(|error| error.to_string())?;
+    AgentConfig::init_review_prompt_file(&config_path).map_err(|error| error.to_string())?;
     let config = AgentConfig::load_or_default(&config_path).map_err(|error| error.to_string())?;
     let data_dir = data_dir();
     let store = FsActivityStore::new(&data_dir).map_err(|error| error.to_string())?;

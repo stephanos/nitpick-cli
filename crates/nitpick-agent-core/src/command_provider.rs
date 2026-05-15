@@ -399,8 +399,8 @@ impl CommandAgentProvider {
 
 fn review_prompt(model: Option<&str>, input: &ReviewInput, output_path: &str) -> String {
     format!(
-        "You are reviewing code. Write review annotations as JSON to `{}` relative to the repository root. Do not return review annotations on stdout.\n\nThe JSON object must contain `summary`, `comments`, and `journey`. Each comment must use a repository-relative path, a line number inside the diff changeset, and a body. Use line 0 only for file-level comments on files in the diff changeset.\n\nmodel: {}\nrepository: {}\nnumber: {}\ntitle: {}\nauthor: {}\nrepo_dir: {}\ninstructions:\n{}\n\ndiff:\n{}\n",
-        output_path,
+        "{}\n\nmodel: {}\nrepository: {}\nnumber: {}\ntitle: {}\nauthor: {}\nrepo_dir: {}\ninstructions:\n{}\n\ndiff:\n{}\n",
+        initial_review_prompt(input, output_path),
         model.unwrap_or("(default)"),
         input.subject.repository,
         input
@@ -414,6 +414,16 @@ fn review_prompt(model: Option<&str>, input: &ReviewInput, output_path: &str) ->
         input.instructions,
         input.diff,
     )
+}
+
+fn initial_review_prompt(input: &ReviewInput, output_path: &str) -> String {
+    let prompt = input.review_prompt.trim();
+    let prompt = if prompt.is_empty() {
+        include_str!("../../../examples/review-prompt.md")
+    } else {
+        prompt
+    };
+    prompt.replace("{review_output_path}", output_path)
 }
 
 fn chat_prompt(model: Option<&str>, input: &ChatInput) -> String {

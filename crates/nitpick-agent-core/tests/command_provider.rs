@@ -171,6 +171,50 @@ fn command_provider_reads_review_output_from_validated_json_file() {
 }
 
 #[test]
+fn command_provider_uses_configured_review_prompt() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    fs::write(repo_dir.join("src.rs"), "fn main() {}\n").expect("repo file");
+    let command = dir.path().join("provider");
+    let prompt_log = dir.path().join("prompt.log");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\ncat > '{}'\nmkdir -p .nitpick\nprintf '{{\"summary\":\"review-response\",\"comments\":[],\"journey\":{{\"summary\":\"done\",\"steps\":[]}}}}' > .nitpick/review-output.json\n",
+            prompt_log.display()
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(CommandAgentProvider::new(
+        AgentProviderKind::Claude,
+        Some("test-model".into()),
+        &command,
+    ));
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+
+    runtime
+        .start_review(ReviewInput {
+            repo_dir,
+            review_prompt: "Custom prompt: write to {review_output_path}.".into(),
+            diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn main() {}\n".into(),
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                ..ReviewSubject::default()
+            },
+            ..ReviewInput::default()
+        })
+        .expect("review runs");
+
+    let prompt = fs::read_to_string(prompt_log).expect("prompt");
+    assert!(prompt.starts_with("Custom prompt: write to .nitpick/review-output.json."));
+}
+
+#[test]
 fn command_provider_rejects_missing_review_output_json_file() {
     let dir = tempfile::tempdir().expect("temp dir");
     let repo_dir = dir.path().join("repo");
