@@ -3,10 +3,10 @@ import XCTest
 @testable import NitpickAgentMacOSCore
 
 final class MenuSnapshotTests: XCTestCase {
-    func testStoppedHostStatusTitle() {
+    func testStoppedAgentStatusTitle() {
         let snapshot = MenuSnapshot(hostIsRunning: false, activityCount: 3)
 
-        XCTAssertEqual(snapshot.statusTitle, "status: host stopped")
+        XCTAssertEqual(snapshot.statusTitle, "status: agent stopped")
     }
 
     func testIdleStatusTitle() {

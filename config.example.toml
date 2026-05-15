@@ -17,5 +17,11 @@ command = "gh"
 discovery = false
 auto_review = false
 interval_seconds = 60
+# Only discover review requests whose repository matches one of these patterns.
+# Empty allowlist means all repositories are allowed. Patterns match "owner/repo".
+# Examples: "acme/platform", "acme/*".
 allowlist = []
+# Exclude review requests whose repository matches one of these patterns.
+# Denylist is applied after allowlist, so a deny match always wins.
+# Examples: "*/archive-*", "legacy/*".
 denylist = []

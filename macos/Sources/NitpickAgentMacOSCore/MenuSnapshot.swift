@@ -47,7 +47,7 @@ public struct MenuSnapshot: Equatable {
             return statusIssue.title
         }
         guard hostIsRunning else {
-            return "status: host stopped"
+            return "status: agent stopped"
         }
         if runningActivityCount == 1 {
             return artifactSuffix("status: 1 running")

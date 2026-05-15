@@ -1138,7 +1138,7 @@ impl AgentConfig {
             .command
             .map(|command| command.trim().to_owned())
             .filter(|command| !command.is_empty());
-        let github_discovery = GitHubDiscoveryConfig::from_raw(&github);
+        let github_discovery = GitHubDiscoveryConfig::from_raw(&github)?;
         let github_command = github
             .command
             .map(|command| command.trim().to_owned())
@@ -1403,28 +1403,36 @@ impl GitHubDiscoveryConfig {
         allowed && !denied
     }
 
-    fn from_raw(raw: &RawGitHubConfig) -> Self {
+    fn from_raw(raw: &RawGitHubConfig) -> AgentResult<Self> {
         let default = Self::default();
         let interval_seconds = raw
             .interval_seconds
             .unwrap_or(default.interval_seconds)
             .max(1);
-        Self {
+        Ok(Self {
             enabled: raw.discovery.unwrap_or(default.enabled),
             auto_review: raw.auto_review.unwrap_or(default.auto_review),
             interval_seconds,
-            allowlist: clean_patterns(raw.allowlist.clone()),
-            denylist: clean_patterns(raw.denylist.clone()),
-        }
+            allowlist: clean_patterns("github.allowlist", raw.allowlist.clone())?,
+            denylist: clean_patterns("github.denylist", raw.denylist.clone())?,
+        })
     }
 }
 
-fn clean_patterns(patterns: Option<Vec<String>>) -> Vec<String> {
+fn clean_patterns(name: &str, patterns: Option<Vec<String>>) -> AgentResult<Vec<String>> {
     patterns
         .unwrap_or_default()
         .into_iter()
         .map(|pattern| pattern.trim().to_owned())
         .filter(|pattern| !pattern.is_empty())
+        .map(|pattern| {
+            if pattern.contains("**") {
+                return Err(AgentError::config(format!(
+                    "{name} pattern `{pattern}` is invalid: use `*`, not `**`"
+                )));
+            }
+            Ok(pattern)
+        })
         .collect()
 }
 

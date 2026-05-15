@@ -20,8 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var refreshTimer: Timer?
     private var latestHostStatus: HostStatus?
     private var latestActivities: [ActivitySnapshot] = []
+    private var latestStatusIssue: MenuStatusIssue?
     private var openAtLoginState = OpenAtLoginViewState.make(status: .notRegistered)
     private var currentStatusDetails: String?
+    private var daemonLogContentsOverride: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -57,36 +59,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let statusMenuItem = NSMenuItem(title: "status: starting", action: nil, keyEquivalent: "")
-        statusMenuItem.isEnabled = false
-        self.statusMenuItem = statusMenuItem
-        menu.addItem(statusMenuItem)
-
-        let lastDiscoveryRefreshMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        lastDiscoveryRefreshMenuItem.isEnabled = false
-        self.lastDiscoveryRefreshMenuItem = lastDiscoveryRefreshMenuItem
-        menu.addItem(lastDiscoveryRefreshMenuItem)
-
-        for _ in 0 ..< 6 {
-            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            item.isHidden = true
-            ongoingReviewMenuItems.append(item)
-            menu.addItem(item)
-        }
-
-        menu.addItem(NSMenuItem.separator())
-
-        for _ in 0 ..< 5 {
-            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            item.isHidden = true
-            activityMenuItems.append(item)
-            menu.addItem(item)
-        }
-
-        menu.addItem(NSMenuItem.separator())
-
         let configItem = NSMenuItem(
             title: "Open Config",
             action: #selector(openConfig),
@@ -102,6 +74,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         reloadConfigItem.target = self
         menu.addItem(reloadConfigItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        for _ in 0 ..< 6 {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            item.isHidden = true
+            ongoingReviewMenuItems.append(item)
+            menu.addItem(item)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        let statusMenuItem = NSMenuItem(title: "status: starting", action: nil, keyEquivalent: "")
+        statusMenuItem.isEnabled = false
+        self.statusMenuItem = statusMenuItem
+        menu.addItem(statusMenuItem)
+
+        let lastDiscoveryRefreshMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        lastDiscoveryRefreshMenuItem.isEnabled = false
+        self.lastDiscoveryRefreshMenuItem = lastDiscoveryRefreshMenuItem
+        menu.addItem(lastDiscoveryRefreshMenuItem)
+
+        for _ in 0 ..< 5 {
+            let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            item.isHidden = true
+            activityMenuItems.append(item)
+            menu.addItem(item)
+        }
 
         menu.addItem(NSMenuItem.separator())
 
@@ -156,12 +158,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard host.isRunning else {
             latestHostStatus = nil
             latestActivities = []
+            latestStatusIssue = agentErrorStatusIssue()
             updateMenu()
             return
         }
 
-        latestHostStatus = try? await hostClient.status()
-        latestActivities = (try? await hostClient.activities()) ?? []
+        do {
+            latestHostStatus = try await hostClient.status()
+            latestActivities = (try? await hostClient.activities()) ?? []
+            latestStatusIssue = nil
+        } catch {
+            latestHostStatus = nil
+            latestActivities = []
+            latestStatusIssue = agentErrorStatusIssue()
+        }
         updateMenu()
     }
 
@@ -176,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reviewSourceEnabled: latestHostStatus?.reviewSourceEnabled ?? false,
             reviewSourceLastPollUnix: latestHostStatus?.reviewSourceLastPollUnix,
             reviewSourceLastPollSummary: latestHostStatus?.reviewSourceLastPollSummary,
+            statusIssue: latestStatusIssue,
             activities: latestActivities
         )
         configureStatusMenuItem(snapshot)
@@ -196,7 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? nil
             : NSImage(
                 systemSymbolName: "exclamationmark.triangle.fill",
-                accessibilityDescription: "Discovery error"
+                accessibilityDescription: "Agent error"
             )
     }
 
@@ -283,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let alert = NSAlert()
-        alert.messageText = "Discovery error"
+        alert.messageText = "Agent error"
         alert.informativeText = currentStatusDetails
         alert.addButton(withTitle: "OK")
         alert.alertStyle = .warning
@@ -314,6 +325,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let error = activity.error, !error.isEmpty {
             lines.append("")
             lines.append(error)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func agentErrorStatusIssue() -> MenuStatusIssue {
+        MenuStatusIssue(
+            title: "status: agent error",
+            details: agentErrorDetails()
+        )
+    }
+
+    private func agentErrorDetails() -> String {
+        let logURL = DaemonLogFile().url
+        var lines = [
+            "config: \(configFile.url.path)",
+            "log: \(logURL.path)",
+        ]
+        let log = daemonLogContentsOverride ?? (try? String(contentsOf: logURL)) ?? ""
+        let tail = log
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .suffix(120)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty {
+            lines.append("")
+            lines.append(tail)
         }
         return lines.joined(separator: "\n")
     }
@@ -420,12 +457,25 @@ extension AppDelegate {
     func setStatusForTesting(hostStatus: HostStatus?) {
         latestHostStatus = hostStatus
         latestActivities = []
+        latestStatusIssue = nil
         updateMenu()
     }
 
     func setActivitiesForTesting(_ activities: [ActivitySnapshot]) {
         latestHostStatus = nil
         latestActivities = activities
+        latestStatusIssue = nil
+        updateMenu()
+    }
+
+    func setDaemonLogContentsForTesting(_ contents: String) {
+        daemonLogContentsOverride = contents
+    }
+
+    func applyStoppedAgentForTesting() {
+        latestHostStatus = nil
+        latestActivities = []
+        latestStatusIssue = agentErrorStatusIssue()
         updateMenu()
     }
 

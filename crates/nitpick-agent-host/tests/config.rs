@@ -143,6 +143,19 @@ denylist = ["*/archive-*", "evil/*"]
 }
 
 #[test]
+fn rejects_double_star_github_patterns() {
+    let error = AgentConfig::from_toml(
+        r#"
+[github]
+allowlist = ["acme/**"]
+"#,
+    )
+    .expect_err("double-star patterns are rejected");
+
+    assert!(error.to_string().contains("use `*`, not `**`"));
+}
+
+#[test]
 fn rejects_github_checkout_dir_config() {
     let error = AgentConfig::from_toml(
         r#"

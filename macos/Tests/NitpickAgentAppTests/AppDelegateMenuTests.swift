@@ -6,19 +6,21 @@ import XCTest
 
 final class AppDelegateMenuTests: XCTestCase {
     @MainActor
-    func testMenuPlacesConfigActionsBelowActivityRowsAndRemovesQuitShortcut() throws {
+    func testMenuPlacesConfigActionsFirstThenReviewsThenActivityAndRemovesQuitShortcut() throws {
         let appDelegate = AppDelegate()
 
         let menu = appDelegate.makeMenuForTesting()
         let quitItem = try XCTUnwrap(menu.items.last)
 
         let titles = menu.items.map { $0.title }
-        XCTAssertEqual(titles[1], "")
-        XCTAssertFalse(menu.items[1].isEnabled)
-        let openConfigIndex = try XCTUnwrap(titles.firstIndex(of: "Open Config"))
-        XCTAssertGreaterThan(openConfigIndex, 12)
-        XCTAssertEqual(titles[openConfigIndex + 1], "Reload Config")
-        XCTAssertEqual(NSStringFromSelector(menu.items[openConfigIndex + 1].action!), "reloadConfig:")
+        XCTAssertEqual(titles[0], "Open Config")
+        XCTAssertEqual(titles[1], "Reload Config")
+        XCTAssertEqual(NSStringFromSelector(menu.items[1].action!), "reloadConfig:")
+        XCTAssertTrue(menu.items[2].isSeparatorItem)
+        XCTAssertTrue(menu.items[9].isSeparatorItem)
+        XCTAssertEqual(titles[10], "status: starting")
+        XCTAssertEqual(titles[11], "")
+        XCTAssertFalse(menu.items[11].isEnabled)
         XCTAssertEqual(quitItem.title, "Quit")
         XCTAssertTrue(["quit:", "terminate:"].contains(NSStringFromSelector(quitItem.action!)))
         XCTAssertNil(quitItem.image)
@@ -27,7 +29,7 @@ final class AppDelegateMenuTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusMenuItemDoesNotShowDiscoveryErrorsAsStatusErrors() {
+    func testStatusMenuItemDoesNotShowDiscoveryErrorsAsStatusErrors() throws {
         let appDelegate = AppDelegate()
         let menu = appDelegate.makeMenuForTesting()
 
@@ -44,12 +46,56 @@ final class AppDelegateMenuTests: XCTestCase {
             )
         )
 
-        let statusItem = menu.items[0]
+        let statusItem = try XCTUnwrap(menu.items.first { $0.title == "status: idle" })
         XCTAssertEqual(statusItem.title, "status: idle")
         XCTAssertFalse(statusItem.isEnabled)
         XCTAssertNil(statusItem.action)
         XCTAssertNil(statusItem.image)
         XCTAssertNil(appDelegate.statusDetailsForTesting())
+    }
+
+    @MainActor
+    func testStatusMenuItemShowsClickableAgentError() throws {
+        let appDelegate = AppDelegate()
+        let menu = appDelegate.makeMenuForTesting()
+
+        appDelegate.applyMenuSnapshotForTesting(
+            MenuSnapshot(
+                hostIsRunning: false,
+                activityCount: 0,
+                statusIssue: MenuStatusIssue(
+                    title: "status: agent error",
+                    details: "config: /tmp/config.toml\nlog: /tmp/daemon.log\n\nunknown field `checkout_dir`"
+                )
+            )
+        )
+
+        let statusItem = try XCTUnwrap(menu.items.first { $0.title == "status: agent error" })
+        XCTAssertEqual(statusItem.title, "status: agent error")
+        XCTAssertTrue(statusItem.isEnabled)
+        XCTAssertEqual(NSStringFromSelector(statusItem.action!), "showStatusDetails:")
+        XCTAssertNotNil(statusItem.image)
+        XCTAssertEqual(
+            appDelegate.statusDetailsForTesting(),
+            "config: /tmp/config.toml\nlog: /tmp/daemon.log\n\nunknown field `checkout_dir`"
+        )
+    }
+
+    @MainActor
+    func testStoppedAgentShowsDaemonLogAsAgentError() throws {
+        let appDelegate = AppDelegate()
+        let menu = appDelegate.makeMenuForTesting()
+        appDelegate.setDaemonLogContentsForTesting("TOML parse error at line 2, column 1\n  |\n2 | checkout_dir = \"bad\"\n  | ^ unknown field `checkout_dir`\n")
+
+        appDelegate.applyStoppedAgentForTesting()
+
+        let statusItem = try XCTUnwrap(menu.items.first { $0.title == "status: agent error" })
+        XCTAssertEqual(statusItem.title, "status: agent error")
+        XCTAssertTrue(statusItem.isEnabled)
+        XCTAssertEqual(NSStringFromSelector(statusItem.action!), "showStatusDetails:")
+        XCTAssertTrue(appDelegate.statusDetailsForTesting()?.contains("config: ") == true)
+        XCTAssertTrue(appDelegate.statusDetailsForTesting()?.contains("log: ") == true)
+        XCTAssertTrue(appDelegate.statusDetailsForTesting()?.contains("unknown field `checkout_dir`") == true)
     }
 
     @MainActor
