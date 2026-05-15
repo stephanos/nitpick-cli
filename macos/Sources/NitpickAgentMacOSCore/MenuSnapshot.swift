@@ -56,18 +56,11 @@ public struct MenuSnapshot: Equatable {
             return artifactSuffix("status: \(runningActivityCount) running")
         }
 
-        if !reviewSourceEnabled, activityCount == 0 {
+        if !reviewSourceEnabled {
             return "status: discovery disabled"
         }
 
-        switch activityCount {
-        case 0:
-            return "status: idle"
-        case 1:
-            return artifactSuffix("status: 1 activity")
-        default:
-            return artifactSuffix("status: \(activityCount) activities")
-        }
+        return artifactSuffix("status: idle")
     }
 
     public var statusDetails: String? {

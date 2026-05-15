@@ -77,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        menu.addItem(sectionHeaderMenuItem("Reviews"))
+
         for _ in 0 ..< 6 {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -86,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(NSMenuItem.separator())
+
+        menu.addItem(sectionHeaderMenuItem("Activity Log"))
 
         let statusMenuItem = NSMenuItem(title: "status: starting", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
@@ -145,6 +149,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         return menu
+    }
+
+    private func sectionHeaderMenuItem(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        )
+        return item
     }
 
     @objc private func refreshMenu() {

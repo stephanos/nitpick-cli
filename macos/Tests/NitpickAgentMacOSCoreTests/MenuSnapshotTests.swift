@@ -74,17 +74,29 @@ final class MenuSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.statusTitle, "status: 1 running")
     }
 
-    func testPluralActivityStatusTitle() {
+    func testIdleStatusIgnoresHistoricalActivityCount() {
         let snapshot = MenuSnapshot(
             hostIsRunning: true,
-            activityCount: 2,
+            activityCount: 22,
+            runningActivityCount: 0,
+            reviewSourceEnabled: true
+        )
+
+        XCTAssertEqual(snapshot.statusTitle, "status: idle")
+    }
+
+    func testIdleStatusIncludesArtifactSyncState() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 22,
             runningActivityCount: 0,
             artifactCount: 5,
             localOnlyArtifactCount: 3,
-            pendingSyncArtifactCount: 1
+            pendingSyncArtifactCount: 1,
+            reviewSourceEnabled: true
         )
 
-        XCTAssertEqual(snapshot.statusTitle, "status: 2 activities, 3 local, 1 pending")
+        XCTAssertEqual(snapshot.statusTitle, "status: idle, 3 local, 1 pending")
     }
 
     func testRecentActivityTitlesAreLatestFirstWithRelativeTime() {
