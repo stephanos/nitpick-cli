@@ -67,22 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.lastDiscoveryRefreshMenuItem = lastDiscoveryRefreshMenuItem
         menu.addItem(lastDiscoveryRefreshMenuItem)
 
-        let configItem = NSMenuItem(
-            title: "Open Config",
-            action: #selector(openConfig),
-            keyEquivalent: ""
-        )
-        configItem.target = self
-        menu.addItem(configItem)
-
-        let reloadConfigItem = NSMenuItem(
-            title: "Reload Config",
-            action: #selector(reloadConfig(_:)),
-            keyEquivalent: ""
-        )
-        reloadConfigItem.target = self
-        menu.addItem(reloadConfigItem)
-
         for _ in 0 ..< 6 {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -100,6 +84,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activityMenuItems.append(item)
             menu.addItem(item)
         }
+
+        menu.addItem(NSMenuItem.separator())
+
+        let configItem = NSMenuItem(
+            title: "Open Config",
+            action: #selector(openConfig),
+            keyEquivalent: ""
+        )
+        configItem.target = self
+        menu.addItem(configItem)
+
+        let reloadConfigItem = NSMenuItem(
+            title: "Reload Config",
+            action: #selector(reloadConfig(_:)),
+            keyEquivalent: ""
+        )
+        reloadConfigItem.target = self
+        menu.addItem(reloadConfigItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -178,8 +180,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         configureStatusMenuItem(snapshot)
         configureLastDiscoveryRefreshMenuItem(snapshot)
-        updateOngoingReviewItems(snapshot.ongoingReviewTitles)
-        updateActivityItems(snapshot.recentActivityTitles)
+        updateOngoingReviewItems(snapshot.ongoingReviewEntries)
+        updateActivityItems(snapshot.recentActivityEntries)
         updateOpenAtLoginItems()
         statusItem?.button?.toolTip = snapshot.statusTitle
     }
@@ -209,33 +211,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastDiscoveryRefreshMenuItem?.isEnabled = false
     }
 
-    private func updateActivityItems(_ titles: [String]) {
+    private func updateActivityItems(_ entries: [ActivityMenuEntry]) {
         let font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        updateMenuItems(activityMenuItems, titles: titles, font: font)
+        updateMenuItems(activityMenuItems, entries: entries, font: font)
     }
 
-    private func updateOngoingReviewItems(_ titles: [String]) {
+    private func updateOngoingReviewItems(_ entries: [ActivityMenuEntry]) {
         updateMenuItems(
             ongoingReviewMenuItems,
-            titles: titles,
+            entries: entries,
             font: NSFont.systemFont(ofSize: NSFont.systemFontSize)
         )
     }
 
-    private func updateMenuItems(_ items: [NSMenuItem], titles: [String], font: NSFont) {
+    private func updateMenuItems(_ items: [NSMenuItem], entries: [ActivityMenuEntry], font: NSFont) {
         for index in items.indices {
             let item = items[index]
-            guard index < titles.count else {
+            guard index < entries.count else {
                 item.isHidden = true
                 item.title = ""
                 item.attributedTitle = nil
+                item.representedObject = nil
+                item.target = nil
+                item.action = nil
+                item.isEnabled = false
                 continue
             }
+            let entry = entries[index]
             item.isHidden = false
+            item.title = entry.title
             item.attributedTitle = NSAttributedString(
-                string: titles[index],
+                string: entry.title,
                 attributes: [.font: font]
             )
+            item.representedObject = entry.id
+            item.target = entry.id == nil ? nil : self
+            item.action = entry.id == nil ? nil : #selector(showActivityDetails(_:))
+            item.isEnabled = entry.id != nil
         }
     }
 
@@ -276,6 +288,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "OK")
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    @objc private func showActivityDetails(_ sender: NSMenuItem) {
+        guard let activityID = sender.representedObject as? String,
+              let activity = latestActivities.first(where: { $0.id == activityID })
+        else {
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = activity.label ?? activity.kind
+        alert.informativeText = activityDetailText(activity)
+        alert.alertStyle = activity.status == "Error" ? .warning : .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func activityDetailText(_ activity: ActivitySnapshot) -> String {
+        var lines = [
+            "id: \(activity.id)",
+            "kind: \(activity.kind)",
+            "status: \(activity.status)",
+        ]
+        if let error = activity.error, !error.isEmpty {
+            lines.append("")
+            lines.append(error)
+        }
+        return lines.joined(separator: "\n")
     }
 
     @objc private func quit(_ sender: Any?) {
@@ -380,6 +420,12 @@ extension AppDelegate {
     func setStatusForTesting(hostStatus: HostStatus?) {
         latestHostStatus = hostStatus
         latestActivities = []
+        updateMenu()
+    }
+
+    func setActivitiesForTesting(_ activities: [ActivitySnapshot]) {
+        latestHostStatus = nil
+        latestActivities = activities
         updateMenu()
     }
 

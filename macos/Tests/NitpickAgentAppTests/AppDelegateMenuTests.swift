@@ -6,7 +6,7 @@ import XCTest
 
 final class AppDelegateMenuTests: XCTestCase {
     @MainActor
-    func testMenuPlacesReloadConfigUnderOpenConfigAndRemovesQuitShortcut() throws {
+    func testMenuPlacesConfigActionsBelowActivityRowsAndRemovesQuitShortcut() throws {
         let appDelegate = AppDelegate()
 
         let menu = appDelegate.makeMenuForTesting()
@@ -15,9 +15,10 @@ final class AppDelegateMenuTests: XCTestCase {
         let titles = menu.items.map { $0.title }
         XCTAssertEqual(titles[1], "")
         XCTAssertFalse(menu.items[1].isEnabled)
-        XCTAssertEqual(titles[2], "Open Config")
-        XCTAssertEqual(titles[3], "Reload Config")
-        XCTAssertEqual(NSStringFromSelector(menu.items[3].action!), "reloadConfig:")
+        let openConfigIndex = try XCTUnwrap(titles.firstIndex(of: "Open Config"))
+        XCTAssertGreaterThan(openConfigIndex, 12)
+        XCTAssertEqual(titles[openConfigIndex + 1], "Reload Config")
+        XCTAssertEqual(NSStringFromSelector(menu.items[openConfigIndex + 1].action!), "reloadConfig:")
         XCTAssertEqual(quitItem.title, "Quit")
         XCTAssertTrue(["quit:", "terminate:"].contains(NSStringFromSelector(quitItem.action!)))
         XCTAssertNil(quitItem.image)
@@ -49,5 +50,30 @@ final class AppDelegateMenuTests: XCTestCase {
         XCTAssertNil(statusItem.action)
         XCTAssertNil(statusItem.image)
         XCTAssertNil(appDelegate.statusDetailsForTesting())
+    }
+
+    @MainActor
+    func testActivityRowsAreClickable() throws {
+        let appDelegate = AppDelegate()
+        let menu = appDelegate.makeMenuForTesting()
+
+        appDelegate.setActivitiesForTesting([
+            ActivitySnapshot(
+                id: "activity-1",
+                kind: "Discovery",
+                status: "Error",
+                label: "discovery poll",
+                error: "failed to start GitHub CLI `gh`",
+                createdAtUnix: 1_000,
+                updatedAtUnix: 1_000
+            ),
+        ])
+
+        let item = try XCTUnwrap(menu.items.first { item in
+            item.title.contains("failed discovery poll")
+        })
+        XCTAssertTrue(item.isEnabled)
+        XCTAssertEqual(item.representedObject as? String, "activity-1")
+        XCTAssertEqual(NSStringFromSelector(item.action!), "showActivityDetails:")
     }
 }

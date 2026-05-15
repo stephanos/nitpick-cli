@@ -144,10 +144,11 @@ final class MenuSnapshotTests: XCTestCase {
             currentUnix: 1_000
         )
 
-        XCTAssertEqual(snapshot.recentActivityTitles.count, 5)
-        XCTAssertEqual(snapshot.recentActivityTitles[0], "5s ago   started review on org/repo#121")
-        XCTAssertEqual(snapshot.recentActivityTitles[1], "10s ago  finished review on org/repo#120")
-        XCTAssertEqual(snapshot.recentActivityTitles[2], "1m ago   failed chat")
+        XCTAssertEqual(snapshot.recentActivityEntries.count, 5)
+        XCTAssertEqual(snapshot.recentActivityEntries[0].id, "activity-2")
+        XCTAssertEqual(snapshot.recentActivityEntries[0].title, "5s ago   started review on org/repo#121")
+        XCTAssertEqual(snapshot.recentActivityEntries[1].title, "10s ago  finished review on org/repo#120")
+        XCTAssertEqual(snapshot.recentActivityEntries[2].title, "1m ago   failed chat")
     }
 
     func testOngoingReviewTitlesShowRunningThenQueuedWithOverflow() {
@@ -214,10 +215,12 @@ final class MenuSnapshotTests: XCTestCase {
             ]
         )
 
-        XCTAssertEqual(snapshot.ongoingReviewTitles.count, 6)
-        XCTAssertEqual(snapshot.ongoingReviewTitles[0], "Running review on org/repo#2")
-        XCTAssertEqual(snapshot.ongoingReviewTitles[1], "Queued review on org/repo#6")
-        XCTAssertEqual(snapshot.ongoingReviewTitles[5], "1 more queued...")
+        XCTAssertEqual(snapshot.ongoingReviewEntries.count, 6)
+        XCTAssertEqual(snapshot.ongoingReviewEntries[0].id, "activity-2")
+        XCTAssertEqual(snapshot.ongoingReviewEntries[0].title, "Running review on org/repo#2")
+        XCTAssertEqual(snapshot.ongoingReviewEntries[1].title, "Queued review on org/repo#6")
+        XCTAssertNil(snapshot.ongoingReviewEntries[5].id)
+        XCTAssertEqual(snapshot.ongoingReviewEntries[5].title, "1 more queued...")
     }
 
     func testCompletedCleanupActivityUsesLabelAsEventText() {
@@ -237,7 +240,7 @@ final class MenuSnapshotTests: XCTestCase {
             currentUnix: 1_000
         )
 
-        XCTAssertEqual(snapshot.recentActivityTitles[0], "10s ago  acme/platform#42 cleaned up")
+        XCTAssertEqual(snapshot.recentActivityEntries[0].title, "10s ago  acme/platform#42 cleaned up")
     }
 
     func testDetectedReviewRequestActivityUsesLabelAsEventText() {
@@ -258,7 +261,7 @@ final class MenuSnapshotTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            snapshot.recentActivityTitles[0],
+            snapshot.recentActivityEntries[0].title,
             "10s ago  detected review request acme/platform#42"
         )
     }

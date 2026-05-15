@@ -10,6 +10,7 @@ public struct MenuSnapshot: Equatable {
     public var reviewSourceEnabled: Bool
     public var reviewSourceLastPollUnix: UInt64?
     public var reviewSourceLastPollSummary: String?
+    public var statusIssue: MenuStatusIssue?
     public var activities: [ActivitySnapshot]
     public var currentUnix: UInt64
 
@@ -23,6 +24,7 @@ public struct MenuSnapshot: Equatable {
         reviewSourceEnabled: Bool = false,
         reviewSourceLastPollUnix: UInt64? = nil,
         reviewSourceLastPollSummary: String? = nil,
+        statusIssue: MenuStatusIssue? = nil,
         activities: [ActivitySnapshot] = [],
         currentUnix: UInt64 = UInt64(Date().timeIntervalSince1970)
     ) {
@@ -35,11 +37,15 @@ public struct MenuSnapshot: Equatable {
         self.reviewSourceEnabled = reviewSourceEnabled
         self.reviewSourceLastPollUnix = reviewSourceLastPollUnix
         self.reviewSourceLastPollSummary = reviewSourceLastPollSummary
+        self.statusIssue = statusIssue
         self.activities = activities
         self.currentUnix = currentUnix
     }
 
     public var statusTitle: String {
+        if let statusIssue {
+            return statusIssue.title
+        }
         guard hostIsRunning else {
             return "status: host stopped"
         }
@@ -65,7 +71,7 @@ public struct MenuSnapshot: Equatable {
     }
 
     public var statusDetails: String? {
-        nil
+        statusIssue?.details
     }
 
     public var lastDiscoveryRefreshTitle: String? {
@@ -81,7 +87,7 @@ public struct MenuSnapshot: Equatable {
         return "last discovery: \(relativeTime(reviewSourceLastPollUnix))"
     }
 
-    public var recentActivityTitles: [String] {
+    public var recentActivityEntries: [ActivityMenuEntry] {
         activities
             .sorted { lhs, rhs in
                 if lhs.updatedAtUnix == rhs.updatedAtUnix {
@@ -90,10 +96,12 @@ public struct MenuSnapshot: Equatable {
                 return lhs.updatedAtUnix > rhs.updatedAtUnix
             }
             .prefix(5)
-            .map(activityTitle)
+            .map { activity in
+                ActivityMenuEntry(id: activity.id, title: activityTitle(activity))
+            }
     }
 
-    public var ongoingReviewTitles: [String] {
+    public var ongoingReviewEntries: [ActivityMenuEntry] {
         let activeReviews = activities
             .filter { activity in
                 activity.kind == "Review" && (activity.status == "Running" || activity.status == "Queued")
@@ -107,14 +115,16 @@ public struct MenuSnapshot: Equatable {
                 }
                 return lhs.updatedAtUnix > rhs.updatedAtUnix
             }
-        let visible = activeReviews.prefix(5).map(ongoingReviewTitle)
+        let visible = activeReviews.prefix(5).map { activity in
+            ActivityMenuEntry(id: activity.id, title: ongoingReviewTitle(activity))
+        }
         let hiddenQueuedCount = activeReviews.dropFirst(5).filter { activity in
             activity.status == "Queued"
         }.count
         if hiddenQueuedCount == 0 {
             return Array(visible)
         }
-        return Array(visible) + ["\(hiddenQueuedCount) more queued..."]
+        return Array(visible) + [ActivityMenuEntry(id: nil, title: "\(hiddenQueuedCount) more queued...")]
     }
 
     private func activityTitle(_ activity: ActivitySnapshot) -> String {
