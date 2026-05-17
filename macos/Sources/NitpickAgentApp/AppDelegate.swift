@@ -10,8 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let host = HostProcess()
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
-    private var statusMenuItem: NSMenuItem?
+    private var agentErrorMenuItem: NSMenuItem?
     private var lastDiscoveryRefreshMenuItem: NSMenuItem?
+    private var reviewsHeaderMenuItem: NSMenuItem?
+    private var reviewsSeparatorMenuItem: NSMenuItem?
     private var ongoingReviewMenuItems: [NSMenuItem] = []
     private var openAtLoginMenuItem: NSMenuItem?
     private var openAtLoginMessageItem: NSMenuItem?
@@ -77,7 +79,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        menu.addItem(sectionHeaderMenuItem("Reviews"))
+        let agentErrorMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        agentErrorMenuItem.isHidden = true
+        agentErrorMenuItem.isEnabled = false
+        self.agentErrorMenuItem = agentErrorMenuItem
+        menu.addItem(agentErrorMenuItem)
+
+        let reviewsHeaderMenuItem = sectionHeaderMenuItem("Reviews")
+        self.reviewsHeaderMenuItem = reviewsHeaderMenuItem
+        menu.addItem(reviewsHeaderMenuItem)
 
         for _ in 0 ..< 6 {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -87,14 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
 
-        menu.addItem(NSMenuItem.separator())
+        let reviewsSeparatorMenuItem = NSMenuItem.separator()
+        self.reviewsSeparatorMenuItem = reviewsSeparatorMenuItem
+        menu.addItem(reviewsSeparatorMenuItem)
 
         menu.addItem(sectionHeaderMenuItem("Activity Log"))
-
-        let statusMenuItem = NSMenuItem(title: "status: starting", action: nil, keyEquivalent: "")
-        statusMenuItem.isEnabled = false
-        self.statusMenuItem = statusMenuItem
-        menu.addItem(statusMenuItem)
 
         let lastDiscoveryRefreshMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         lastDiscoveryRefreshMenuItem.isEnabled = false
@@ -206,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusIssue: latestStatusIssue,
             activities: latestActivities
         )
-        configureStatusMenuItem(snapshot)
+        configureAgentErrorMenuItem(snapshot)
         configureLastDiscoveryRefreshMenuItem(snapshot)
         updateOngoingReviewItems(snapshot.ongoingReviewEntries)
         updateActivityItems(snapshot.recentActivityEntries)
@@ -214,13 +221,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.toolTip = snapshot.statusTitle
     }
 
-    private func configureStatusMenuItem(_ snapshot: MenuSnapshot) {
+    private func configureAgentErrorMenuItem(_ snapshot: MenuSnapshot) {
         currentStatusDetails = snapshot.statusDetails
-        statusMenuItem?.title = snapshot.statusTitle
-        statusMenuItem?.isEnabled = snapshot.statusDetails != nil
-        statusMenuItem?.target = snapshot.statusDetails == nil ? nil : self
-        statusMenuItem?.action = snapshot.statusDetails == nil ? nil : #selector(showStatusDetails(_:))
-        statusMenuItem?.image = snapshot.statusDetails == nil
+        agentErrorMenuItem?.isHidden = snapshot.statusDetails == nil
+        agentErrorMenuItem?.title = snapshot.statusIssue?.title ?? ""
+        agentErrorMenuItem?.isEnabled = snapshot.statusDetails != nil
+        agentErrorMenuItem?.target = snapshot.statusDetails == nil ? nil : self
+        agentErrorMenuItem?.action = snapshot.statusDetails == nil ? nil : #selector(showStatusDetails(_:))
+        agentErrorMenuItem?.image = snapshot.statusDetails == nil
             ? nil
             : NSImage(
                 systemSymbolName: "exclamationmark.triangle.fill",
@@ -245,6 +253,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateOngoingReviewItems(_ entries: [ActivityMenuEntry]) {
+        let hasEntries = !entries.isEmpty
+        reviewsHeaderMenuItem?.isHidden = !hasEntries
+        reviewsSeparatorMenuItem?.isHidden = !hasEntries
         updateMenuItems(
             ongoingReviewMenuItems,
             entries: entries,
@@ -468,7 +479,10 @@ extension AppDelegate {
     }
 
     func applyMenuSnapshotForTesting(_ snapshot: MenuSnapshot) {
-        configureStatusMenuItem(snapshot)
+        configureAgentErrorMenuItem(snapshot)
+        configureLastDiscoveryRefreshMenuItem(snapshot)
+        updateOngoingReviewItems(snapshot.ongoingReviewEntries)
+        updateActivityItems(snapshot.recentActivityEntries)
     }
 
     func setStatusForTesting(hostStatus: HostStatus?) {

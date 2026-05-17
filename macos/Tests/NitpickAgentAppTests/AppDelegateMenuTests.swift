@@ -6,26 +6,33 @@ import XCTest
 
 final class AppDelegateMenuTests: XCTestCase {
     @MainActor
-    func testMenuPlacesConfigActionsFirstThenReviewsThenActivityAndRemovesQuitShortcut() throws {
+    func testMenuPlacesConfigActionsFirstThenActivityAndRemovesQuitShortcut() throws {
         let appDelegate = AppDelegate()
 
         let menu = appDelegate.makeMenuForTesting()
         let quitItem = try XCTUnwrap(menu.items.last)
+
+        appDelegate.applyMenuSnapshotForTesting(
+            MenuSnapshot(
+                hostIsRunning: true,
+                activityCount: 0,
+                reviewSourceEnabled: true
+            )
+        )
 
         let titles = menu.items.map { $0.title }
         XCTAssertEqual(titles[0], "Open Config")
         XCTAssertEqual(titles[1], "Reload Config")
         XCTAssertEqual(NSStringFromSelector(menu.items[1].action!), "reloadConfig:")
         XCTAssertTrue(menu.items[2].isSeparatorItem)
-        XCTAssertEqual(titles[3], "Reviews")
-        XCTAssertFalse(menu.items[3].isEnabled)
-        XCTAssertNotNil(menu.items[3].attributedTitle)
-        XCTAssertTrue(menu.items[10].isSeparatorItem)
-        XCTAssertEqual(titles[11], "Activity Log")
-        XCTAssertFalse(menu.items[11].isEnabled)
-        XCTAssertNotNil(menu.items[11].attributedTitle)
-        XCTAssertEqual(titles[12], "status: starting")
-        XCTAssertEqual(titles[13], "")
+        XCTAssertTrue(menu.items[3].isHidden)
+        XCTAssertTrue(menu.items[4].isHidden)
+        XCTAssertTrue(menu.items[11].isHidden)
+        XCTAssertEqual(titles[12], "Activity Log")
+        XCTAssertFalse(menu.items[12].isEnabled)
+        XCTAssertNotNil(menu.items[12].attributedTitle)
+        XCTAssertFalse(titles.contains("status: idle"))
+        XCTAssertEqual(titles[13], "last discovery: never")
         XCTAssertFalse(menu.items[13].isEnabled)
         XCTAssertEqual(quitItem.title, "Quit")
         XCTAssertTrue(["quit:", "terminate:"].contains(NSStringFromSelector(quitItem.action!)))
@@ -35,7 +42,37 @@ final class AppDelegateMenuTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusMenuItemDoesNotShowDiscoveryErrorsAsStatusErrors() throws {
+    func testReviewsSectionIsVisibleOnlyWithActiveReviews() throws {
+        let appDelegate = AppDelegate()
+        let menu = appDelegate.makeMenuForTesting()
+
+        appDelegate.applyMenuSnapshotForTesting(
+            MenuSnapshot(
+                hostIsRunning: true,
+                activityCount: 1,
+                reviewSourceEnabled: true,
+                activities: [
+                    ActivitySnapshot(
+                        id: "activity-1",
+                        kind: "Review",
+                        status: "Running",
+                        label: "review on org/repo#1",
+                        createdAtUnix: 1_000,
+                        updatedAtUnix: 1_000
+                    ),
+                ]
+            )
+        )
+
+        XCTAssertEqual(menu.items[4].title, "Reviews")
+        XCTAssertFalse(menu.items[4].isHidden)
+        XCTAssertFalse(menu.items[5].isHidden)
+        XCTAssertEqual(menu.items[5].title, "Running review on org/repo#1")
+        XCTAssertFalse(menu.items[11].isHidden)
+    }
+
+    @MainActor
+    func testDiscoveryErrorsDoNotShowAsAgentError() throws {
         let appDelegate = AppDelegate()
         let menu = appDelegate.makeMenuForTesting()
 
@@ -43,20 +80,12 @@ final class AppDelegateMenuTests: XCTestCase {
             MenuSnapshot(
                 hostIsRunning: true,
                 activityCount: 0,
-                runningActivityCount: 0,
-                artifactCount: 0,
-                localOnlyArtifactCount: 0,
-                pendingSyncArtifactCount: 0,
                 reviewSourceEnabled: true,
                 reviewSourceLastPollSummary: "github unavailable: failed to start GitHub CLI `gh`: No such file or directory"
             )
         )
 
-        let statusItem = try XCTUnwrap(menu.items.first { $0.title == "status: idle" })
-        XCTAssertEqual(statusItem.title, "status: idle")
-        XCTAssertFalse(statusItem.isEnabled)
-        XCTAssertNil(statusItem.action)
-        XCTAssertNil(statusItem.image)
+        XCTAssertTrue(menu.items[3].isHidden)
         XCTAssertNil(appDelegate.statusDetailsForTesting())
     }
 
