@@ -42,28 +42,28 @@ Override the bind address with `NITPICK_AGENT_HOST_ADDR`.
 The CLI reads host status from the same local API:
 
 ```bash
-nitpick status
-nitpick review acme/platform#42
-nitpick inspect acme/platform#42
-nitpick review-requests
-nitpick review-requests --new
-nitpick chat acme/platform#42
-nitpick reviews
-nitpick reviews --all
-nitpick logs activity-1
-nitpick logs acme/platform#42
-nitpick logs daemon
-nitpick resume activity-1
-nitpick resume acme/platform#42
-nitpick review-sync activity-1 acme/platform#42
-nitpick activities
-nitpick artifacts activity-1
-nitpick artifact artifact-1
-nitpick artifact-sync artifact-1 github
-nitpick artifact-sync artifact-1 github-review acme/platform#42
-nitpick artifact-sync artifact-1 github acme/platform#42
-nitpick sync-pending github
-nitpick cleanup-checkouts
+nitpick system status
+nitpick review run acme/platform#42
+nitpick activity inspect acme/platform#42
+nitpick review requests
+nitpick review requests --new
+nitpick chat start acme/platform#42
+nitpick review list
+nitpick review list --all
+nitpick activity logs activity-1
+nitpick activity logs acme/platform#42
+nitpick activity logs daemon
+nitpick activity resume activity-1
+nitpick activity resume acme/platform#42
+nitpick review sync activity-1 acme/platform#42
+nitpick activity list
+nitpick artifact list activity-1
+nitpick artifact show artifact-1
+nitpick artifact sync artifact-1 github
+nitpick artifact sync artifact-1 github-review acme/platform#42
+nitpick artifact sync artifact-1 github acme/platform#42
+nitpick system sync-pending github
+nitpick system cleanup-checkouts
 ```
 
 The daemon can watch review sources and create local review activities automatically. GitHub is the first source adapter; additional source-code providers should plug into the same review-source API. Processed review heads are stored locally, so a review request is not reviewed again until its head SHA changes.
@@ -80,13 +80,13 @@ The older `[github.discovery]` config shape is still accepted for compatibility.
 
 When `allowlist` contains exact `owner/repo` entries or `owner/*`, nitpick scopes the underlying `gh search prs` queries to those repositories or owners before applying the local allowlist/denylist filters.
 
-`artifact-sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to stage one review artifact into a pending GitHub draft review. Use `review-sync <activity-id> <pr-ref>` to stage all review artifacts from an activity into one pending GitHub draft review. If a pending draft already exists, nitpick updates the draft summary when safe and refuses to add new inline comments until the existing draft is submitted or cleared manually.
+`artifact sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to stage one review artifact into a pending GitHub draft review. Use `review sync <activity-id> <pr-ref>` to stage all review artifacts from an activity into one pending GitHub draft review. If a pending draft already exists, nitpick updates the draft summary when safe and refuses to add new inline comments until the existing draft is submitted or cleared manually.
 
 GitHub token permissions:
 
 - **Discovery and duplicate detection:** `Pull requests: read` for listing review requests, reading PR metadata and head SHAs, and checking existing PR reviews.
-- **Draft review sync (`github-review`, `review-sync`):** `Pull requests: write`.
-- **Standalone PR comments (`artifact-sync ... github <pr-ref>`):** `Issues: write`, because pull request conversation comments use the issues comment API.
+- **Draft review sync (`github-review`, `review sync`):** `Pull requests: write`.
+- **Standalone PR comments (`artifact sync ... github <pr-ref>`):** `Issues: write`, because pull request conversation comments use the issues comment API.
 
 For fine-grained PATs and GitHub App tokens, those repository permissions are the practical minimum. For classic PATs, `repo` is the practical minimum for private repositories; `public_repo` is enough for public-only repositories.
 
@@ -102,14 +102,14 @@ mode = "none"
 For one-off CLI runs, pass `--no-sandbox` before the command:
 
 ```bash
-nitpick --no-sandbox review acme/platform#42
-nitpick --no-sandbox chat acme/platform#42
-nitpick --no-sandbox resume acme/platform#42
+nitpick --no-sandbox review run acme/platform#42
+nitpick --no-sandbox chat start acme/platform#42
+nitpick --no-sandbox activity resume acme/platform#42
 ```
 
-`chat <pr-ref>` opens a new interactive provider session in the cached PR checkout. It does not create or resume a stored provider session. `resume <activity-id|pr-ref>` reopens a previously stored provider session.
+`chat start <pr-ref>` opens a new interactive provider session in the cached PR checkout. It does not create or resume a stored provider session. `activity resume <activity-id|pr-ref>` reopens a previously stored provider session.
 
-PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Stored Claude and Codex sessions can be reopened with `nitpick resume <activity-id|pr-ref>` when the activity has a provider session ID. If the provider reports that the saved session no longer exists, nitpick clears the stale local session ID and reports that the activity is no longer resumable. GitHub posting uses `gh` by default; override it with `github_command`.
+PR reviews get stable local provider session IDs; Claude receives them with `--session-id`, while Codex currently keeps the ID in local state only. Stored Claude and Codex sessions can be reopened with `nitpick activity resume <activity-id|pr-ref>` when the activity has a provider session ID. If the provider reports that the saved session no longer exists, nitpick clears the stale local session ID and reports that the activity is no longer resumable. GitHub posting uses `gh` by default; override it with `github_command`.
 
 ## Layout
 

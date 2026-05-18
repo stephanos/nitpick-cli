@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use nitpick_agent_cli::{CliCommand, run_cli_command};
+use nitpick_agent_cli::{
+    ActivityCommand, CliCommand, ReviewCommand, SystemCommand, run_cli_command,
+};
 use nitpick_agent_core::FsProcessedReviewStore;
 use nitpick_agent_core::{ActivityStore, FsActivityStore};
 use nitpick_agent_host::{HostDaemon, api_router};
@@ -72,7 +74,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     let repo_dir = temp.path().to_path_buf();
 
     let status = run_cli_command(
-        CliCommand::Status,
+        CliCommand::System(SystemCommand::Status),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -84,7 +86,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(status.contains("nitpick-agent-host: connected"));
 
     let requests = run_cli_command(
-        CliCommand::ReviewRequests { only_new: true },
+        CliCommand::Review(ReviewCommand::Requests { only_new: true }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -98,7 +100,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     daemon.poll_review_requests().expect("poll");
 
     let activities = run_cli_command(
-        CliCommand::Activities,
+        CliCommand::Activity(ActivityCommand::List),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -110,7 +112,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(activities.contains("activity-1: Completed"));
 
     let reviews = run_cli_command(
-        CliCommand::Reviews { include_all: true },
+        CliCommand::Review(ReviewCommand::List { include_all: true }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -122,9 +124,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(reviews.contains("Completed review on stephanos/nitpick-agent#42 activity-"));
 
     let logs = run_cli_command(
-        CliCommand::Logs {
+        CliCommand::Activity(ActivityCommand::Logs {
             target: "stephanos/nitpick-agent#42".into(),
-        },
+        }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -138,10 +140,10 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(logs.contains("review complete"));
 
     let review_sync = run_cli_command(
-        CliCommand::ReviewSync {
+        CliCommand::Review(ReviewCommand::Sync {
             activity_id: "activity-2".into(),
             target: "stephanos/nitpick-agent#42".into(),
-        },
+        }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -159,9 +161,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     );
 
     let daemon_logs = run_cli_command(
-        CliCommand::Logs {
+        CliCommand::Activity(ActivityCommand::Logs {
             target: "daemon".into(),
-        },
+        }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -173,9 +175,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert_eq!(daemon_logs, "daemon started\n");
 
     let resume = run_cli_command(
-        CliCommand::Resume {
+        CliCommand::Activity(ActivityCommand::Resume {
             target: "stephanos/nitpick-agent#42".into(),
-        },
+        }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -191,7 +193,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     );
 
     let cleanup = run_cli_command(
-        CliCommand::CleanupCheckouts,
+        CliCommand::System(SystemCommand::CleanupCheckouts),
         &host_addr,
         repo_dir,
         String::new(),
@@ -247,9 +249,9 @@ async fn resume_clears_missing_provider_session_id() {
     let host_addr = serve_host(daemon).await;
 
     let error = run_cli_command(
-        CliCommand::Resume {
+        CliCommand::Activity(ActivityCommand::Resume {
             target: "stephanos/nitpick-agent#42".into(),
-        },
+        }),
         &host_addr,
         temp.path().to_path_buf(),
         String::new(),

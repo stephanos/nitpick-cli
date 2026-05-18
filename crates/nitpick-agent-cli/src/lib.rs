@@ -1,14 +1,32 @@
-use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
+mod activity;
+mod artifact;
+mod chat;
+mod cli;
+mod context;
+mod review;
+mod system;
+
 use serde::Deserialize;
 use std::{path::Path, process::Command};
 
-use nitpick_agent_client::{HostClient, HostClientError};
+use nitpick_agent_client::HostClientError;
 use nitpick_agent_core::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentError, Artifact,
     ArtifactContent, ChatInput, FsActivityStore, ReviewInput, ReviewRequest, ReviewSubject,
     config_path_from_env_value, data_dir_from_env_value,
 };
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
+
+pub use activity::{ActivityArgs, ActivityCommand};
+pub use artifact::{ArtifactArgs, ArtifactCommand};
+pub use chat::{ChatArgs, ChatCommand};
+pub use cli::{
+    CliInvocation, CliOptions, CommandGroup as CliCommand, help_text, parse_command,
+    parse_invocation,
+};
+pub use context::CliRunContext;
+pub use review::{ReviewArgs, ReviewCommand};
+pub use system::{SystemArgs, SystemCommand};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -30,214 +48,6 @@ impl From<&str> for CliError {
     fn from(message: &str) -> Self {
         Self::Message(message.to_owned())
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CliCommand {
-    Help,
-    Version,
-    Review {
-        subject: String,
-    },
-    Inspect {
-        pull_request: String,
-    },
-    Chat {
-        target: String,
-    },
-    Status,
-    ReviewRequests {
-        only_new: bool,
-    },
-    Activities,
-    Reviews {
-        include_all: bool,
-    },
-    Logs {
-        target: String,
-    },
-    Resume {
-        target: String,
-    },
-    Artifacts {
-        activity_id: String,
-    },
-    Artifact {
-        artifact_id: String,
-    },
-    ArtifactSync {
-        artifact_id: String,
-        destination: String,
-        target: Option<String>,
-    },
-    ReviewSync {
-        activity_id: String,
-        target: String,
-    },
-    SyncPending {
-        destination: Option<String>,
-    },
-    CleanupCheckouts,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CliOptions {
-    pub disable_sandbox: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CliInvocation {
-    pub command: CliCommand,
-    pub options: CliOptions,
-}
-
-pub struct CliRunContext {
-    pub host_addr: String,
-    pub repo_dir: std::path::PathBuf,
-    pub diff: String,
-    pub context: String,
-    pub config_path: std::path::PathBuf,
-    pub data_dir: std::path::PathBuf,
-}
-
-#[derive(Parser)]
-#[command(name = "nitpick", version)]
-struct ClapCli {
-    #[arg(long = "no-sandbox", help = "Run provider command without sandboxing")]
-    no_sandbox: bool,
-    #[command(subcommand)]
-    command: Option<ClapCommand>,
-}
-
-#[derive(Subcommand)]
-#[command(rename_all = "kebab-case")]
-enum ClapCommand {
-    Status,
-    ReviewRequests {
-        #[arg(long = "new")]
-        only_new: bool,
-    },
-    Activities,
-    Reviews {
-        #[arg(long = "all")]
-        include_all: bool,
-    },
-    Logs {
-        target: String,
-    },
-    Resume {
-        target: String,
-    },
-    Artifacts {
-        activity_id: String,
-    },
-    Artifact {
-        artifact_id: String,
-    },
-    ArtifactSync {
-        artifact_id: String,
-        destination: String,
-        target: Option<String>,
-    },
-    ReviewSync {
-        activity_id: String,
-        target: String,
-    },
-    SyncPending {
-        destination: Option<String>,
-    },
-    CleanupCheckouts,
-    Inspect {
-        pull_request: String,
-    },
-    Review {
-        subject: String,
-    },
-    Chat {
-        target: String,
-    },
-}
-
-pub fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<CliInvocation, String> {
-    let args = args.into_iter().collect::<Vec<_>>();
-    if matches!(args.first().map(String::as_str), Some("version")) {
-        return Ok(CliInvocation {
-            command: CliCommand::Version,
-            options: CliOptions::default(),
-        });
-    }
-    let cli = match ClapCli::try_parse_from(std::iter::once("nitpick".to_owned()).chain(args)) {
-        Ok(cli) => cli,
-        Err(error) if error.kind() == ErrorKind::DisplayHelp => {
-            return Ok(CliInvocation {
-                command: CliCommand::Help,
-                options: CliOptions::default(),
-            });
-        }
-        Err(error) if error.kind() == ErrorKind::DisplayVersion => {
-            return Ok(CliInvocation {
-                command: CliCommand::Version,
-                options: CliOptions::default(),
-            });
-        }
-        Err(error) => return Err(error.to_string()),
-    };
-    Ok(CliInvocation {
-        command: cli
-            .command
-            .map(CliCommand::from)
-            .unwrap_or(CliCommand::Help),
-        options: CliOptions {
-            disable_sandbox: cli.no_sandbox,
-        },
-    })
-}
-
-pub fn parse_command(args: impl IntoIterator<Item = String>) -> Result<CliCommand, String> {
-    parse_invocation(args).map(|invocation| invocation.command)
-}
-
-impl From<ClapCommand> for CliCommand {
-    fn from(command: ClapCommand) -> Self {
-        match command {
-            ClapCommand::Status => Self::Status,
-            ClapCommand::ReviewRequests { only_new } => Self::ReviewRequests { only_new },
-            ClapCommand::Activities => Self::Activities,
-            ClapCommand::Reviews { include_all } => Self::Reviews { include_all },
-            ClapCommand::Logs { target } => Self::Logs { target },
-            ClapCommand::Resume { target } => Self::Resume { target },
-            ClapCommand::Artifacts { activity_id } => Self::Artifacts { activity_id },
-            ClapCommand::Artifact { artifact_id } => Self::Artifact { artifact_id },
-            ClapCommand::ArtifactSync {
-                artifact_id,
-                destination,
-                target,
-            } => Self::ArtifactSync {
-                artifact_id,
-                destination,
-                target,
-            },
-            ClapCommand::ReviewSync {
-                activity_id,
-                target,
-            } => Self::ReviewSync {
-                activity_id,
-                target,
-            },
-            ClapCommand::SyncPending { destination } => Self::SyncPending { destination },
-            ClapCommand::CleanupCheckouts => Self::CleanupCheckouts,
-            ClapCommand::Inspect { pull_request } => Self::Inspect { pull_request },
-            ClapCommand::Review { subject } => Self::Review { subject },
-            ClapCommand::Chat { target } => Self::Chat { target },
-        }
-    }
-}
-
-pub fn help_text(_version: &str) -> String {
-    let mut command = ClapCli::command();
-    let mut help = Vec::new();
-    command.write_long_help(&mut help).expect("write help");
-    String::from_utf8(help).expect("help is utf8")
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -513,7 +323,7 @@ pub fn inspect_checkout(
     )
 }
 
-fn inspect_checkout_with_discovery(
+pub(crate) fn inspect_checkout_with_discovery(
     pull_request: &str,
     discovery: &GitHubCliDiscovery,
     editor: Option<&Path>,
@@ -617,7 +427,7 @@ pub fn ensure_resumable_activity(activity: &Activity) -> Result<(), String> {
     Ok(())
 }
 
-fn handle_resume_error(activity: &Activity, data_dir: &Path, error: String) -> String {
+pub(crate) fn handle_resume_error(activity: &Activity, data_dir: &Path, error: String) -> String {
     if !provider_session_missing(&error) {
         return error;
     }
@@ -660,7 +470,10 @@ fn configured_github_discovery(config: &nitpick_agent_host::AgentConfig) -> GitH
     }
 }
 
-fn apply_sandbox_option(config: &mut nitpick_agent_host::AgentConfig, options: &CliOptions) {
+pub(crate) fn apply_sandbox_option(
+    config: &mut nitpick_agent_host::AgentConfig,
+    options: &CliOptions,
+) {
     if options.disable_sandbox {
         config.sandbox = nitpick_agent_host::AgentSandboxConfig {
             mode: "none".into(),
@@ -668,7 +481,7 @@ fn apply_sandbox_option(config: &mut nitpick_agent_host::AgentConfig, options: &
     }
 }
 
-fn require_cached_checkout(
+pub(crate) fn require_cached_checkout(
     target: &str,
     config: &nitpick_agent_host::AgentConfig,
 ) -> Result<std::path::PathBuf, String> {
@@ -718,109 +531,18 @@ pub fn run_cli_command_typed(
     context: CliRunContext,
     options: CliOptions,
 ) -> Result<String, CliError> {
-    let client = HostClient::new(&context.host_addr);
     match command {
         CliCommand::Help => Ok(help_text(env!("CARGO_PKG_VERSION"))),
         CliCommand::Version => Ok(format!("nitpick {}", env!("CARGO_PKG_VERSION"))),
-        CliCommand::Status => match client.status() {
-            Ok(status) => Ok(format_host_status(&host_status(status))),
-            Err(error) if error.is_unavailable() => Ok(format!(
-                "nitpick-agent-host: not connected\naddress: {}",
-                context.host_addr
-            )),
-            Err(error) => Err(error.into()),
-        },
-        CliCommand::ReviewRequests { only_new } => {
-            Ok(format_review_requests(&client.review_requests(only_new)?))
-        }
-        CliCommand::Activities => Ok(format_activities(&client.activities()?)),
-        CliCommand::Reviews { include_all } => {
-            Ok(format_reviews(&client.activities()?, include_all))
-        }
-        CliCommand::Logs { target } if target == "daemon" => {
-            format_daemon_log(&daemon_log_path(&context.data_dir)).map_err(Into::into)
-        }
-        CliCommand::Logs { target } => {
-            let activities = client.activities()?;
-            let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
-            let artifacts = client.activity_artifacts(activity.id.as_str())?;
-            Ok(format_activity_logs(activity, &artifacts))
-        }
-        CliCommand::Resume { target } => {
-            let activities = client.activities()?;
-            let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
-            ensure_resumable_activity(activity).map_err(CliError::from)?;
-            let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
-                .map_err(CliError::from)?;
-            apply_sandbox_option(&mut config, &options);
-            config
-                .command_provider()
-                .attach_session_in_repo(&activity.session, &context.repo_dir)
-                .map_err(|error| {
-                    CliError::from(handle_resume_error(
-                        activity,
-                        &context.data_dir,
-                        error.to_string(),
-                    ))
-                })?;
-            Ok(String::new())
-        }
-        CliCommand::Artifacts { activity_id } => {
-            Ok(format_artifacts(&client.activity_artifacts(&activity_id)?))
-        }
-        CliCommand::Artifact { artifact_id } => {
-            Ok(format_artifact(&client.artifact(&artifact_id)?))
-        }
-        CliCommand::ArtifactSync {
-            artifact_id,
-            destination,
-            target,
-        } => Ok(format_artifact(&client.sync_artifact(
-            &artifact_id,
-            &destination,
-            target.as_deref(),
-        )?)),
-        CliCommand::ReviewSync {
-            activity_id,
-            target,
-        } => Ok(format_artifacts(&client.sync_activity_artifacts(
-            &activity_id,
-            "github-review",
-            Some(&target),
-        )?)),
-        CliCommand::SyncPending { destination } => Ok(format_artifacts(
-            &client.pending_sync_artifacts(destination.as_deref())?,
-        )),
-        CliCommand::CleanupCheckouts => Ok(format_cleanup_checkouts(&client.cleanup_checkouts()?)),
-        CliCommand::Inspect { pull_request } => {
-            inspect_checkout_with_discovery(&pull_request, &GitHubCliDiscovery::new("gh"), None)
-                .map_err(Into::into)
-        }
-        CliCommand::Review { subject } => {
-            let mut input = review_input(subject, context.repo_dir, context.diff);
-            input.disable_sandbox = options.disable_sandbox;
-            let activity = client.review(&input)?;
-            let output = format_activity(&activity);
-            if let Some(error) = activity.error {
-                return Err(error.into());
-            }
-            Ok(output)
-        }
-        CliCommand::Chat { target } => {
-            let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
-                .map_err(CliError::from)?;
-            apply_sandbox_option(&mut config, &options);
-            let checkout = require_cached_checkout(&target, &config).map_err(CliError::from)?;
-            config
-                .command_provider()
-                .start_interactive_session_in_repo(&checkout)
-                .map_err(CliError::from)?;
-            Ok(String::new())
-        }
+        CliCommand::Review(command) => review::run(command, context, options),
+        CliCommand::Activity(command) => activity::run(command, context, options),
+        CliCommand::Artifact(command) => artifact::run(command, context, options),
+        CliCommand::System(command) => system::run(command, context, options),
+        CliCommand::Chat(command) => chat::run(command, context, options),
     }
 }
 
-fn host_status(status: nitpick_agent_client::HostStatus) -> HostStatus {
+pub(crate) fn host_status(status: nitpick_agent_client::HostStatus) -> HostStatus {
     HostStatus {
         activity_count: status.activity_count,
         running_activity_count: status.running_activity_count,
@@ -840,178 +562,235 @@ fn host_status(status: nitpick_agent_client::HostStatus) -> HostStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCommand, HostStatus, format_host_status, parse_command, parse_invocation};
+    use super::{
+        ActivityCommand, ArtifactCommand, ChatCommand, CliCommand, HostStatus, ReviewCommand,
+        SystemCommand, format_host_status, parse_command, parse_invocation,
+    };
     use nitpick_agent_core::ReviewRequest;
 
     #[test]
-    fn parses_review_command_subject() {
-        let command = parse_command(["review".to_owned(), "acme/platform#42".to_owned()])
-            .expect("command parses");
+    fn parses_review_run_command() {
+        let command = parse_command([
+            "review".to_owned(),
+            "run".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command parses");
 
         assert_eq!(
             command,
-            CliCommand::Review {
-                subject: "acme/platform#42".into()
-            }
+            CliCommand::Review(ReviewCommand::Run {
+                subject: "acme/platform#42".into(),
+            })
         );
     }
 
     #[test]
-    fn rejects_review_without_subject() {
-        let error = parse_command(["review".to_owned()]).expect_err("command fails");
+    fn rejects_review_run_without_subject() {
+        let error =
+            parse_command(["review".to_owned(), "run".to_owned()]).expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick review <SUBJECT>"));
+        assert!(error.contains("Usage: nitpick review run <SUBJECT>"));
     }
 
     #[test]
     fn parses_status_command() {
-        let command = parse_command(["status".to_owned()]).expect("command parses");
+        let command =
+            parse_command(["system".to_owned(), "status".to_owned()]).expect("command parses");
 
-        assert_eq!(command, CliCommand::Status);
+        assert_eq!(command, CliCommand::System(SystemCommand::Status));
     }
 
     #[test]
     fn parses_review_requests_command() {
-        let command = parse_command(["review-requests".to_owned()]).expect("command parses");
+        let command =
+            parse_command(["review".to_owned(), "requests".to_owned()]).expect("command parses");
 
-        assert_eq!(command, CliCommand::ReviewRequests { only_new: false });
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::Requests { only_new: false })
+        );
     }
 
     #[test]
     fn parses_new_review_requests_command() {
-        let command = parse_command(["review-requests".to_owned(), "--new".to_owned()])
-            .expect("command parses");
+        let command = parse_command([
+            "review".to_owned(),
+            "requests".to_owned(),
+            "--new".to_owned(),
+        ])
+        .expect("command parses");
 
-        assert_eq!(command, CliCommand::ReviewRequests { only_new: true });
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::Requests { only_new: true })
+        );
     }
 
     #[test]
     fn parses_activities_command() {
-        let command = parse_command(["activities".to_owned()]).expect("command parses");
+        let command =
+            parse_command(["activity".to_owned(), "list".to_owned()]).expect("command parses");
 
-        assert_eq!(command, CliCommand::Activities);
+        assert_eq!(command, CliCommand::Activity(ActivityCommand::List));
     }
 
     #[test]
     fn parses_reviews_command() {
-        let command = parse_command(["reviews".to_owned()]).expect("command parses");
+        let command =
+            parse_command(["review".to_owned(), "list".to_owned()]).expect("command parses");
 
-        assert_eq!(command, CliCommand::Reviews { include_all: false });
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::List { include_all: false })
+        );
     }
 
     #[test]
     fn parses_reviews_all_command() {
-        let command =
-            parse_command(["reviews".to_owned(), "--all".to_owned()]).expect("command parses");
+        let command = parse_command(["review".to_owned(), "list".to_owned(), "--all".to_owned()])
+            .expect("command parses");
 
-        assert_eq!(command, CliCommand::Reviews { include_all: true });
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::List { include_all: true })
+        );
     }
 
     #[test]
     fn parses_logs_command() {
-        let command =
-            parse_command(["logs".to_owned(), "acme/platform#42".to_owned()]).expect("command");
+        let command = parse_command([
+            "activity".to_owned(),
+            "logs".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command");
 
         assert_eq!(
             command,
-            CliCommand::Logs {
-                target: "acme/platform#42".into()
-            }
+            CliCommand::Activity(ActivityCommand::Logs {
+                target: "acme/platform#42".into(),
+            })
         );
     }
 
     #[test]
     fn parses_resume_command() {
-        let command =
-            parse_command(["resume".to_owned(), "acme/platform#42".to_owned()]).expect("command");
+        let command = parse_command([
+            "activity".to_owned(),
+            "resume".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command");
 
         assert_eq!(
             command,
-            CliCommand::Resume {
-                target: "acme/platform#42".into()
-            }
+            CliCommand::Activity(ActivityCommand::Resume {
+                target: "acme/platform#42".into(),
+            })
         );
     }
 
     #[test]
     fn rejects_logs_without_target() {
-        let error = parse_command(["logs".to_owned()]).expect_err("command fails");
+        let error =
+            parse_command(["activity".to_owned(), "logs".to_owned()]).expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick logs <TARGET>"));
+        assert!(error.contains("Usage: nitpick activity logs <TARGET>"));
     }
 
     #[test]
     fn rejects_resume_without_target() {
-        let error = parse_command(["resume".to_owned()]).expect_err("command fails");
+        let error =
+            parse_command(["activity".to_owned(), "resume".to_owned()]).expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick resume <TARGET>"));
+        assert!(error.contains("Usage: nitpick activity resume <TARGET>"));
     }
 
     #[test]
     fn rejects_unknown_reviews_flag() {
-        let error =
-            parse_command(["reviews".to_owned(), "--running".to_owned()]).expect_err("command");
+        let error = parse_command([
+            "review".to_owned(),
+            "list".to_owned(),
+            "--running".to_owned(),
+        ])
+        .expect_err("command");
 
         assert!(error.contains("unexpected argument '--running'"));
     }
 
     #[test]
     fn parses_inspect_command() {
-        let command = parse_command(["inspect".to_owned(), "acme/platform#42".to_owned()])
-            .expect("command parses");
+        let command = parse_command([
+            "activity".to_owned(),
+            "inspect".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command parses");
 
         assert_eq!(
             command,
-            CliCommand::Inspect {
-                pull_request: "acme/platform#42".into()
-            }
+            CliCommand::Activity(ActivityCommand::Inspect {
+                pull_request: "acme/platform#42".into(),
+            })
         );
     }
 
     #[test]
     fn rejects_inspect_without_pr_ref() {
-        let error = parse_command(["inspect".to_owned()]).expect_err("command fails");
+        let error = parse_command(["activity".to_owned(), "inspect".to_owned()])
+            .expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick inspect <PULL_REQUEST>"));
+        assert!(error.contains("Usage: nitpick activity inspect <PULL_REQUEST>"));
     }
 
     #[test]
     fn parses_artifacts_command() {
-        let command = parse_command(["artifacts".to_owned(), "activity-1".to_owned()])
-            .expect("command parses");
+        let command = parse_command([
+            "artifact".to_owned(),
+            "list".to_owned(),
+            "activity-1".to_owned(),
+        ])
+        .expect("command parses");
 
         assert_eq!(
             command,
-            CliCommand::Artifacts {
-                activity_id: "activity-1".into()
-            }
+            CliCommand::Artifact(ArtifactCommand::List {
+                activity_id: "activity-1".into(),
+            })
         );
     }
 
     #[test]
     fn rejects_artifacts_without_activity_id() {
-        let error = parse_command(["artifacts".to_owned()]).expect_err("command fails");
+        let error =
+            parse_command(["artifact".to_owned(), "list".to_owned()]).expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick artifacts <ACTIVITY_ID>"));
+        assert!(error.contains("Usage: nitpick artifact list <ACTIVITY_ID>"));
     }
 
     #[test]
     fn parses_artifact_command() {
-        let command =
-            parse_command(["artifact".to_owned(), "artifact-1".to_owned()]).expect("command");
+        let command = parse_command([
+            "artifact".to_owned(),
+            "show".to_owned(),
+            "artifact-1".to_owned(),
+        ])
+        .expect("command");
 
         assert_eq!(
             command,
-            CliCommand::Artifact {
-                artifact_id: "artifact-1".into()
-            }
+            CliCommand::Artifact(ArtifactCommand::Show {
+                artifact_id: "artifact-1".into(),
+            })
         );
     }
 
     #[test]
     fn parses_artifact_sync_command() {
         let command = parse_command([
-            "artifact-sync".to_owned(),
+            "artifact".to_owned(),
+            "sync".to_owned(),
             "artifact-1".to_owned(),
             "github".to_owned(),
         ])
@@ -1019,18 +798,19 @@ mod tests {
 
         assert_eq!(
             command,
-            CliCommand::ArtifactSync {
+            CliCommand::Artifact(ArtifactCommand::Sync {
                 artifact_id: "artifact-1".into(),
                 destination: "github".into(),
                 target: None,
-            }
+            })
         );
     }
 
     #[test]
     fn parses_artifact_sync_command_with_target() {
         let command = parse_command([
-            "artifact-sync".to_owned(),
+            "artifact".to_owned(),
+            "sync".to_owned(),
             "artifact-1".to_owned(),
             "github".to_owned(),
             "acme/platform#42".to_owned(),
@@ -1039,18 +819,19 @@ mod tests {
 
         assert_eq!(
             command,
-            CliCommand::ArtifactSync {
+            CliCommand::Artifact(ArtifactCommand::Sync {
                 artifact_id: "artifact-1".into(),
                 destination: "github".into(),
                 target: Some("acme/platform#42".into()),
-            }
+            })
         );
     }
 
     #[test]
     fn parses_review_sync_command() {
         let command = parse_command([
-            "review-sync".to_owned(),
+            "review".to_owned(),
+            "sync".to_owned(),
             "activity-1".to_owned(),
             "acme/platform#42".to_owned(),
         ])
@@ -1058,46 +839,59 @@ mod tests {
 
         assert_eq!(
             command,
-            CliCommand::ReviewSync {
+            CliCommand::Review(ReviewCommand::Sync {
                 activity_id: "activity-1".into(),
                 target: "acme/platform#42".into(),
-            }
+            })
         );
     }
 
     #[test]
     fn rejects_review_sync_without_target() {
-        let error = parse_command(["review-sync".to_owned(), "activity-1".to_owned()])
-            .expect_err("command");
+        let error = parse_command([
+            "review".to_owned(),
+            "sync".to_owned(),
+            "activity-1".to_owned(),
+        ])
+        .expect_err("command");
 
-        assert!(error.contains("Usage: nitpick review-sync <ACTIVITY_ID> <TARGET>"));
+        assert!(error.contains("Usage: nitpick review sync <ACTIVITY_ID> <TARGET>"));
     }
 
     #[test]
     fn parses_sync_pending_command_with_destination() {
-        let command =
-            parse_command(["sync-pending".to_owned(), "github".to_owned()]).expect("command");
+        let command = parse_command([
+            "system".to_owned(),
+            "sync-pending".to_owned(),
+            "github".to_owned(),
+        ])
+        .expect("command");
 
         assert_eq!(
             command,
-            CliCommand::SyncPending {
-                destination: Some("github".into())
-            }
+            CliCommand::System(SystemCommand::SyncPending {
+                destination: Some("github".into()),
+            })
         );
     }
 
     #[test]
     fn parses_sync_pending_command_without_destination() {
-        let command = parse_command(["sync-pending".to_owned()]).expect("command");
+        let command =
+            parse_command(["system".to_owned(), "sync-pending".to_owned()]).expect("command");
 
-        assert_eq!(command, CliCommand::SyncPending { destination: None });
+        assert_eq!(
+            command,
+            CliCommand::System(SystemCommand::SyncPending { destination: None })
+        );
     }
 
     #[test]
     fn parses_cleanup_checkouts_command() {
-        let command = parse_command(["cleanup-checkouts".to_owned()]).expect("command");
+        let command =
+            parse_command(["system".to_owned(), "cleanup-checkouts".to_owned()]).expect("command");
 
-        assert_eq!(command, CliCommand::CleanupCheckouts);
+        assert_eq!(command, CliCommand::System(SystemCommand::CleanupCheckouts));
     }
 
     #[test]
@@ -1119,9 +913,12 @@ mod tests {
     }
 
     #[test]
-    fn help_text_mentions_draft_review_sync() {
+    fn help_text_mentions_nested_commands() {
         let help = super::help_text("0.1.0");
-        assert!(help.contains("review-sync"));
+        assert!(help.contains("review"));
+        assert!(help.contains("activity"));
+        assert!(help.contains("artifact"));
+        assert!(help.contains("system"));
         assert!(help.contains("--no-sandbox"));
     }
 
@@ -1130,6 +927,7 @@ mod tests {
         let invocation = parse_invocation([
             "--no-sandbox".to_owned(),
             "chat".to_owned(),
+            "start".to_owned(),
             "acme/platform#42".to_owned(),
         ])
         .expect("invocation");
@@ -1137,9 +935,9 @@ mod tests {
         assert!(invocation.options.disable_sandbox);
         assert_eq!(
             invocation.command,
-            CliCommand::Chat {
-                target: "acme/platform#42".into()
-            }
+            CliCommand::Chat(ChatCommand::Start {
+                target: "acme/platform#42".into(),
+            })
         );
     }
 
@@ -1448,9 +1246,9 @@ mod tests {
         std::fs::write(&path, "daemon started\n").expect("write log");
 
         let output = super::run_cli_command(
-            CliCommand::Logs {
+            CliCommand::Activity(ActivityCommand::Logs {
                 target: "daemon".into(),
-            },
+            }),
             "127.0.0.1:1",
             dir.path().to_path_buf(),
             String::new(),
