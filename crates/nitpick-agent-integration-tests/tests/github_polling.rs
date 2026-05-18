@@ -32,7 +32,7 @@ fn github_polling_creates_local_review_and_marks_pr_head_processed() {
     assert_eq!(discovery.status, ActivityStatus::Completed);
     assert_eq!(
         discovery.label.as_deref(),
-        Some("detected review request stephanos/nitpick-agent#42")
+        Some("review request stephanos/nitpick-agent#42")
     );
     let review = activities
         .iter()

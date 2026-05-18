@@ -264,7 +264,7 @@ final class MenuSnapshotTests: XCTestCase {
                     id: "activity-1",
                     kind: "Discovery",
                     status: "Completed",
-                    label: "detected review request acme/platform#42",
+                    label: "review request acme/platform#42",
                     createdAtUnix: 990,
                     updatedAtUnix: 990
                 ),
@@ -274,7 +274,7 @@ final class MenuSnapshotTests: XCTestCase {
 
         XCTAssertEqual(
             snapshot.recentActivityEntries[0].title,
-            "10s ago  detected review request acme/platform#42"
+            "10s ago  review request acme/platform#42"
         )
     }
 }

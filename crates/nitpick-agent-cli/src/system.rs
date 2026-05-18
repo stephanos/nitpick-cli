@@ -60,18 +60,57 @@ pub fn run(
 }
 
 pub fn format_host_status(status: &HostStatus) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format_host_status_at(status, now_unix)
+}
+
+pub(crate) fn format_host_status_at(status: &HostStatus, now_unix: u64) -> String {
+    let open_reviews = status.queued_review_count + status.running_review_count;
+    let reviews_line = format!(
+        "open reviews: {} ({} running, {} queued)\nreviews completed: {}\nreviews errored: {}",
+        open_reviews,
+        status.running_review_count,
+        status.queued_review_count,
+        status.completed_review_count,
+        status.error_review_count,
+    );
+    let review_source_line = if status.review_source_enabled {
+        let poll_age = status
+            .review_source_last_poll_unix
+            .map(|t| format_poll_age(t, now_unix))
+            .unwrap_or_else(|| "never".into());
+        let summary = status
+            .review_source_last_poll_summary
+            .as_deref()
+            .unwrap_or("—");
+        format!(
+            "review source: {} (last poll: {}, {})",
+            status.review_source_name, poll_age, summary
+        )
+    } else {
+        format!("review source: {} (disabled)", status.review_source_name)
+    };
     format!(
-        "nitpick-agent-host: connected\nactivities: {} ({} running, {} completed, {} error)\nartifacts: {}\nlocal-only artifacts: {}\npending-sync artifacts: {}\nagent: {}\nmodel: {}",
-        status.activity_count,
-        status.running_activity_count,
-        status.completed_activity_count,
-        status.error_activity_count,
+        "nitpick-agent-host: connected\n{reviews_line}\nartifacts: {} ({} pending sync)\nagent: {} {}\n{review_source_line}",
         status.artifact_count,
-        status.local_only_artifact_count,
         status.pending_sync_artifact_count,
         status.provider,
-        status.model.as_deref().unwrap_or("(default)")
+        status.model.as_deref().unwrap_or("(default)"),
     )
+}
+
+pub(crate) fn format_poll_age(last_poll_unix: u64, now_unix: u64) -> String {
+    let age_secs = now_unix.saturating_sub(last_poll_unix);
+    if age_secs < 60 {
+        format!("{age_secs}s ago")
+    } else if age_secs < 3600 {
+        format!("{}m ago", age_secs / 60)
+    } else {
+        format!("{}h ago", age_secs / 3600)
+    }
 }
 
 pub fn parse_host_status_json(body: &str) -> Result<HostStatus, String> {
@@ -165,41 +204,89 @@ mod tests {
     #[test]
     fn formats_host_status() {
         let status = HostStatus {
-            activity_count: 2,
-            running_activity_count: 1,
+            activity_count: 4,
+            queued_activity_count: 1,
+            running_activity_count: 2,
             completed_activity_count: 1,
             error_activity_count: 0,
+            queued_review_count: 1,
+            running_review_count: 2,
+            completed_review_count: 3,
+            error_review_count: 0,
             artifact_count: 5,
             local_only_artifact_count: 3,
             pending_sync_artifact_count: 1,
             provider: AgentProviderKind::Claude,
             model: Some("sonnet".into()),
             review_source_name: "github".into(),
-            review_source_enabled: true,
-            review_source_last_poll_unix: Some(1_000),
-            review_source_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
+            review_source_enabled: false,
+            review_source_last_poll_unix: None,
+            review_source_last_poll_summary: None,
         };
 
         assert_eq!(
             format_host_status(&status),
-            "nitpick-agent-host: connected\nactivities: 2 (1 running, 1 completed, 0 error)\nartifacts: 5\nlocal-only artifacts: 3\npending-sync artifacts: 1\nagent: claude\nmodel: sonnet"
+            "nitpick-agent-host: connected\nopen reviews: 3 (2 running, 1 queued)\nreviews completed: 3\nreviews errored: 0\nartifacts: 5 (1 pending sync)\nagent: claude sonnet\nreview source: github (disabled)"
         );
+    }
+
+    #[test]
+    fn formats_host_status_with_review_source_enabled() {
+        let status = HostStatus {
+            activity_count: 0,
+            queued_activity_count: 0,
+            running_activity_count: 0,
+            completed_activity_count: 0,
+            error_activity_count: 0,
+            queued_review_count: 0,
+            running_review_count: 0,
+            completed_review_count: 0,
+            error_review_count: 0,
+            artifact_count: 0,
+            local_only_artifact_count: 0,
+            pending_sync_artifact_count: 0,
+            provider: AgentProviderKind::Claude,
+            model: None,
+            review_source_name: "github".into(),
+            review_source_enabled: true,
+            review_source_last_poll_unix: None,
+            review_source_last_poll_summary: None,
+        };
+
+        let output = super::format_host_status_at(&status, 1_000);
+        assert!(
+            output.contains("review source: github (last poll: never"),
+            "unexpected: {output}"
+        );
+    }
+
+    #[test]
+    fn formats_poll_age() {
+        assert_eq!(super::format_poll_age(900, 1000), "1m ago");
+        assert_eq!(super::format_poll_age(400, 1000), "10m ago");
+        assert_eq!(super::format_poll_age(0, 3700), "1h ago");
+        assert_eq!(super::format_poll_age(995, 1000), "5s ago");
     }
 
     #[test]
     fn parses_host_status_json() {
         let status = super::parse_host_status_json(
-            r#"{"activity_count":2,"running_activity_count":1,"completed_activity_count":1,"error_activity_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"review_source_name":"github","review_source_enabled":true,"review_source_last_poll_unix":1000,"review_source_last_poll_summary":"reviewed 1 of 1 PRs"}"#,
+            r#"{"activity_count":4,"queued_activity_count":1,"running_activity_count":2,"completed_activity_count":1,"error_activity_count":0,"queued_review_count":1,"running_review_count":2,"completed_review_count":3,"error_review_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"review_source_name":"github","review_source_enabled":true,"review_source_last_poll_unix":1000,"review_source_last_poll_summary":"reviewed 1 of 1 PRs"}"#,
         )
         .expect("status parses");
 
         assert_eq!(
             status,
             HostStatus {
-                activity_count: 2,
-                running_activity_count: 1,
+                activity_count: 4,
+                queued_activity_count: 1,
+                running_activity_count: 2,
                 completed_activity_count: 1,
                 error_activity_count: 0,
+                queued_review_count: 1,
+                running_review_count: 2,
+                completed_review_count: 3,
+                error_review_count: 0,
                 artifact_count: 5,
                 local_only_artifact_count: 3,
                 pending_sync_artifact_count: 1,

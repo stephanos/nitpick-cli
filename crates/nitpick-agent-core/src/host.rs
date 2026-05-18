@@ -5,9 +5,14 @@ use crate::AgentProviderKind;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostStatus {
     pub activity_count: usize,
+    pub queued_activity_count: usize,
     pub running_activity_count: usize,
     pub completed_activity_count: usize,
     pub error_activity_count: usize,
+    pub queued_review_count: usize,
+    pub running_review_count: usize,
+    pub completed_review_count: usize,
+    pub error_review_count: usize,
     pub artifact_count: usize,
     pub local_only_artifact_count: usize,
     pub pending_sync_artifact_count: usize,

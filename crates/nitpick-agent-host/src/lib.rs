@@ -1,16 +1,13 @@
+mod api;
+mod polling_state;
+mod review_slots;
+
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex},
+    sync::Arc,
     thread,
 };
 
-use axum::{
-    Json, Router,
-    extract::{Path as PathParam, Query, State},
-    http::{HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
-    routing::{get, post},
-};
 use fs_err as fs;
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
@@ -23,7 +20,11 @@ use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
     GitHubCliSyncDestination, GitHubDryRunSyncDestination, PullRequestRef,
 };
+use polling_state::PollingState;
+use review_slots::ReviewSlotManager;
 use serde::Deserialize;
+
+pub use api::api_router;
 
 #[derive(Clone)]
 pub struct HostDaemon {
@@ -34,9 +35,8 @@ pub struct HostDaemon {
     review_source: Arc<dyn ReviewSource>,
     clock: Arc<dyn Clock>,
     automatic_checkout_cleanup: bool,
-    last_review_source_poll_unix: Arc<Mutex<Option<u64>>>,
-    last_review_source_poll_summary: Arc<Mutex<Option<String>>>,
-    review_slots: Arc<(Mutex<usize>, Condvar)>,
+    polling_state: PollingState,
+    review_slots: ReviewSlotManager,
 }
 
 impl HostDaemon {
@@ -47,6 +47,7 @@ impl HostDaemon {
     pub fn with_config(store: Arc<dyn ActivityStore>, config: AgentConfig) -> Self {
         let provider = config.provider();
         let review_source = config.review_source();
+        let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
             store,
@@ -55,9 +56,8 @@ impl HostDaemon {
             review_source,
             clock: Arc::new(SystemClock),
             automatic_checkout_cleanup: true,
-            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
-            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
-            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
+            polling_state: PollingState::new(),
+            review_slots: ReviewSlotManager::new(max_concurrent),
         }
     }
 
@@ -68,6 +68,7 @@ impl HostDaemon {
     ) -> Self {
         let provider = config.provider();
         let review_source = config.review_source();
+        let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
             store,
@@ -76,15 +77,15 @@ impl HostDaemon {
             review_source,
             clock: Arc::new(SystemClock),
             automatic_checkout_cleanup: true,
-            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
-            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
-            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
+            polling_state: PollingState::new(),
+            review_slots: ReviewSlotManager::new(max_concurrent),
         }
     }
 
     pub fn with_provider(store: Arc<dyn ActivityStore>, provider: Arc<dyn AgentProvider>) -> Self {
         let config = AgentConfig::default();
         let review_source = config.review_source();
+        let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
             store,
@@ -93,9 +94,8 @@ impl HostDaemon {
             review_source,
             clock: Arc::new(SystemClock),
             automatic_checkout_cleanup: true,
-            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
-            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
-            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
+            polling_state: PollingState::new(),
+            review_slots: ReviewSlotManager::new(max_concurrent),
         }
     }
 
@@ -107,6 +107,7 @@ impl HostDaemon {
         review_source: Arc<dyn ReviewSource>,
         clock: Arc<dyn Clock>,
     ) -> Self {
+        let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
             store,
@@ -115,17 +116,24 @@ impl HostDaemon {
             review_source,
             clock,
             automatic_checkout_cleanup: false,
-            last_review_source_poll_unix: Arc::new(Mutex::new(None)),
-            last_review_source_poll_summary: Arc::new(Mutex::new(None)),
-            review_slots: Arc::new((Mutex::new(0), Condvar::new())),
+            polling_state: PollingState::new(),
+            review_slots: ReviewSlotManager::new(max_concurrent),
         }
     }
 
     pub fn status(&self) -> AgentResult<HostStatus> {
         let artifacts = self.store.list_artifacts()?;
         let activities = self.store.list()?;
+        let reviews: Vec<_> = activities
+            .iter()
+            .filter(|activity| activity.kind == ActivityKind::Review)
+            .collect();
         Ok(HostStatus {
             activity_count: activities.len(),
+            queued_activity_count: activities
+                .iter()
+                .filter(|activity| activity.status == ActivityStatus::Queued)
+                .count(),
             running_activity_count: activities
                 .iter()
                 .filter(|activity| activity.status == ActivityStatus::Running)
@@ -135,6 +143,22 @@ impl HostDaemon {
                 .filter(|activity| activity.status == ActivityStatus::Completed)
                 .count(),
             error_activity_count: activities
+                .iter()
+                .filter(|activity| activity.status == ActivityStatus::Error)
+                .count(),
+            queued_review_count: reviews
+                .iter()
+                .filter(|activity| activity.status == ActivityStatus::Queued)
+                .count(),
+            running_review_count: reviews
+                .iter()
+                .filter(|activity| activity.status == ActivityStatus::Running)
+                .count(),
+            completed_review_count: reviews
+                .iter()
+                .filter(|activity| activity.status == ActivityStatus::Completed)
+                .count(),
+            error_review_count: reviews
                 .iter()
                 .filter(|activity| activity.status == ActivityStatus::Error)
                 .count(),
@@ -151,15 +175,8 @@ impl HostDaemon {
             model: self.config.model.clone(),
             review_source_name: self.config.review_source_name(),
             review_source_enabled: self.config.github_discovery.enabled,
-            review_source_last_poll_unix: *self
-                .last_review_source_poll_unix
-                .lock()
-                .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))?,
-            review_source_last_poll_summary: self
-                .last_review_source_poll_summary
-                .lock()
-                .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))?
-                .clone(),
+            review_source_last_poll_unix: self.polling_state.last_poll_unix()?,
+            review_source_last_poll_summary: self.polling_state.last_poll_summary()?,
         })
     }
 
@@ -208,10 +225,7 @@ impl HostDaemon {
     ) -> AgentResult<Activity> {
         let mut activity = self.store.create(ActivityKind::Discovery)?;
         activity.status = ActivityStatus::Completed;
-        activity.label = Some(format!(
-            "detected review request {}",
-            request.display_reference()
-        ));
+        activity.label = Some(format!("review request {}", request.display_reference()));
         activity.touch();
         self.store.save(&activity)?;
         Ok(activity)
@@ -557,7 +571,8 @@ impl HostDaemon {
                 let now = self.clock.now_unix();
                 let message = error.message();
                 tracing::warn!(error = %message, "review source poll failed");
-                self.record_review_source_poll_error(now, &message)?;
+                self.polling_state
+                    .record_error(&self.store, now, &message)?;
                 return Err(error);
             }
         };
@@ -574,7 +589,7 @@ impl HostDaemon {
         }
         if result.skipped_reason.is_none() {
             let now = self.clock.now_unix();
-            self.record_review_source_poll_result(now, &result)?;
+            self.polling_state.record_result(now, &result)?;
         }
         Ok(result)
     }
@@ -587,17 +602,13 @@ impl HostDaemon {
 
         let now = self.clock.now_unix();
         {
-            let mut last_poll = self
-                .last_review_source_poll_unix
-                .lock()
-                .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))?;
-            if let Some(last_poll) = *last_poll
+            if let Some(last_poll) = self.polling_state.last_poll_unix()?
                 && now.saturating_sub(last_poll) < self.config.github_discovery.interval_seconds
             {
                 tracing::debug!("review source poll skipped because interval has not elapsed");
                 return Ok(ReviewSourcePollResult::skipped("interval"));
             }
-            *last_poll = Some(now);
+            self.polling_state.update_last_poll(now)?;
         }
 
         let requests = self.discover_new_review_requests()?;
@@ -658,7 +669,7 @@ impl HostDaemon {
         let input = self.config.apply_review_prompt(input)?;
         let runtime = self.runtime();
         let mut activity = runtime.create_queued_review_activity(&input)?;
-        let slot_acquired = self.try_acquire_review_slot()?;
+        let slot_acquired = self.review_slots.try_acquire()?;
         if slot_acquired {
             activity = runtime.mark_activity_running(activity)?;
         }
@@ -695,91 +706,12 @@ impl HostDaemon {
         slot_acquired: bool,
     ) -> AgentResult<Activity> {
         if !slot_acquired {
-            self.wait_for_review_slot()?;
+            self.review_slots.wait_and_acquire()?;
         }
         let result = self.runtime().run_review(activity, input);
-        self.release_review_slot()?;
+        self.review_slots.release()?;
         result
     }
-
-    fn try_acquire_review_slot(&self) -> AgentResult<bool> {
-        let (running, _) = self.review_slots.as_ref();
-        let mut running = running
-            .lock()
-            .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
-        if *running >= self.config.max_concurrent_reviews.max(1) {
-            return Ok(false);
-        }
-        *running += 1;
-        Ok(true)
-    }
-
-    fn wait_for_review_slot(&self) -> AgentResult<()> {
-        let (running, changed) = self.review_slots.as_ref();
-        let mut running = running
-            .lock()
-            .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
-        while *running >= self.config.max_concurrent_reviews.max(1) {
-            running = changed
-                .wait(running)
-                .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
-        }
-        *running += 1;
-        Ok(())
-    }
-
-    fn release_review_slot(&self) -> AgentResult<()> {
-        let (running, changed) = self.review_slots.as_ref();
-        let mut running = running
-            .lock()
-            .map_err(|_| AgentError::io("review slots lock", "poisoned"))?;
-        *running = running.saturating_sub(1);
-        changed.notify_one();
-        Ok(())
-    }
-
-    fn record_review_source_poll_result(
-        &self,
-        now: u64,
-        result: &ReviewSourcePollResult,
-    ) -> AgentResult<()> {
-        *self
-            .last_review_source_poll_unix
-            .lock()
-            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? = Some(now);
-        *self
-            .last_review_source_poll_summary
-            .lock()
-            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? =
-            Some(result.summary());
-        Ok(())
-    }
-
-    fn record_review_source_poll_error(&self, now: u64, error: &str) -> AgentResult<()> {
-        *self
-            .last_review_source_poll_unix
-            .lock()
-            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? = Some(now);
-        *self
-            .last_review_source_poll_summary
-            .lock()
-            .map_err(|_| AgentError::io("review source poll state lock", "poisoned"))? =
-            Some(review_source_error_summary(error));
-        let mut activity = self.store.create(ActivityKind::Discovery)?;
-        activity.status = ActivityStatus::Error;
-        activity.label = Some("discovery poll".into());
-        activity.error = Some(error.into());
-        activity.touch();
-        self.store.save(&activity)?;
-        Ok(())
-    }
-}
-
-fn review_source_error_summary(error: &str) -> String {
-    if error.contains("failed to start GitHub CLI") {
-        return format!("github unavailable: {error}");
-    }
-    format!("review source failed: {error}")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -827,235 +759,6 @@ impl ReviewSourcePollResult {
 
 #[deprecated(note = "use ReviewSourcePollResult")]
 pub type GitHubReviewPollResult = ReviewSourcePollResult;
-
-pub fn api_router(daemon: HostDaemon) -> Router {
-    Router::new()
-        .route("/status", get(status))
-        .route("/activities", get(activities))
-        .route("/activities/{id}", get(activity))
-        .route("/activities/{id}/artifacts", get(activity_artifacts))
-        .route(
-            "/activities/{id}/artifact-sync",
-            post(activity_artifact_sync),
-        )
-        .route("/sync/pending", get(pending_sync_artifacts))
-        .route("/review-requests", get(review_requests))
-        .route("/github/review-requests", get(github_review_requests))
-        .route("/artifacts/{id}", get(artifact))
-        .route("/artifacts/{id}/sync-state", post(artifact_sync_state))
-        .route("/artifacts/{id}/sync", post(artifact_sync))
-        .route("/maintenance/cleanup-checkouts", post(cleanup_checkouts))
-        .route("/reviews", post(review))
-        .route("/chats", post(chat))
-        .with_state(daemon)
-}
-
-async fn status(State(daemon): State<HostDaemon>) -> Result<Json<HostStatus>, ApiError> {
-    Ok(Json(daemon.status()?))
-}
-
-async fn activities(State(daemon): State<HostDaemon>) -> Result<Json<Vec<Activity>>, ApiError> {
-    Ok(Json(daemon.list_activities()?))
-}
-
-async fn activity(
-    State(daemon): State<HostDaemon>,
-    PathParam(id): PathParam<String>,
-) -> Result<Response, ApiError> {
-    match daemon.get_activity(&ActivityId::new(id))? {
-        Some(activity) => Ok(Json(activity).into_response()),
-        None => Ok(StatusCode::NOT_FOUND.into_response()),
-    }
-}
-
-async fn activity_artifacts(
-    State(daemon): State<HostDaemon>,
-    PathParam(id): PathParam<String>,
-) -> Result<Response, ApiError> {
-    let id = ActivityId::new(id);
-    if daemon.get_activity(&id)?.is_none() {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    }
-    Ok(Json(daemon.list_artifacts_for(&id)?).into_response())
-}
-
-async fn pending_sync_artifacts(
-    State(daemon): State<HostDaemon>,
-    Query(query): Query<PendingSyncQuery>,
-) -> Result<Json<Vec<Artifact>>, ApiError> {
-    Ok(Json(daemon.list_pending_sync_artifacts(
-        query.destination.as_deref(),
-    )?))
-}
-
-async fn github_review_requests(
-    State(daemon): State<HostDaemon>,
-    Query(query): Query<ReviewRequestsQuery>,
-) -> Result<Json<Vec<DiscoveredPullRequest>>, ApiError> {
-    let requests = match query.filter.as_deref() {
-        Some("new") => daemon.discover_new_review_requests()?,
-        Some(filter) => {
-            return Err(AgentError::invalid_input(format!(
-                "unknown review request filter `{filter}`"
-            ))
-            .into());
-        }
-        None => daemon.discover_review_requests()?,
-    };
-    Ok(Json(
-        requests
-            .into_iter()
-            .map(github_pull_request_from_review_request)
-            .collect::<AgentResult<Vec<_>>>()?,
-    ))
-}
-
-async fn review_requests(
-    State(daemon): State<HostDaemon>,
-    Query(query): Query<ReviewRequestsQuery>,
-) -> Result<Json<Vec<ReviewRequest>>, ApiError> {
-    match query.filter.as_deref() {
-        Some("new") => Ok(Json(daemon.discover_new_review_requests()?)),
-        Some(filter) => Err(AgentError::invalid_input(format!(
-            "unknown review request filter `{filter}`"
-        ))
-        .into()),
-        None => Ok(Json(daemon.discover_review_requests()?)),
-    }
-}
-
-#[derive(Deserialize)]
-struct ReviewRequestsQuery {
-    filter: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PendingSyncQuery {
-    destination: Option<String>,
-}
-
-async fn artifact(
-    State(daemon): State<HostDaemon>,
-    PathParam(id): PathParam<String>,
-) -> Result<Response, ApiError> {
-    match daemon.get_artifact(&ArtifactId::new(id))? {
-        Some(artifact) => Ok(Json(artifact).into_response()),
-        None => Ok(StatusCode::NOT_FOUND.into_response()),
-    }
-}
-
-async fn artifact_sync_state(
-    State(daemon): State<HostDaemon>,
-    PathParam(id): PathParam<String>,
-    Json(sync_state): Json<ArtifactSyncState>,
-) -> Result<Response, ApiError> {
-    match daemon.update_artifact_sync_state(&ArtifactId::new(id), sync_state)? {
-        Some(artifact) => Ok(Json(artifact).into_response()),
-        None => Ok(StatusCode::NOT_FOUND.into_response()),
-    }
-}
-
-async fn artifact_sync(
-    State(daemon): State<HostDaemon>,
-    PathParam(id): PathParam<String>,
-    Json(input): Json<ArtifactSyncInput>,
-) -> Result<Response, ApiError> {
-    match daemon.sync_artifact(
-        &ArtifactId::new(id),
-        &input.destination,
-        input.target.as_deref(),
-    )? {
-        Some(artifact) => Ok(Json(artifact).into_response()),
-        None => Ok(StatusCode::NOT_FOUND.into_response()),
-    }
-}
-
-async fn activity_artifact_sync(
-    State(daemon): State<HostDaemon>,
-    PathParam(id): PathParam<String>,
-    Json(input): Json<ArtifactSyncInput>,
-) -> Result<Response, ApiError> {
-    match daemon.sync_activity_artifacts(
-        &ActivityId::new(id),
-        &input.destination,
-        input.target.as_deref(),
-    )? {
-        Some(artifacts) => Ok(Json(artifacts).into_response()),
-        None => Ok(StatusCode::NOT_FOUND.into_response()),
-    }
-}
-
-async fn cleanup_checkouts(
-    State(daemon): State<HostDaemon>,
-) -> Result<Json<CleanupCheckoutsResult>, ApiError> {
-    Ok(Json(daemon.cleanup_checkouts()?))
-}
-
-#[derive(Deserialize)]
-struct ArtifactSyncInput {
-    destination: String,
-    target: Option<String>,
-}
-
-async fn review(
-    State(daemon): State<HostDaemon>,
-    Json(input): Json<ReviewInput>,
-) -> Result<Json<Activity>, ApiError> {
-    Ok(Json(daemon.enqueue_review(input)?))
-}
-
-async fn chat(
-    State(daemon): State<HostDaemon>,
-    Json(input): Json<ChatInput>,
-) -> Result<Json<Activity>, ApiError> {
-    Ok(Json(daemon.enqueue_chat(input)?))
-}
-
-struct ApiError(nitpick_agent_core::AgentError);
-
-impl From<nitpick_agent_core::AgentError> for ApiError {
-    fn from(error: nitpick_agent_core::AgentError) -> Self {
-        Self(error)
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let retry_after_seconds = match &self.0 {
-            AgentError::GitHubRateLimited {
-                retry_after_seconds,
-                ..
-            } => *retry_after_seconds,
-            _ => None,
-        };
-        let status = api_error_status(&self.0);
-        let mut response = (
-            status,
-            Json(serde_json::json!({ "error": self.0.to_string() })),
-        )
-            .into_response();
-        if let Some(seconds) = retry_after_seconds
-            && let Ok(value) = HeaderValue::from_str(&seconds.to_string())
-        {
-            response.headers_mut().insert(header::RETRY_AFTER, value);
-        }
-        response
-    }
-}
-
-fn api_error_status(error: &AgentError) -> StatusCode {
-    match error {
-        AgentError::InvalidInput { .. } | AgentError::Config { .. } => StatusCode::BAD_REQUEST,
-        AgentError::NotFound { .. } => StatusCode::NOT_FOUND,
-        AgentError::GitHubRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
-        AgentError::Message { .. }
-        | AgentError::Io { .. }
-        | AgentError::Json { .. }
-        | AgentError::Provider { .. }
-        | AgentError::Sandbox { .. }
-        | AgentError::GitHubCli { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-    }
-}
 
 const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
 pub const CONFIG_TEMPLATE: &str = include_str!("../../../examples/config.toml");
@@ -1186,6 +889,26 @@ impl AgentConfig {
             ))
         })?;
         Ok(())
+    }
+
+    pub fn write_config_example_file(config_path: impl AsRef<Path>) -> AgentResult<PathBuf> {
+        let config_path = config_path.as_ref();
+        let path = config_example_path(config_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                nitpick_agent_core::AgentError::config(format!(
+                    "failed to create config directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        fs::write(&path, CONFIG_TEMPLATE).map_err(|error| {
+            nitpick_agent_core::AgentError::config(format!(
+                "failed to write config example {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(path)
     }
 
     pub fn init_review_prompt_file(config_path: impl AsRef<Path>) -> AgentResult<PathBuf> {
@@ -1322,6 +1045,26 @@ fn default_review_prompt_path(config_path: &Path) -> PathBuf {
         .join(DEFAULT_REVIEW_PROMPT_FILENAME)
 }
 
+fn config_example_path(config_path: &Path) -> PathBuf {
+    let stem = config_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let ext = config_path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let name = if ext.is_empty() {
+        format!("{stem}.example")
+    } else {
+        format!("{stem}.example.{ext}")
+    };
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(name)
+}
+
 fn review_prompt_path(raw_path: Option<&str>, config_dir: Option<&Path>) -> PathBuf {
     let path = raw_path
         .map(str::trim)
@@ -1337,7 +1080,7 @@ fn review_prompt_path(raw_path: Option<&str>, config_dir: Option<&Path>) -> Path
     }
 }
 
-fn github_pull_request_from_review_request(
+pub(crate) fn github_pull_request_from_review_request(
     request: ReviewRequest,
 ) -> AgentResult<DiscoveredPullRequest> {
     let Some(number) = request.number else {

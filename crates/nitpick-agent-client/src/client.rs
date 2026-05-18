@@ -32,6 +32,7 @@ impl HostClient {
         Self::new("127.0.0.1:19783")
     }
 
+    // Query operations (read-only): observe state without modification
     pub fn status(&self) -> HostClientResult<HostStatus> {
         self.get_json("/status")
     }
@@ -66,6 +67,7 @@ impl HostClient {
         }
     }
 
+    // Action operations (write): modify host state
     pub fn sync_artifact(
         &self,
         artifact_id: &str,

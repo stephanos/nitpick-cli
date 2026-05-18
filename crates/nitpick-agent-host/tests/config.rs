@@ -91,6 +91,48 @@ fn init_template_file_replaces_empty_config() {
 }
 
 #[test]
+fn write_config_example_file_creates_example_next_to_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+
+    AgentConfig::write_config_example_file(&config_path).expect("write example");
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.example.toml")).expect("example"),
+        CONFIG_TEMPLATE
+    );
+}
+
+#[test]
+fn write_config_example_file_overwrites_existing_example() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let example_path = dir.path().join("config.example.toml");
+    std::fs::write(&example_path, "old content").expect("write old example");
+
+    AgentConfig::write_config_example_file(&config_path).expect("write example");
+
+    assert_eq!(
+        std::fs::read_to_string(example_path).expect("example"),
+        CONFIG_TEMPLATE
+    );
+}
+
+#[test]
+fn write_config_example_file_does_not_touch_actual_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, "[agent]\nprovider = \"codex\"\n").expect("write config");
+
+    AgentConfig::write_config_example_file(&config_path).expect("write example");
+
+    assert_eq!(
+        std::fs::read_to_string(&config_path).expect("config"),
+        "[agent]\nprovider = \"codex\"\n"
+    );
+}
+
+#[test]
 fn parses_agent_provider_and_model_from_toml() {
     let config = AgentConfig::from_toml(
         r#"
@@ -284,9 +326,14 @@ fn host_status_reports_configured_agent() {
         daemon.status().expect("status"),
         HostStatus {
             activity_count: 1,
+            queued_activity_count: 1,
             running_activity_count: 0,
             completed_activity_count: 0,
             error_activity_count: 0,
+            queued_review_count: 1,
+            running_review_count: 0,
+            completed_review_count: 0,
+            error_review_count: 0,
             artifact_count: 0,
             local_only_artifact_count: 0,
             pending_sync_artifact_count: 0,
