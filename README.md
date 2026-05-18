@@ -41,6 +41,10 @@ Override the bind address with `NITPICK_AGENT_HOST_ADDR`.
 
 The CLI reads host status from the same local API:
 
+The CLI command tree is now domain-first. Older flat commands such as `nitpick status`,
+`nitpick review-requests`, `nitpick reviews`, `nitpick logs`, and `nitpick resume` have been
+replaced by the nested forms below.
+
 ```bash
 nitpick system status
 nitpick review run acme/platform#42
