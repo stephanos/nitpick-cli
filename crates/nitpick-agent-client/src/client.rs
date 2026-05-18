@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use nitpick_agent_core::{
     Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, ReviewInput, ReviewRequest,
+    parse_json_str,
 };
 
 use crate::{
     HostClientError, HostClientResult,
-    json::parse_json,
     transport::{ArtifactSyncInput, request_host},
 };
 
@@ -110,7 +110,7 @@ impl HostClient {
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> HostClientResult<T> {
         let body = request_host(&self.agent, &self.addr, "GET", path, None)?;
-        parse_json(&body)
+        decode_response_json(&body)
     }
 
     fn post_json<T: serde::de::DeserializeOwned>(
@@ -123,6 +123,39 @@ impl HostClient {
                 message: error.to_string(),
             })?;
         let response = request_host(&self.agent, &self.addr, "POST", path, Some(&body))?;
-        parse_json(&response)
+        decode_response_json(&response)
+    }
+}
+
+fn decode_response_json<T: serde::de::DeserializeOwned>(body: &str) -> HostClientResult<T> {
+    parse_json_str(body, "invalid host response").map_err(|error| match error {
+        nitpick_agent_core::AgentError::Json { path, error, .. } => HostClientError::InvalidJson {
+            path,
+            message: error,
+        },
+        error => HostClientError::InvalidJson {
+            path: "$".to_owned(),
+            message: error.to_string(),
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use nitpick_agent_core::HostStatus;
+
+    use crate::HostClientError;
+
+    use super::decode_response_json;
+
+    #[test]
+    fn decode_response_json_reports_field_path() {
+        let error = decode_response_json::<HostStatus>(r#"{"activity_count":"wrong"}"#)
+            .expect_err("invalid field type");
+
+        assert!(matches!(
+            error,
+            HostClientError::InvalidJson { path, .. } if path == "activity_count"
+        ));
     }
 }
