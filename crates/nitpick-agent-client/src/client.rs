@@ -1,9 +1,11 @@
 use std::time::Duration;
 
-use nitpick_agent_core::{Activity, Artifact, ChatInput, ReviewInput, ReviewRequest};
+use nitpick_agent_core::{
+    Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, ReviewInput, ReviewRequest,
+};
 
 use crate::{
-    CleanupCheckoutsResult, HostClientError, HostClientResult, HostStatus,
+    HostClientError, HostClientResult,
     json::parse_json,
     transport::{ArtifactSyncInput, request_host},
 };

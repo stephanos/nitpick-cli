@@ -17,7 +17,9 @@ pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(body: &str) -> HostClie
 
 #[cfg(test)]
 mod tests {
-    use crate::{HostClientError, HostStatus};
+    use nitpick_agent_core::HostStatus;
+
+    use crate::HostClientError;
 
     use super::parse_json;
 

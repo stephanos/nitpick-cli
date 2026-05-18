@@ -25,10 +25,11 @@ pub use cli::{
     parse_invocation,
 };
 pub use context::{CliRunContext, config_path_from_env, data_dir_from_env, host_addr_from_env};
+pub use nitpick_agent_core::HostStatus;
 pub use review::{ReviewArgs, ReviewCommand, format_review_requests, review_input};
 pub use system::{
-    HostStatus, SystemArgs, SystemCommand, format_cleanup_checkouts, format_host_status,
-    host_status_url, parse_host_status_json,
+    SystemArgs, SystemCommand, format_cleanup_checkouts, format_host_status, host_status_url,
+    parse_host_status_json,
 };
 
 #[derive(Debug, thiserror::Error)]

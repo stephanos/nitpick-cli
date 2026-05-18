@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+use crate::AgentProviderKind;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostStatus {
     pub activity_count: usize,
     pub running_activity_count: usize,
@@ -9,7 +11,7 @@ pub struct HostStatus {
     pub artifact_count: usize,
     pub local_only_artifact_count: usize,
     pub pending_sync_artifact_count: usize,
-    pub provider: String,
+    pub provider: AgentProviderKind,
     pub model: Option<String>,
     pub review_source_name: String,
     pub review_source_enabled: bool,
@@ -17,7 +19,7 @@ pub struct HostStatus {
     pub review_source_last_poll_summary: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CleanupCheckoutsResult {
     pub removed_count: usize,
     pub cleaned: Vec<String>,

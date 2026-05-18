@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use nitpick_agent_core::{ActivityKind, ActivityStore, AgentProviderKind, MemoryActivityStore};
+use nitpick_agent_core::{
+    ActivityKind, ActivityStore, AgentProviderKind, HostStatus, MemoryActivityStore,
+};
 use nitpick_agent_host::{
     AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon,
-    HostStatus, REVIEW_PROMPT_TEMPLATE,
+    REVIEW_PROMPT_TEMPLATE,
 };
 
 #[test]

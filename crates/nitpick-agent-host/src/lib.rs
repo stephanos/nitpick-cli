@@ -15,15 +15,15 @@ use fs_err as fs;
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent, ArtifactId,
-    ArtifactSyncDestination, ArtifactSyncState, ChatInput, Clock, CommandAgentProvider,
-    CommandSandboxConfig, MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput,
-    ReviewRequest, ReviewSource, SessionStatus, SystemClock,
+    ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, Clock,
+    CommandAgentProvider, CommandSandboxConfig, HostStatus, MemoryProcessedReviewStore,
+    ProcessedReviewStore, ReviewInput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
     GitHubCliSyncDestination, GitHubDryRunSyncDestination, PullRequestRef,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 #[derive(Clone)]
 pub struct HostDaemon {
@@ -842,29 +842,6 @@ pub type GitHubReviewPollResult = ReviewSourcePollResult;
 
 #[deprecated(note = "use ReviewSourcePoller")]
 pub type GitHubReviewPoller = ReviewSourcePoller;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct HostStatus {
-    pub activity_count: usize,
-    pub running_activity_count: usize,
-    pub completed_activity_count: usize,
-    pub error_activity_count: usize,
-    pub artifact_count: usize,
-    pub local_only_artifact_count: usize,
-    pub pending_sync_artifact_count: usize,
-    pub provider: AgentProviderKind,
-    pub model: Option<String>,
-    pub review_source_name: String,
-    pub review_source_enabled: bool,
-    pub review_source_last_poll_unix: Option<u64>,
-    pub review_source_last_poll_summary: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CleanupCheckoutsResult {
-    pub removed_count: usize,
-    pub cleaned: Vec<String>,
-}
 
 pub fn api_router(daemon: HostDaemon) -> Router {
     Router::new()

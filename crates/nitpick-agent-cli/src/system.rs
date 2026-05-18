@@ -1,6 +1,6 @@
 use clap::{Args, Subcommand};
-use nitpick_agent_client::{CleanupCheckoutsResult, HostClient};
-use serde::Deserialize;
+use nitpick_agent_client::HostClient;
+use nitpick_agent_core::{CleanupCheckoutsResult, HostStatus};
 
 use crate::{CliError, CliOptions, CliRunContext};
 
@@ -35,23 +35,6 @@ impl From<SystemSubcommand> for SystemCommand {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub struct HostStatus {
-    pub activity_count: usize,
-    pub running_activity_count: usize,
-    pub completed_activity_count: usize,
-    pub error_activity_count: usize,
-    pub artifact_count: usize,
-    pub local_only_artifact_count: usize,
-    pub pending_sync_artifact_count: usize,
-    pub provider: String,
-    pub model: Option<String>,
-    pub review_source_name: String,
-    pub review_source_enabled: bool,
-    pub review_source_last_poll_unix: Option<u64>,
-    pub review_source_last_poll_summary: Option<String>,
-}
-
 pub fn run(
     command: SystemCommand,
     context: CliRunContext,
@@ -60,7 +43,7 @@ pub fn run(
     let client = HostClient::new(&context.host_addr);
     match command {
         SystemCommand::Status => match client.status() {
-            Ok(status) => Ok(format_host_status(&host_status(status))),
+            Ok(status) => Ok(format_host_status(&status)),
             Err(error) if error.is_unavailable() => Ok(format!(
                 "nitpick-agent-host: not connected\naddress: {}",
                 context.host_addr
@@ -110,26 +93,10 @@ pub fn host_status_url(addr: &str) -> String {
     format!("http://{addr}/status")
 }
 
-fn host_status(status: nitpick_agent_client::HostStatus) -> HostStatus {
-    HostStatus {
-        activity_count: status.activity_count,
-        running_activity_count: status.running_activity_count,
-        completed_activity_count: status.completed_activity_count,
-        error_activity_count: status.error_activity_count,
-        artifact_count: status.artifact_count,
-        local_only_artifact_count: status.local_only_artifact_count,
-        pending_sync_artifact_count: status.pending_sync_artifact_count,
-        provider: status.provider,
-        model: status.model,
-        review_source_name: status.review_source_name,
-        review_source_enabled: status.review_source_enabled,
-        review_source_last_poll_unix: status.review_source_last_poll_unix,
-        review_source_last_poll_summary: status.review_source_last_poll_summary,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use nitpick_agent_core::{AgentProviderKind, CleanupCheckoutsResult};
+
     use super::{HostStatus, SystemCommand, format_host_status, host_status_url};
     use crate::{CliCommand, parse_command};
 
@@ -180,14 +147,14 @@ mod tests {
     #[test]
     fn formats_cleanup_checkouts_result() {
         assert_eq!(
-            super::format_cleanup_checkouts(&nitpick_agent_client::CleanupCheckoutsResult {
+            super::format_cleanup_checkouts(&CleanupCheckoutsResult {
                 removed_count: 1,
                 cleaned: vec!["acme/platform#42".into()],
             }),
             "cleaned up 1 checkout(s)\nacme/platform#42"
         );
         assert_eq!(
-            super::format_cleanup_checkouts(&nitpick_agent_client::CleanupCheckoutsResult {
+            super::format_cleanup_checkouts(&CleanupCheckoutsResult {
                 removed_count: 0,
                 cleaned: Vec::new(),
             }),
@@ -205,7 +172,7 @@ mod tests {
             artifact_count: 5,
             local_only_artifact_count: 3,
             pending_sync_artifact_count: 1,
-            provider: "claude".into(),
+            provider: AgentProviderKind::Claude,
             model: Some("sonnet".into()),
             review_source_name: "github".into(),
             review_source_enabled: true,
@@ -236,7 +203,7 @@ mod tests {
                 artifact_count: 5,
                 local_only_artifact_count: 3,
                 pending_sync_artifact_count: 1,
-                provider: "claude".into(),
+                provider: AgentProviderKind::Claude,
                 model: None,
                 review_source_name: "github".into(),
                 review_source_enabled: true,

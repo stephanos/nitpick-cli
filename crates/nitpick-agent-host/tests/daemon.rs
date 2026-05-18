@@ -6,10 +6,10 @@ use std::sync::{
 use nitpick_agent_core::{
     ActivityKind, ActivityStatus, ActivityStore, AgentProvider, AgentProviderKind, AgentResult,
     AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, FsActivityStore,
-    MemoryActivityStore, ReviewInput, ReviewOutput, SessionStatus,
+    HostStatus, MemoryActivityStore, ReviewInput, ReviewOutput, SessionStatus,
 };
 use nitpick_agent_github::PullRequestRef;
-use nitpick_agent_host::{HostDaemon, HostStatus};
+use nitpick_agent_host::HostDaemon;
 
 #[test]
 fn host_status_reports_current_activity_count() {
