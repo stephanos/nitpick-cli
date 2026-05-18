@@ -14,9 +14,7 @@ use nitpick_agent_core::{
     ChatInput, MemoryActivityStore, MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput,
     ReviewOutput, ReviewRequest, ReviewSource, ReviewSubject, SystemClock,
 };
-use nitpick_agent_host::{
-    AgentConfig, GitHubDiscoveryConfig, HostDaemon, ReviewSourcePoller, api_router,
-};
+use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon, api_router};
 use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 use tower::ServiceExt;
@@ -859,9 +857,7 @@ exit 1
         },
     );
 
-    let result = ReviewSourcePoller::new(daemon.clone())
-        .tick()
-        .expect("tick");
+    let result = daemon.poll_review_requests().expect("tick");
 
     assert_eq!(result.discovered_count, 0);
     assert_eq!(result.enqueued_count, 0);

@@ -5,7 +5,7 @@ use std::{
 use nitpick_agent_core::{
     FsActivityStore, FsProcessedReviewStore, config_path_from_env_value, data_dir_from_env_value,
 };
-use nitpick_agent_host::{AgentConfig, HostDaemon, ReviewSourcePoller, api_router};
+use nitpick_agent_host::{AgentConfig, HostDaemon, api_router};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -126,7 +126,7 @@ fn spawn_review_source_poller(daemon: HostDaemon) {
 
     thread::spawn(move || {
         loop {
-            if let Err(error) = ReviewSourcePoller::new(daemon.clone()).tick() {
+            if let Err(error) = daemon.poll_review_requests() {
                 eprintln!("review source discovery failed: {error}");
             }
             thread::sleep(Duration::from_secs(interval_seconds));

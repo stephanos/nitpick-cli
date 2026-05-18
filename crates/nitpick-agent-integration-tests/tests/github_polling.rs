@@ -70,9 +70,7 @@ fn github_polling_tick_runs_one_due_poll_and_reports_status() {
         github_auto_review_config(),
         Arc::new(StubDiscovery::new(vec![pull_request("sha-one")])),
     );
-    let poller = nitpick_agent_host::ReviewSourcePoller::new(harness.daemon.clone());
-
-    let result = poller.tick().expect("tick");
+    let result = harness.daemon.poll_review_requests().expect("tick");
 
     assert_eq!(result.discovered_count, 1);
     assert_eq!(result.enqueued_count, 1);
@@ -90,9 +88,10 @@ fn github_polling_tick_records_review_source_errors_in_status() {
     let discovery = Arc::new(StubDiscovery::new(vec![]));
     discovery.set_error("failed to start GitHub CLI `gh`: No such file or directory");
     let harness = TestHarness::new(github_auto_review_config(), discovery);
-    let poller = nitpick_agent_host::ReviewSourcePoller::new(harness.daemon.clone());
-
-    let error = poller.tick().expect_err("tick fails");
+    let error = harness
+        .daemon
+        .poll_review_requests()
+        .expect_err("tick fails");
 
     assert_eq!(
         error.message(),

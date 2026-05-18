@@ -551,6 +551,35 @@ impl HostDaemon {
 
     #[tracing::instrument(skip_all)]
     pub fn poll_review_requests(&self) -> AgentResult<ReviewSourcePollResult> {
+        let mut result = match self.run_review_source_poll() {
+            Ok(result) => result,
+            Err(error) => {
+                let now = self.clock.now_unix();
+                let message = error.message();
+                tracing::warn!(error = %message, "review source poll failed");
+                self.record_review_source_poll_error(now, &message)?;
+                return Err(error);
+            }
+        };
+        if result.skipped_reason.is_none() && self.automatic_checkout_cleanup {
+            match self.cleanup_checkouts() {
+                Ok(cleanup) => {
+                    result.cleanup_removed_count = cleanup.removed_count;
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "automatic checkout cleanup failed");
+                    result.cleanup_error = Some(error.to_string());
+                }
+            }
+        }
+        if result.skipped_reason.is_none() {
+            let now = self.clock.now_unix();
+            self.record_review_source_poll_result(now, &result)?;
+        }
+        Ok(result)
+    }
+
+    fn run_review_source_poll(&self) -> AgentResult<ReviewSourcePollResult> {
         if !self.config.github_discovery.enabled {
             tracing::debug!("review source poll skipped because discovery is disabled");
             return Ok(ReviewSourcePollResult::skipped("disabled"));
@@ -577,15 +606,13 @@ impl HostDaemon {
             self.record_review_request_detected_activity(request)?;
         }
         if !self.config.github_discovery.auto_review {
-            let result = ReviewSourcePollResult {
+            return Ok(ReviewSourcePollResult {
                 discovered_count,
                 enqueued_count: 0,
                 cleanup_removed_count: 0,
                 cleanup_error: None,
                 skipped_reason: None,
-            };
-            self.record_review_source_poll_result(now, &result)?;
-            return Ok(result);
+            });
         }
 
         let mut enqueued_count = 0;
@@ -609,7 +636,6 @@ impl HostDaemon {
             cleanup_error: None,
             skipped_reason: None,
         };
-        self.record_review_source_poll_result(now, &result)?;
         tracing::info!(
             discovered_count = result.discovered_count,
             enqueued_count = result.enqueued_count,
@@ -799,49 +825,8 @@ impl ReviewSourcePollResult {
     }
 }
 
-#[derive(Clone)]
-pub struct ReviewSourcePoller {
-    daemon: HostDaemon,
-}
-
-impl ReviewSourcePoller {
-    pub fn new(daemon: HostDaemon) -> Self {
-        Self { daemon }
-    }
-
-    pub fn tick(&self) -> AgentResult<ReviewSourcePollResult> {
-        let mut result = match self.daemon.poll_review_requests() {
-            Ok(result) => result,
-            Err(error) => {
-                let now = self.daemon.clock.now_unix();
-                let message = error.message();
-                tracing::warn!(error = %message, "review source poll failed");
-                self.daemon.record_review_source_poll_error(now, &message)?;
-                return Err(error);
-            }
-        };
-        if result.skipped_reason.is_none() && self.daemon.automatic_checkout_cleanup {
-            match self.daemon.cleanup_checkouts() {
-                Ok(cleanup) => {
-                    result.cleanup_removed_count = cleanup.removed_count;
-                }
-                Err(error) => {
-                    tracing::warn!(error = %error, "automatic checkout cleanup failed");
-                    result.cleanup_error = Some(error.to_string());
-                }
-            }
-            let now = self.daemon.clock.now_unix();
-            self.daemon.record_review_source_poll_result(now, &result)?;
-        }
-        Ok(result)
-    }
-}
-
 #[deprecated(note = "use ReviewSourcePollResult")]
 pub type GitHubReviewPollResult = ReviewSourcePollResult;
-
-#[deprecated(note = "use ReviewSourcePoller")]
-pub type GitHubReviewPoller = ReviewSourcePoller;
 
 pub fn api_router(daemon: HostDaemon) -> Router {
     Router::new()
