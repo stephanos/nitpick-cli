@@ -21,7 +21,9 @@ pub struct ReviewArgs {
 #[derive(Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum ReviewSubcommand {
-    Run { subject: String },
+    Run {
+        subject: String,
+    },
     Requests {
         #[arg(long = "new")]
         only_new: bool,

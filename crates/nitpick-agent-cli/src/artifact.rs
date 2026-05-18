@@ -69,7 +69,9 @@ pub fn run(
         ArtifactCommand::List { activity_id } => {
             Ok(format_artifacts(&client.activity_artifacts(&activity_id)?))
         }
-        ArtifactCommand::Show { artifact_id } => Ok(format_artifact(&client.artifact(&artifact_id)?)),
+        ArtifactCommand::Show { artifact_id } => {
+            Ok(format_artifact(&client.artifact(&artifact_id)?))
+        }
         ArtifactCommand::Sync {
             artifact_id,
             destination,
@@ -97,7 +99,12 @@ pub fn format_artifacts(artifacts: &[Artifact]) -> String {
 
     artifacts
         .iter()
-        .map(|artifact| format!("{}: {:?} {:?}", artifact.id, artifact.kind, artifact.sync_state))
+        .map(|artifact| {
+            format!(
+                "{}: {:?} {:?}",
+                artifact.id, artifact.kind, artifact.sync_state
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

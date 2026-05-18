@@ -248,6 +248,9 @@ mod tests {
 
     #[test]
     fn builds_host_status_url() {
-        assert_eq!(host_status_url("127.0.0.1:19783"), "http://127.0.0.1:19783/status");
+        assert_eq!(
+            host_status_url("127.0.0.1:19783"),
+            "http://127.0.0.1:19783/status"
+        );
     }
 }

@@ -99,3 +99,37 @@ pub fn help_text(_version: &str) -> String {
     command.write_long_help(&mut help).expect("write help");
     String::from_utf8(help).expect("help is utf8")
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{ChatCommand, CliCommand, parse_invocation};
+
+    #[test]
+    fn help_text_mentions_nested_commands() {
+        let help = super::help_text("0.1.0");
+        assert!(help.contains("review"));
+        assert!(help.contains("activity"));
+        assert!(help.contains("artifact"));
+        assert!(help.contains("system"));
+        assert!(help.contains("--no-sandbox"));
+    }
+
+    #[test]
+    fn parses_no_sandbox_global_flag() {
+        let invocation = parse_invocation([
+            "--no-sandbox".to_owned(),
+            "chat".to_owned(),
+            "start".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("invocation");
+
+        assert!(invocation.options.disable_sandbox);
+        assert_eq!(
+            invocation.command,
+            CliCommand::Chat(ChatCommand::Start {
+                target: "acme/platform#42".into(),
+            })
+        );
+    }
+}
