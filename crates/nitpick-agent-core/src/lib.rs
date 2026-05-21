@@ -22,7 +22,7 @@ pub use app_paths::{
     default_checkout_root, default_config_path, default_data_dir,
 };
 pub use artifact::{Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState};
-pub use clock::{Clock, SystemClock};
+pub use clock::{Clock, FixedClock, SystemClock};
 pub use command_provider::{CommandAgentProvider, CommandSandboxConfig};
 pub use error::{AgentError, AgentResult};
 pub use host::{CleanupCheckoutsResult, HostStatus};

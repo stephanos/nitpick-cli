@@ -14,3 +14,11 @@ impl Clock for SystemClock {
             .as_secs()
     }
 }
+
+pub struct FixedClock(pub u64);
+
+impl Clock for FixedClock {
+    fn now_unix(&self) -> u64 {
+        self.0
+    }
+}

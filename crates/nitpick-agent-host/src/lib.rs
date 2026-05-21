@@ -26,6 +26,8 @@ use serde::Deserialize;
 
 pub use api::api_router;
 
+const ACTIVITY_PRUNE_AGE_SECS: u64 = 24 * 60 * 60;
+
 #[derive(Clone)]
 pub struct HostDaemon {
     config: AgentConfig,
@@ -77,6 +79,25 @@ impl HostDaemon {
             review_source,
             clock: Arc::new(SystemClock),
             automatic_checkout_cleanup: true,
+            polling_state: PollingState::new(),
+            review_slots: ReviewSlotManager::new(max_concurrent),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_clock(store: Arc<dyn ActivityStore>, clock: Arc<dyn Clock>) -> Self {
+        let config = AgentConfig::default();
+        let provider = config.provider();
+        let review_source = config.review_source();
+        let max_concurrent = config.max_concurrent_reviews;
+        Self {
+            config,
+            store,
+            processed_reviews: Arc::new(MemoryProcessedReviewStore::default()),
+            provider,
+            review_source,
+            clock,
+            automatic_checkout_cleanup: false,
             polling_state: PollingState::new(),
             review_slots: ReviewSlotManager::new(max_concurrent),
         }
@@ -217,6 +238,23 @@ impl HostDaemon {
         activity.touch();
         self.store.save(&activity)?;
         Ok(activity)
+    }
+
+    pub fn prune_old_activities(&self) -> AgentResult<usize> {
+        let now = self.clock.now_unix();
+        let cutoff = now.saturating_sub(ACTIVITY_PRUNE_AGE_SECS);
+        let mut pruned = 0;
+        for activity in self.store.list()? {
+            if matches!(
+                activity.status,
+                ActivityStatus::Completed | ActivityStatus::Error
+            ) && activity.updated_at_unix < cutoff
+            {
+                self.store.delete(&activity.id)?;
+                pruned += 1;
+            }
+        }
+        Ok(pruned)
     }
 
     pub fn record_review_request_detected_activity(
@@ -1213,6 +1251,48 @@ impl GitHubDiscoveryConfig {
             allowlist: clean_patterns("github.allowlist", raw.allowlist.clone())?,
             denylist: clean_patterns("github.denylist", raw.denylist.clone())?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nitpick_agent_core::{ActivityKind, ActivityStatus, ActivityStore, FixedClock, MemoryActivityStore};
+
+    use super::HostDaemon;
+
+    #[test]
+    fn prune_old_activities_removes_terminal_activities_older_than_24h() {
+        let store = Arc::new(MemoryActivityStore::default());
+        let now: u64 = 100_000;
+        let day_secs: u64 = 24 * 60 * 60;
+
+        let mut old_completed = store.create(ActivityKind::Review).expect("create");
+        old_completed.status = ActivityStatus::Completed;
+        old_completed.updated_at_unix = now - day_secs - 1;
+        store.save(&old_completed).expect("save");
+
+        let mut old_error = store.create(ActivityKind::Review).expect("create");
+        old_error.status = ActivityStatus::Error;
+        old_error.updated_at_unix = now - day_secs - 1;
+        store.save(&old_error).expect("save");
+
+        let mut recent_completed = store.create(ActivityKind::Review).expect("create");
+        recent_completed.status = ActivityStatus::Completed;
+        recent_completed.updated_at_unix = now - 3600;
+        store.save(&recent_completed).expect("save");
+
+        let mut still_running = store.create(ActivityKind::Review).expect("create");
+        still_running.status = ActivityStatus::Running;
+        still_running.updated_at_unix = now - day_secs - 1;
+        store.save(&still_running).expect("save");
+
+        let daemon = HostDaemon::with_clock(store.clone(), Arc::new(FixedClock(now)));
+        let pruned = daemon.prune_old_activities().expect("prune");
+
+        assert_eq!(pruned, 2);
+        assert_eq!(store.list().expect("list").len(), 2);
     }
 }
 

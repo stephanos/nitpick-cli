@@ -77,6 +77,7 @@ async fn run_daemon() -> ExitCode {
     println!("config: {}", config_path.display());
     println!("data: {}", data_dir.display());
     spawn_review_source_poller(daemon.clone());
+    spawn_activity_pruner(daemon.clone());
     tracing::info!(%addr, "host daemon listening");
 
     match axum::serve(listener, api_router(daemon)).await {
@@ -131,6 +132,17 @@ fn spawn_review_source_poller(daemon: HostDaemon) {
                 eprintln!("review source discovery failed: {error}");
             }
             thread::sleep(Duration::from_secs(interval_seconds));
+        }
+    });
+}
+
+fn spawn_activity_pruner(daemon: HostDaemon) {
+    thread::spawn(move || {
+        loop {
+            if let Err(error) = daemon.prune_old_activities() {
+                eprintln!("activity pruning failed: {error}");
+            }
+            thread::sleep(Duration::from_secs(60 * 60));
         }
     });
 }

@@ -47,6 +47,8 @@ pub trait ActivityStore: ArtifactStore + Send + Sync {
     fn get(&self, id: &ActivityId) -> AgentResult<Activity>;
 
     fn list(&self) -> AgentResult<Vec<Activity>>;
+
+    fn delete(&self, id: &ActivityId) -> AgentResult<()>;
 }
 
 #[derive(Default)]
@@ -134,6 +136,20 @@ impl ActivityStore for MemoryActivityStore {
             .lock()
             .map_err(|_| AgentError::io("activity store lock", "poisoned"))?;
         Ok(activities.values().cloned().collect())
+    }
+
+    fn delete(&self, id: &ActivityId) -> AgentResult<()> {
+        let mut activities = self
+            .activities
+            .lock()
+            .map_err(|_| AgentError::io("activity store lock", "poisoned"))?;
+        activities.remove(id);
+        let mut artifacts = self
+            .artifacts
+            .lock()
+            .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
+        artifacts.retain(|_, artifact| &artifact.activity_id != id);
+        Ok(())
     }
 }
 
@@ -299,6 +315,21 @@ impl ActivityStore for FsActivityStore {
 
     fn list(&self) -> AgentResult<Vec<Activity>> {
         read_json_dir(&activity_dir(&self.base))
+    }
+
+    fn delete(&self, id: &ActivityId) -> AgentResult<()> {
+        let path = activity_path(&self.base, id);
+        if path.exists() {
+            fs::remove_file(&path).map_err(fs_error("delete activity"))?;
+        }
+        let artifacts = self.list_artifacts()?;
+        for artifact in artifacts.iter().filter(|a| &a.activity_id == id) {
+            let artifact_path = artifact_path(&self.base, &artifact.id);
+            if artifact_path.exists() {
+                fs::remove_file(&artifact_path).map_err(fs_error("delete artifact"))?;
+            }
+        }
+        Ok(())
     }
 }
 
