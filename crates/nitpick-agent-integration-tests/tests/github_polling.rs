@@ -230,8 +230,12 @@ fn github_polling_skips_already_processed_prs_after_store_reopen() {
 
     let result = reopened_daemon.poll_review_requests().expect("reopen poll");
 
-    assert_eq!(result.discovered_count, 0);
+    assert_eq!(result.discovered_count, 1);
     assert_eq!(result.enqueued_count, 0);
+    assert_eq!(
+        reopened_daemon.status().expect("status").open_review_count,
+        1
+    );
     assert_eq!(reopened_store.list().expect("activities").len(), 2);
 }
 
@@ -246,8 +250,12 @@ fn github_polling_skips_prs_with_existing_nitpick_review_on_current_head() {
         .poll_review_requests()
         .expect("poll succeeds");
 
-    assert_eq!(result.discovered_count, 0);
+    assert_eq!(result.discovered_count, 1);
     assert_eq!(result.enqueued_count, 0);
+    assert_eq!(
+        harness.daemon.status().expect("status").open_review_count,
+        1
+    );
     assert_eq!(harness.activity_count(), 0);
     assert!(harness.provider.reviewed_subjects().is_empty());
 }
@@ -329,18 +337,28 @@ fn github_polling_reviews_multiple_prs_and_only_rereviews_changed_heads() {
         head_sha: "sha-three".into(),
         ..second
     };
-    discovery.set_pull_requests(vec![first, changed_second]);
+    discovery.set_pull_requests(vec![first.clone(), changed_second.clone()]);
     harness.clock.advance(300);
 
+    let second_poll = harness.daemon.poll_review_requests().expect("second poll");
+    assert_eq!(second_poll.discovered_count, 2);
+    assert_eq!(second_poll.enqueued_count, 1);
     assert_eq!(
-        harness
-            .daemon
-            .poll_review_requests()
-            .expect("second poll")
-            .enqueued_count,
-        1
+        harness.daemon.status().expect("status").open_review_count,
+        2
     );
     assert_eq!(harness.activity_count(), 6);
+
+    discovery.set_pull_requests(vec![first]);
+    harness.clock.advance(300);
+
+    let closed_poll = harness.daemon.poll_review_requests().expect("closed poll");
+    assert_eq!(closed_poll.discovered_count, 1);
+    assert_eq!(closed_poll.enqueued_count, 0);
+    assert_eq!(
+        harness.daemon.status().expect("status").open_review_count,
+        1
+    );
 }
 
 #[test]

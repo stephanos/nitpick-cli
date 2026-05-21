@@ -560,6 +560,19 @@ impl HostDaemon {
         self.review_source.requested_reviews()
     }
 
+    fn discover_allowed_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
+        self.discover_review_requests().map(|requests| {
+            requests
+                .into_iter()
+                .filter(|request| {
+                    self.config
+                        .github_discovery
+                        .allows_repository(&request.repository)
+                })
+                .collect()
+        })
+    }
+
     #[deprecated(note = "use discover_review_requests")]
     pub fn discover_github_review_requests(&self) -> AgentResult<Vec<DiscoveredPullRequest>> {
         self.discover_review_requests()?
@@ -569,13 +582,8 @@ impl HostDaemon {
     }
 
     pub fn discover_new_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
-        self.discover_review_requests()?
+        self.discover_allowed_review_requests()?
             .into_iter()
-            .filter(|request| {
-                self.config
-                    .github_discovery
-                    .allows_repository(&request.repository)
-            })
             .filter_map(
                 |request| match self.processed_reviews.needs_review(&request) {
                     Ok(true) => Some(Ok(request)),
@@ -650,9 +658,27 @@ impl HostDaemon {
             self.polling_state.update_last_poll(now)?;
         }
 
-        let requests = self.discover_new_review_requests()?;
-        let discovered_count = requests.len();
-        for request in &requests {
+        let discovered_requests = self.discover_allowed_review_requests()?;
+        let discovered_count = discovered_requests.len();
+        let new_requests = discovered_requests
+            .into_iter()
+            .filter_map(
+                |request| match self.processed_reviews.needs_review(&request) {
+                    Ok(true) => Some(Ok(request)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                },
+            )
+            .filter_map(|request| match request {
+                Ok(request) => match self.review_source.already_reviewed(&request) {
+                    Ok(true) => None,
+                    Ok(false) => Some(Ok(request)),
+                    Err(error) => Some(Err(error)),
+                },
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<AgentResult<Vec<_>>>()?;
+        for request in &new_requests {
             self.record_review_request_detected_activity(request)?;
         }
         if !self.config.github_discovery.auto_review {
@@ -666,7 +692,7 @@ impl HostDaemon {
         }
 
         let mut enqueued_count = 0;
-        for request in requests {
+        for request in new_requests {
             let activity = self.start_review(self.review_source.review_input(&request)?)?;
             if activity.status != ActivityStatus::Completed {
                 continue;
