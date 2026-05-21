@@ -12,7 +12,6 @@ use crate::{CliError, CliOptions, CliRunContext};
 pub enum ActivityCommand {
     List,
     Logs { target: String },
-    Resume { target: String },
     Inspect { pull_request: String },
 }
 
@@ -27,7 +26,6 @@ pub struct ActivityArgs {
 pub enum ActivitySubcommand {
     List,
     Logs { target: String },
-    Resume { target: String },
     Inspect { pull_request: String },
 }
 
@@ -36,7 +34,6 @@ impl From<ActivitySubcommand> for ActivityCommand {
         match command {
             ActivitySubcommand::List => Self::List,
             ActivitySubcommand::Logs { target } => Self::Logs { target },
-            ActivitySubcommand::Resume { target } => Self::Resume { target },
             ActivitySubcommand::Inspect { pull_request } => Self::Inspect { pull_request },
         }
     }
@@ -45,7 +42,7 @@ impl From<ActivitySubcommand> for ActivityCommand {
 pub fn run(
     command: ActivityCommand,
     context: CliRunContext,
-    options: CliOptions,
+    _options: CliOptions,
 ) -> Result<String, CliError> {
     let client = HostClient::new(&context.host_addr);
     match command {
@@ -58,25 +55,6 @@ pub fn run(
             let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
             let artifacts = client.activity_artifacts(activity.id.as_str())?;
             Ok(format_activity_logs(activity, &artifacts))
-        }
-        ActivityCommand::Resume { target } => {
-            let activities = client.activities()?;
-            let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
-            ensure_resumable_activity(activity).map_err(CliError::from)?;
-            let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
-                .map_err(CliError::from)?;
-            crate::support::apply_sandbox_option(&mut config, &options);
-            config
-                .command_provider()
-                .attach_session_in_repo(&activity.session, &context.repo_dir)
-                .map_err(|error| {
-                    CliError::from(crate::support::handle_resume_error(
-                        activity,
-                        &context.data_dir,
-                        error.to_string(),
-                    ))
-                })?;
-            Ok(String::new())
         }
         ActivityCommand::Inspect { pull_request } => {
             inspect_checkout_with_discovery(&pull_request, &GitHubCliDiscovery::new("gh"), None)
@@ -169,14 +147,6 @@ pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> Stri
         lines.push(format!("label: {label}"));
     }
     lines.push(format!("updated: {}", activity.updated_at_unix));
-    lines.push(format!(
-        "session: {}",
-        activity
-            .session
-            .provider_session_id
-            .as_deref()
-            .unwrap_or("(none)")
-    ));
     if let Some(error) = &activity.error {
         lines.push(format!("error: {error}"));
     }
@@ -239,16 +209,11 @@ fn is_active_review_status(status: &ActivityStatus) -> bool {
 
 fn format_review_activity(activity: &Activity) -> String {
     let mut output = format!(
-        "{:?} {} {} updated={} session={}",
+        "{:?} {} {} updated={}",
         activity.status,
         activity.label.as_deref().unwrap_or("review"),
         activity.id,
-        activity.updated_at_unix,
-        activity
-            .session
-            .provider_session_id
-            .as_deref()
-            .unwrap_or("(none)")
+        activity.updated_at_unix
     );
     if let Some(error) = &activity.error {
         output.push_str(&format!(" error={error:?}"));
@@ -363,36 +328,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_resume_command() {
-        let command = parse_command([
-            "activity".to_owned(),
-            "resume".to_owned(),
-            "acme/platform#42".to_owned(),
-        ])
-        .expect("command");
-
-        assert_eq!(
-            command,
-            CliCommand::Activity(ActivityCommand::Resume {
-                target: "acme/platform#42".into(),
-            })
-        );
-    }
-
-    #[test]
     fn rejects_logs_without_target() {
         let error =
             parse_command(["activity".to_owned(), "logs".to_owned()]).expect_err("command fails");
 
         assert!(error.contains("Usage: nitpick activity logs <TARGET>"));
-    }
-
-    #[test]
-    fn rejects_resume_without_target() {
-        let error =
-            parse_command(["activity".to_owned(), "resume".to_owned()]).expect_err("command fails");
-
-        assert!(error.contains("Usage: nitpick activity resume <TARGET>"));
     }
 
     #[test]
@@ -462,7 +402,7 @@ mod tests {
                 &[completed_review.clone(), running_chat, running_review],
                 false
             ),
-            "Running review on acme/platform#42 activity-1 updated=1200 session=github:acme/platform#42"
+            "Running review on acme/platform#42 activity-1 updated=1200"
         );
         assert_eq!(
             format_reviews(&[completed_review], false),
@@ -491,7 +431,7 @@ mod tests {
 
         assert_eq!(
             format_reviews(&[completed_review, running_review], true),
-            "Running review on acme/platform#42 activity-1 updated=1200 session=github:acme/platform#42\nCompleted review on acme/platform#41 activity-2 updated=1000 session=github:acme/platform#41"
+            "Running review on acme/platform#42 activity-1 updated=1200\nCompleted review on acme/platform#41 activity-2 updated=1000"
         );
     }
 
@@ -509,7 +449,7 @@ mod tests {
 
         assert_eq!(
             format_reviews(&[failed_review], true),
-            "Error review on acme/platform#42 activity-1 updated=1200 session=github:acme/platform#42 error=\"provider failed\""
+            "Error review on acme/platform#42 activity-1 updated=1200 error=\"provider failed\""
         );
     }
 
@@ -576,12 +516,12 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "activity: activity-1\nkind: Review\nstatus: Error\nlabel: review on acme/platform#42\nupdated: 1200\nsession: github:acme/platform#42\nerror: provider failed\noutput:\nsummary body\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
+            "activity: activity-1\nkind: Review\nstatus: Error\nlabel: review on acme/platform#42\nupdated: 1200\nerror: provider failed\noutput:\nsummary body\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
         );
     }
 
     #[test]
-    fn resume_requires_provider_session_id() {
+    fn requires_provider_session_id() {
         let activity = nitpick_agent_core::Activity::new(
             nitpick_agent_core::ActivityId::new("activity-1"),
             nitpick_agent_core::ActivityKind::Review,

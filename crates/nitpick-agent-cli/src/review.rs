@@ -7,6 +7,7 @@ use crate::{CliError, CliOptions, CliRunContext};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReviewCommand {
     Run { subject: String },
+    Chat { target: String },
     Requests { only_new: bool },
     Sync { activity_id: String, target: String },
     List { include_all: bool },
@@ -23,6 +24,9 @@ pub struct ReviewArgs {
 pub enum ReviewSubcommand {
     Run {
         subject: String,
+    },
+    Chat {
+        target: String,
     },
     Requests {
         #[arg(long = "new")]
@@ -42,6 +46,7 @@ impl From<ReviewSubcommand> for ReviewCommand {
     fn from(command: ReviewSubcommand) -> Self {
         match command {
             ReviewSubcommand::Run { subject } => Self::Run { subject },
+            ReviewSubcommand::Chat { target } => Self::Chat { target },
             ReviewSubcommand::Requests { only_new } => Self::Requests { only_new },
             ReviewSubcommand::Sync {
                 activity_id,
@@ -71,6 +76,29 @@ pub fn run(
                 return Err(error.into());
             }
             Ok(output)
+        }
+        ReviewCommand::Chat { target } => {
+            let activities = client.activities()?;
+            let activity = crate::activity::resolve_log_activity(&activities, &target)
+                .map_err(CliError::from)?;
+            crate::activity::ensure_resumable_activity(activity).map_err(CliError::from)?;
+            let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
+                .map_err(CliError::from)?;
+            crate::support::apply_sandbox_option(&mut config, &options);
+            let checkout =
+                crate::support::require_cached_checkout(&target, &config, &context.data_dir)
+                    .map_err(CliError::from)?;
+            config
+                .command_provider()
+                .attach_session_in_repo(&activity.session, &checkout)
+                .map_err(|error| {
+                    CliError::from(crate::support::handle_resume_error(
+                        activity,
+                        &context.data_dir,
+                        error.to_string(),
+                    ))
+                })?;
+            Ok(String::new())
         }
         ReviewCommand::Requests { only_new } => {
             Ok(format_review_requests(&client.review_requests(only_new)?))
@@ -141,6 +169,31 @@ mod tests {
             parse_command(["review".to_owned(), "run".to_owned()]).expect_err("command fails");
 
         assert!(error.contains("Usage: nitpick review run <SUBJECT>"));
+    }
+
+    #[test]
+    fn parses_review_chat_command() {
+        let command = parse_command([
+            "review".to_owned(),
+            "chat".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command parses");
+
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::Chat {
+                target: "acme/platform#42".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_review_chat_without_target() {
+        let error =
+            parse_command(["review".to_owned(), "chat".to_owned()]).expect_err("command fails");
+
+        assert!(error.contains("Usage: nitpick review chat <TARGET>"));
     }
 
     #[test]

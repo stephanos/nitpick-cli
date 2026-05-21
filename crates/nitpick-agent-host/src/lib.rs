@@ -1285,7 +1285,9 @@ impl GitHubDiscoveryConfig {
 mod tests {
     use std::sync::Arc;
 
-    use nitpick_agent_core::{ActivityKind, ActivityStatus, ActivityStore, FixedClock, MemoryActivityStore};
+    use nitpick_agent_core::{
+        ActivityKind, ActivityStatus, ActivityStore, FixedClock, MemoryActivityStore,
+    };
 
     use super::HostDaemon;
 

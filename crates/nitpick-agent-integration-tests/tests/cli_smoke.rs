@@ -18,7 +18,7 @@ async fn cli_commands_talk_to_the_host_api() {
     std::fs::write(
         &fake_claude,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
+            "#!/bin/sh\nprintf 'pwd=%s args=%s\\n' \"$PWD\" \"$*\" > '{}'\n",
             resume_log.display()
         ),
     )
@@ -54,6 +54,8 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     )
     .expect("config");
     let data_dir = temp.path().join("data");
+    let checkout = data_dir.join("checkouts/stephanos/nitpick-agent/pr-42");
+    std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
     let daemon_log = data_dir.join("logs/daemon.log");
     std::fs::create_dir_all(daemon_log.parent().expect("daemon log parent"))
         .expect("daemon log dir");
@@ -136,7 +138,6 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     )
     .expect("logs command");
     assert!(logs.contains("activity: activity-2"));
-    assert!(logs.contains("session: github:stephanos/nitpick-agent#42"));
     assert!(logs.contains("review complete"));
 
     let review_sync = run_cli_command(
@@ -174,23 +175,32 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     .expect("daemon logs command");
     assert_eq!(daemon_logs, "daemon started\n");
 
-    let resume = run_cli_command(
-        CliCommand::Activity(ActivityCommand::Resume {
+    let review_chat = run_cli_command(
+        CliCommand::Review(ReviewCommand::Chat {
             target: "stephanos/nitpick-agent#42".into(),
         }),
         &host_addr,
-        repo_dir.clone(),
+        temp.path().to_path_buf(),
         String::new(),
         String::new(),
         config_path.clone(),
         data_dir.clone(),
     )
-    .expect("resume command");
-    assert_eq!(resume, "");
-    assert_eq!(
-        std::fs::read_to_string(resume_log).expect("resume args"),
-        "--resume github:stephanos/nitpick-agent#42\n"
+    .expect("review chat command");
+    assert_eq!(review_chat, "");
+    let review_chat_log = std::fs::read_to_string(resume_log).expect("review chat args");
+    let prefix = format!(
+        "pwd={} args=--resume ",
+        checkout
+            .canonicalize()
+            .expect("canonical checkout")
+            .display()
     );
+    let session_id = review_chat_log
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix('\n'))
+        .expect("review chat session id");
+    assert!(is_uuid_like(session_id), "{session_id}");
 
     let cleanup = run_cli_command(
         CliCommand::System(SystemCommand::CleanupCheckouts),
@@ -206,7 +216,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn resume_clears_missing_provider_session_id() {
+async fn review_chat_clears_missing_provider_session_id() {
     let temp = tempfile::tempdir().expect("tempdir");
     let fake_claude = temp.path().join("claude");
     std::fs::write(
@@ -225,6 +235,8 @@ async fn resume_clears_missing_provider_session_id() {
     )
     .expect("config");
     let data_dir = temp.path().join("data");
+    std::fs::create_dir_all(data_dir.join("checkouts/stephanos/nitpick-agent/pr-42/.git"))
+        .expect("checkout");
     let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
     let processed = Arc::new(
         FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
@@ -249,7 +261,7 @@ async fn resume_clears_missing_provider_session_id() {
     let host_addr = serve_host(daemon).await;
 
     let error = run_cli_command(
-        CliCommand::Activity(ActivityCommand::Resume {
+        CliCommand::Review(ReviewCommand::Chat {
             target: "stephanos/nitpick-agent#42".into(),
         }),
         &host_addr,
@@ -259,11 +271,11 @@ async fn resume_clears_missing_provider_session_id() {
         config_path,
         data_dir,
     )
-    .expect_err("resume fails");
+    .expect_err("review chat fails");
 
     assert_eq!(
         error,
-        "activity activity-1 can no longer be resumed because provider session github:stephanos/nitpick-agent#42 was not found; cleared the stored session id"
+        "activity activity-1 can no longer be resumed because its provider session was not found; cleared the stored session"
     );
     assert_eq!(
         store
@@ -281,6 +293,19 @@ fn make_executable(path: &std::path::Path) {
     let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(path, permissions).expect("chmod");
+}
+
+fn is_uuid_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes[index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| ![8, 13, 18, 23].contains(index))
+            .all(|(_, byte)| byte.is_ascii_hexdigit())
 }
 
 async fn serve_host(daemon: HostDaemon) -> String {

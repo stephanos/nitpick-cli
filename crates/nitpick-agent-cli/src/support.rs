@@ -9,12 +9,12 @@ pub(crate) fn handle_resume_error(activity: &Activity, data_dir: &Path, error: S
     if !provider_session_missing(&error) {
         return error;
     }
-    let Some(session_id) = activity.session.provider_session_id.as_deref() else {
+    if activity.session.provider_session_id.is_none() {
         return error;
-    };
+    }
     let message = format!(
-        "activity {} can no longer be resumed because provider session {} was not found; cleared the stored session id",
-        activity.id, session_id
+        "activity {} can no longer be resumed because its provider session was not found; cleared the stored session",
+        activity.id
     );
     match clear_provider_session_id(data_dir, activity) {
         Ok(()) => message,
@@ -36,25 +36,33 @@ pub(crate) fn apply_sandbox_option(
 pub(crate) fn require_cached_checkout(
     target: &str,
     config: &nitpick_agent_host::AgentConfig,
+    data_dir: &Path,
 ) -> Result<std::path::PathBuf, String> {
     let pull_request = target
         .parse::<PullRequestRef>()
         .map_err(|error| format!("invalid GitHub pull request reference: {error}"))?;
-    let checkout = configured_github_discovery(config).checkout_path_for(&pull_request);
+    let checkout = configured_github_discovery(config, data_dir).checkout_path_for(&pull_request);
     if !checkout.join(".git").is_dir() {
         return Err(format!("checkout not found for {target}"));
     }
     Ok(checkout)
 }
 
-fn configured_github_discovery(config: &nitpick_agent_host::AgentConfig) -> GitHubCliDiscovery {
+fn configured_github_discovery(
+    config: &nitpick_agent_host::AgentConfig,
+    data_dir: &Path,
+) -> GitHubCliDiscovery {
     match &config.checkout_dir {
         Some(checkout_dir) => GitHubCliDiscovery::with_checkout_commands(
             config.github_command.as_deref().unwrap_or("gh"),
             "git",
             checkout_dir,
         ),
-        None => GitHubCliDiscovery::new(config.github_command.as_deref().unwrap_or("gh")),
+        None => GitHubCliDiscovery::with_checkout_commands(
+            config.github_command.as_deref().unwrap_or("gh"),
+            "git",
+            data_dir.join("checkouts"),
+        ),
     }
 }
 

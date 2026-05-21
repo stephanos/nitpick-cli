@@ -38,8 +38,9 @@ pub fn run(
             let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
                 .map_err(CliError::from)?;
             crate::support::apply_sandbox_option(&mut config, &options);
-            let checkout = crate::support::require_cached_checkout(&target, &config)
-                .map_err(CliError::from)?;
+            let checkout =
+                crate::support::require_cached_checkout(&target, &config, &context.data_dir)
+                    .map_err(CliError::from)?;
             config
                 .command_provider()
                 .start_interactive_session_in_repo(&checkout)

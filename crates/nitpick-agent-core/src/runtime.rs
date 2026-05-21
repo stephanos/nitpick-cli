@@ -125,10 +125,41 @@ impl AgentRuntime {
 }
 
 fn review_session_id(input: &ReviewInput) -> String {
-    match input.subject.number {
+    let key = match input.subject.number {
         Some(number) => format!("github:{}#{number}", input.subject.repository),
         None => format!("review:{}", input.subject.repository),
+    };
+    uuid_from_key(&key)
+}
+
+fn uuid_from_key(key: &str) -> String {
+    let mut hash = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58du128;
+    for byte in key.as_bytes() {
+        hash ^= u128::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013bu128);
     }
+    let mut bytes = hash.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
 }
 
 fn review_artifacts(

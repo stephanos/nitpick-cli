@@ -57,7 +57,7 @@ impl AgentProvider for RecordingProvider {
 }
 
 #[test]
-fn review_activity_assigns_stable_provider_session_id_before_provider_call() {
+fn review_activity_assigns_provider_compatible_session_id_before_provider_call() {
     let provider = Arc::new(RecordingProvider::default());
     let store = Arc::new(MemoryActivityStore::default());
     let runtime = AgentRuntime::new(provider.clone(), store);
@@ -73,10 +73,9 @@ fn review_activity_assigns_stable_provider_session_id_before_provider_call() {
         })
         .expect("review activity starts");
 
-    assert_eq!(
-        provider.review_session_ids(),
-        [Some("github:acme/platform#42".into())]
-    );
+    let session_ids = provider.review_session_ids();
+    let session_id = session_ids[0].as_deref().expect("session id");
+    assert!(is_uuid_like(session_id), "{session_id}");
 }
 
 #[test]
@@ -165,4 +164,17 @@ fn chat_activity_uses_the_same_activity_model() {
         artifacts[0].content,
         ArtifactContent::ChatResponse("answered what changed?".into())
     );
+}
+
+fn is_uuid_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes[index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| ![8, 13, 18, 23].contains(index))
+            .all(|(_, byte)| byte.is_ascii_hexdigit())
 }

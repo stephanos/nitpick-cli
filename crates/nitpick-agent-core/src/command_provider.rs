@@ -268,11 +268,8 @@ impl CommandAgentProvider {
     fn sandbox_repo_dir(
         &self,
         repo_dir: &Path,
-        sandbox: &CommandSandboxConfig,
+        _sandbox: &CommandSandboxConfig,
     ) -> AgentResult<Option<PathBuf>> {
-        if !sandbox.enabled {
-            return Ok(None);
-        }
         repo_dir
             .canonicalize()
             .map_err(|error| {

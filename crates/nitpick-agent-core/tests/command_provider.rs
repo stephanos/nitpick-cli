@@ -29,11 +29,13 @@ fn command_provider_runs_chat_command_and_stores_output() {
 
     let activity = runtime
         .start_chat(ChatInput {
+            repo_dir: dir.path().to_path_buf(),
             prompt: "hello".into(),
             ..ChatInput::default()
         })
         .expect("chat runs");
 
+    assert_eq!(activity.error, None);
     assert_eq!(
         activity.output.unwrap().chat_text(),
         Some("command-response")
@@ -78,10 +80,12 @@ fn claude_command_provider_passes_review_session_id() {
         })
         .expect("review runs");
 
-    assert_eq!(
-        fs::read_to_string(args_log).expect("args"),
-        "--session-id github:acme/platform#42\n"
-    );
+    let args = fs::read_to_string(args_log).expect("args");
+    let session_id = args
+        .strip_prefix("--session-id ")
+        .and_then(|value| value.strip_suffix('\n'))
+        .expect("session id arg");
+    assert!(is_uuid_like(session_id), "{session_id}");
 }
 
 #[test]
@@ -497,6 +501,19 @@ fn make_executable(command: &std::path::Path) {
     let mut permissions = fs::metadata(command).expect("metadata").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(command, permissions).expect("chmod");
+}
+
+fn is_uuid_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes[index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| ![8, 13, 18, 23].contains(index))
+            .all(|(_, byte)| byte.is_ascii_hexdigit())
 }
 
 trait ActivityOutputExt {
