@@ -4,6 +4,7 @@ public struct HostStatus: Decodable, Equatable {
     public var runningActivityCount: Int
     public var completedActivityCount: Int
     public var errorActivityCount: Int
+    public var openReviewCount: Int
     public var queuedReviewCount: Int
     public var runningReviewCount: Int
     public var artifactCount: Int
@@ -22,6 +23,7 @@ public struct HostStatus: Decodable, Equatable {
         case runningActivityCount = "running_activity_count"
         case completedActivityCount = "completed_activity_count"
         case errorActivityCount = "error_activity_count"
+        case openReviewCount = "open_review_count"
         case queuedReviewCount = "queued_review_count"
         case runningReviewCount = "running_review_count"
         case artifactCount = "artifact_count"

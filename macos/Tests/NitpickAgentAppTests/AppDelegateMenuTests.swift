@@ -16,6 +16,7 @@ final class AppDelegateMenuTests: XCTestCase {
             MenuSnapshot(
                 hostIsRunning: true,
                 activityCount: 0,
+                openReviewCount: 3,
                 reviewSourceEnabled: true
             )
         )
@@ -25,15 +26,18 @@ final class AppDelegateMenuTests: XCTestCase {
         XCTAssertEqual(titles[1], "Reload Config")
         XCTAssertEqual(NSStringFromSelector(menu.items[1].action!), "reloadConfig:")
         XCTAssertTrue(menu.items[2].isSeparatorItem)
-        XCTAssertTrue(menu.items[3].isHidden)
-        XCTAssertTrue(menu.items[4].isHidden)
-        XCTAssertTrue(menu.items[11].isHidden)
-        XCTAssertEqual(titles[12], "Activity Log")
-        XCTAssertFalse(menu.items[12].isEnabled)
-        XCTAssertNotNil(menu.items[12].attributedTitle)
+        XCTAssertEqual(titles[3], "Status")
+        XCTAssertFalse(menu.items[3].isEnabled)
+        XCTAssertNotNil(menu.items[3].attributedTitle)
+        XCTAssertEqual(titles[4], "3 open reviews")
+        XCTAssertFalse(menu.items[4].isEnabled)
+        XCTAssertTrue(menu.items[5].isHidden)
+        let activityHeaderIndex = try XCTUnwrap(titles.firstIndex(of: "Activity Log"))
+        XCTAssertFalse(menu.items[activityHeaderIndex].isEnabled)
+        XCTAssertNotNil(menu.items[activityHeaderIndex].attributedTitle)
         XCTAssertFalse(titles.contains("status: idle"))
-        XCTAssertEqual(titles[13], "last discovery: never")
-        XCTAssertFalse(menu.items[13].isEnabled)
+        let lastDiscoveryIndex = try XCTUnwrap(titles.firstIndex(of: "last discovery: never"))
+        XCTAssertFalse(menu.items[lastDiscoveryIndex].isEnabled)
         XCTAssertEqual(quitItem.title, "Quit")
         XCTAssertTrue(["quit:", "terminate:"].contains(NSStringFromSelector(quitItem.action!)))
         XCTAssertNil(quitItem.image)
@@ -42,7 +46,7 @@ final class AppDelegateMenuTests: XCTestCase {
     }
 
     @MainActor
-    func testReviewsSectionIsVisibleOnlyWithActiveReviews() throws {
+    func testActiveReviewsAppearAtBottomOfStatusSection() throws {
         let appDelegate = AppDelegate()
         let menu = appDelegate.makeMenuForTesting()
 
@@ -64,11 +68,11 @@ final class AppDelegateMenuTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(menu.items[4].title, "Reviews")
-        XCTAssertFalse(menu.items[4].isHidden)
-        XCTAssertFalse(menu.items[5].isHidden)
-        XCTAssertEqual(menu.items[5].title, "Running review on org/repo#1")
-        XCTAssertFalse(menu.items[11].isHidden)
+        XCTAssertNil(menu.items.first { $0.title == "Reviews" })
+        let lastDiscoveryIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == "last discovery: never" })
+        XCTAssertFalse(menu.items[lastDiscoveryIndex + 1].isHidden)
+        XCTAssertEqual(menu.items[lastDiscoveryIndex + 1].title, "Running review on org/repo#1")
+        XCTAssertTrue(menu.items[lastDiscoveryIndex + 7].isSeparatorItem)
     }
 
     @MainActor
@@ -85,7 +89,7 @@ final class AppDelegateMenuTests: XCTestCase {
             )
         )
 
-        XCTAssertTrue(menu.items[3].isHidden)
+        XCTAssertTrue(menu.items[5].isHidden)
         XCTAssertNil(appDelegate.statusDetailsForTesting())
     }
 

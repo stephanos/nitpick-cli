@@ -8,6 +8,7 @@ use crate::ReviewSourcePollResult;
 pub(crate) struct PollingState {
     last_poll_unix: Arc<Mutex<Option<u64>>>,
     last_poll_summary: Arc<Mutex<Option<String>>>,
+    open_review_count: Arc<Mutex<usize>>,
 }
 
 impl PollingState {
@@ -15,6 +16,7 @@ impl PollingState {
         Self {
             last_poll_unix: Arc::new(Mutex::new(None)),
             last_poll_summary: Arc::new(Mutex::new(None)),
+            open_review_count: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -33,6 +35,13 @@ impl PollingState {
             .clone())
     }
 
+    pub(crate) fn open_review_count(&self) -> AgentResult<usize> {
+        Ok(*self
+            .open_review_count
+            .lock()
+            .map_err(|_| AgentError::io("polling state lock", "poisoned"))?)
+    }
+
     pub(crate) fn record_result(
         &self,
         now: u64,
@@ -47,6 +56,11 @@ impl PollingState {
             .lock()
             .map_err(|_| AgentError::io("polling state lock", "poisoned"))? =
             Some(result.summary());
+        *self
+            .open_review_count
+            .lock()
+            .map_err(|_| AgentError::io("polling state lock", "poisoned"))? =
+            result.discovered_count;
         Ok(())
     }
 

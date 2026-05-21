@@ -167,6 +167,7 @@ impl HostDaemon {
                 .iter()
                 .filter(|activity| activity.status == ActivityStatus::Error)
                 .count(),
+            open_review_count: self.polling_state.open_review_count()?,
             queued_review_count: reviews
                 .iter()
                 .filter(|activity| activity.status == ActivityStatus::Queued)

@@ -75,6 +75,7 @@ fn github_polling_tick_runs_one_due_poll_and_reports_status() {
     assert_eq!(result.discovered_count, 1);
     assert_eq!(result.enqueued_count, 1);
     let status = harness.daemon.status().expect("status");
+    assert_eq!(status.open_review_count, 1);
     assert!(status.review_source_enabled);
     assert_eq!(status.review_source_last_poll_unix, Some(1_000));
     assert_eq!(

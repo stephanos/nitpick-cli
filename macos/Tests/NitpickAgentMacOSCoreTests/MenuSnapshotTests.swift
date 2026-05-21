@@ -19,6 +19,20 @@ final class MenuSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.statusTitle, "status: idle")
     }
 
+    func testOpenReviewSummaryUsesDiscoveredOpenReviewCount() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 2,
+            runningActivityCount: 0,
+            openReviewCount: 3,
+            queuedReviewCount: 0,
+            runningReviewCount: 0,
+            reviewSourceEnabled: true
+        )
+
+        XCTAssertEqual(snapshot.openReviewsSummary, "3 open reviews")
+    }
+
     func testDisabledDiscoveryStatusTitle() {
         let snapshot = MenuSnapshot(
             hostIsRunning: true,

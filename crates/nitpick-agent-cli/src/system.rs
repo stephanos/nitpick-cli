@@ -68,10 +68,9 @@ pub fn format_host_status(status: &HostStatus) -> String {
 }
 
 pub(crate) fn format_host_status_at(status: &HostStatus, now_unix: u64) -> String {
-    let open_reviews = status.queued_review_count + status.running_review_count;
     let reviews_line = format!(
-        "open reviews: {} ({} running, {} queued)\nreviews completed: {}\nreviews errored: {}",
-        open_reviews,
+        "open reviews: {}\nactive reviews: {} running, {} queued\nreviews completed: {}\nreviews errored: {}",
+        status.open_review_count,
         status.running_review_count,
         status.queued_review_count,
         status.completed_review_count,
@@ -209,6 +208,7 @@ mod tests {
             running_activity_count: 2,
             completed_activity_count: 1,
             error_activity_count: 0,
+            open_review_count: 4,
             queued_review_count: 1,
             running_review_count: 2,
             completed_review_count: 3,
@@ -226,7 +226,7 @@ mod tests {
 
         assert_eq!(
             format_host_status(&status),
-            "nitpick-agent-host: connected\nopen reviews: 3 (2 running, 1 queued)\nreviews completed: 3\nreviews errored: 0\nartifacts: 5 (1 pending sync)\nagent: claude sonnet\nreview source: github (disabled)"
+            "nitpick-agent-host: connected\nopen reviews: 4\nactive reviews: 2 running, 1 queued\nreviews completed: 3\nreviews errored: 0\nartifacts: 5 (1 pending sync)\nagent: claude sonnet\nreview source: github (disabled)"
         );
     }
 
@@ -238,6 +238,7 @@ mod tests {
             running_activity_count: 0,
             completed_activity_count: 0,
             error_activity_count: 0,
+            open_review_count: 0,
             queued_review_count: 0,
             running_review_count: 0,
             completed_review_count: 0,
@@ -271,7 +272,7 @@ mod tests {
     #[test]
     fn parses_host_status_json() {
         let status = super::parse_host_status_json(
-            r#"{"activity_count":4,"queued_activity_count":1,"running_activity_count":2,"completed_activity_count":1,"error_activity_count":0,"queued_review_count":1,"running_review_count":2,"completed_review_count":3,"error_review_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"review_source_name":"github","review_source_enabled":true,"review_source_last_poll_unix":1000,"review_source_last_poll_summary":"reviewed 1 of 1 PRs"}"#,
+            r#"{"activity_count":4,"queued_activity_count":1,"running_activity_count":2,"completed_activity_count":1,"error_activity_count":0,"open_review_count":4,"queued_review_count":1,"running_review_count":2,"completed_review_count":3,"error_review_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"review_source_name":"github","review_source_enabled":true,"review_source_last_poll_unix":1000,"review_source_last_poll_summary":"reviewed 1 of 1 PRs"}"#,
         )
         .expect("status parses");
 
@@ -283,6 +284,7 @@ mod tests {
                 running_activity_count: 2,
                 completed_activity_count: 1,
                 error_activity_count: 0,
+                open_review_count: 4,
                 queued_review_count: 1,
                 running_review_count: 2,
                 completed_review_count: 3,

@@ -330,6 +330,7 @@ fn host_status_reports_configured_agent() {
             running_activity_count: 0,
             completed_activity_count: 0,
             error_activity_count: 0,
+            open_review_count: 0,
             queued_review_count: 1,
             running_review_count: 0,
             completed_review_count: 0,

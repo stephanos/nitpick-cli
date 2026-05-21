@@ -4,6 +4,7 @@ public struct MenuSnapshot: Equatable {
     public var hostIsRunning: Bool
     public var activityCount: Int
     public var runningActivityCount: Int
+    public var openReviewCount: Int
     public var queuedReviewCount: Int
     public var runningReviewCount: Int
     public var artifactCount: Int
@@ -20,6 +21,7 @@ public struct MenuSnapshot: Equatable {
         hostIsRunning: Bool,
         activityCount: Int,
         runningActivityCount: Int = 0,
+        openReviewCount: Int = 0,
         queuedReviewCount: Int = 0,
         runningReviewCount: Int = 0,
         artifactCount: Int = 0,
@@ -35,6 +37,7 @@ public struct MenuSnapshot: Equatable {
         self.hostIsRunning = hostIsRunning
         self.activityCount = activityCount
         self.runningActivityCount = runningActivityCount
+        self.openReviewCount = openReviewCount
         self.queuedReviewCount = queuedReviewCount
         self.runningReviewCount = runningReviewCount
         self.artifactCount = artifactCount
@@ -49,14 +52,13 @@ public struct MenuSnapshot: Equatable {
     }
 
     public var openReviewsSummary: String {
-        let total = runningReviewCount + queuedReviewCount
-        if total == 0 {
+        if openReviewCount == 0 {
             return "no open reviews"
         }
-        if total == 1 {
+        if openReviewCount == 1 {
             return "1 open review"
         }
-        return "\(total) open reviews"
+        return "\(openReviewCount) open reviews"
     }
 
     public var statusTitle: String {

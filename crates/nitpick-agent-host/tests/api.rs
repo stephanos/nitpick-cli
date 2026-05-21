@@ -49,6 +49,7 @@ async fn status_endpoint_reports_local_store_counts() {
     assert_eq!(body["running_activity_count"], 0);
     assert_eq!(body["completed_activity_count"], 0);
     assert_eq!(body["error_activity_count"], 0);
+    assert_eq!(body["open_review_count"], 0);
     assert_eq!(body["artifact_count"], 1);
     assert_eq!(body["local_only_artifact_count"], 1);
     assert_eq!(body["pending_sync_artifact_count"], 0);

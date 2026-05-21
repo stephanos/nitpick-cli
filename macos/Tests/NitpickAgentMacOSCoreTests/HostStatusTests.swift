@@ -5,7 +5,7 @@ import XCTest
 final class HostStatusTests: XCTestCase {
     func testParsesHostStatusResponse() throws {
         let input = """
-        {"activity_count":2,"running_activity_count":1,"completed_activity_count":1,"error_activity_count":0,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"review_source_name":"github","review_source_enabled":true,"review_source_last_poll_unix":1000,"review_source_last_poll_summary":"reviewed 1 of 1 PRs"}
+        {"activity_count":2,"queued_activity_count":0,"running_activity_count":1,"completed_activity_count":1,"error_activity_count":0,"open_review_count":3,"queued_review_count":1,"running_review_count":2,"artifact_count":5,"local_only_artifact_count":3,"pending_sync_artifact_count":1,"provider":"claude","model":null,"review_source_name":"github","review_source_enabled":true,"review_source_last_poll_unix":1000,"review_source_last_poll_summary":"reviewed 1 of 1 PRs"}
         """.data(using: .utf8)!
 
         let status = try JSONDecoder().decode(HostStatus.self, from: input)
@@ -14,6 +14,9 @@ final class HostStatusTests: XCTestCase {
         XCTAssertEqual(status.runningActivityCount, 1)
         XCTAssertEqual(status.completedActivityCount, 1)
         XCTAssertEqual(status.errorActivityCount, 0)
+        XCTAssertEqual(status.openReviewCount, 3)
+        XCTAssertEqual(status.queuedReviewCount, 1)
+        XCTAssertEqual(status.runningReviewCount, 2)
         XCTAssertEqual(status.artifactCount, 5)
         XCTAssertEqual(status.localOnlyArtifactCount, 3)
         XCTAssertEqual(status.pendingSyncArtifactCount, 1)

@@ -54,6 +54,7 @@ fn host_status_reports_current_activity_count() {
             running_activity_count: 1,
             completed_activity_count: 1,
             error_activity_count: 1,
+            open_review_count: 0,
             queued_review_count: 0,
             running_review_count: 1,
             completed_review_count: 0,

@@ -11,11 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
     private var openReviewsMenuItem: NSMenuItem?
-    private var statusHeaderMenuItem: NSMenuItem?
     private var agentErrorMenuItem: NSMenuItem?
     private var lastDiscoveryRefreshMenuItem: NSMenuItem?
-    private var reviewsHeaderMenuItem: NSMenuItem?
-    private var reviewsSeparatorMenuItem: NSMenuItem?
     private var activityHeaderMenuItem: NSMenuItem?
     private var activitySeparatorMenuItem: NSMenuItem?
     private var ongoingReviewMenuItems: [NSMenuItem] = []
@@ -84,7 +81,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         let statusHeaderMenuItem = sectionHeaderMenuItem("Status")
-        self.statusHeaderMenuItem = statusHeaderMenuItem
         menu.addItem(statusHeaderMenuItem)
 
         let openReviewsMenuItem = NSMenuItem(title: "no open reviews", action: nil, keyEquivalent: "")
@@ -103,12 +99,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.lastDiscoveryRefreshMenuItem = lastDiscoveryRefreshMenuItem
         menu.addItem(lastDiscoveryRefreshMenuItem)
 
-        menu.addItem(NSMenuItem.separator())
-
-        let reviewsHeaderMenuItem = sectionHeaderMenuItem("Reviews")
-        self.reviewsHeaderMenuItem = reviewsHeaderMenuItem
-        menu.addItem(reviewsHeaderMenuItem)
-
         for _ in 0 ..< 6 {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -117,9 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
 
-        let reviewsSeparatorMenuItem = NSMenuItem.separator()
-        self.reviewsSeparatorMenuItem = reviewsSeparatorMenuItem
-        menu.addItem(reviewsSeparatorMenuItem)
+        menu.addItem(NSMenuItem.separator())
 
         let activityHeaderMenuItem = sectionHeaderMenuItem("Activity Log")
         self.activityHeaderMenuItem = activityHeaderMenuItem
@@ -223,6 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hostIsRunning: host.isRunning,
             activityCount: latestHostStatus?.activityCount ?? 0,
             runningActivityCount: latestHostStatus?.runningActivityCount ?? 0,
+            openReviewCount: latestHostStatus?.openReviewCount ?? 0,
             queuedReviewCount: latestHostStatus?.queuedReviewCount ?? 0,
             runningReviewCount: latestHostStatus?.runningReviewCount ?? 0,
             artifactCount: latestHostStatus?.artifactCount ?? 0,
@@ -278,9 +267,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateOngoingReviewItems(_ entries: [ActivityMenuEntry]) {
-        let hasEntries = !entries.isEmpty
-        reviewsHeaderMenuItem?.isHidden = !hasEntries
-        reviewsSeparatorMenuItem?.isHidden = !hasEntries
         updateMenuItems(
             ongoingReviewMenuItems,
             entries: entries,
@@ -508,6 +494,7 @@ extension AppDelegate {
         configureLastDiscoveryRefreshMenuItem(snapshot)
         updateOngoingReviewItems(snapshot.ongoingReviewEntries)
         updateActivityItems(snapshot.recentActivityEntries)
+        openReviewsMenuItem?.title = snapshot.openReviewsSummary
     }
 
     func setStatusForTesting(hostStatus: HostStatus?) {
