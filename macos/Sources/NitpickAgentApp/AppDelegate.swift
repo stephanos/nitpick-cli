@@ -261,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateActivityItems(_ entries: [ActivityMenuEntry]) {
-        let font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        let font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         updateMenuItems(activityMenuItems, entries: entries, font: font)
     }
 
