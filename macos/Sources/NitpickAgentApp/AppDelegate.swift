@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let host = HostProcess()
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
-    private var statusSummaryMenuItem: NSMenuItem?
+    private var openReviewsMenuItem: NSMenuItem?
     private var agentErrorMenuItem: NSMenuItem?
     private var lastDiscoveryRefreshMenuItem: NSMenuItem?
     private var reviewsHeaderMenuItem: NSMenuItem?
@@ -82,12 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        menu.addItem(sectionHeaderMenuItem("Status"))
-
-        let statusSummaryMenuItem = NSMenuItem(title: "starting…", action: nil, keyEquivalent: "")
-        statusSummaryMenuItem.isEnabled = false
-        self.statusSummaryMenuItem = statusSummaryMenuItem
-        menu.addItem(statusSummaryMenuItem)
+        let openReviewsMenuItem = NSMenuItem(title: "no open reviews", action: nil, keyEquivalent: "")
+        openReviewsMenuItem.isEnabled = false
+        self.openReviewsMenuItem = openReviewsMenuItem
+        menu.addItem(openReviewsMenuItem)
 
         let agentErrorMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         agentErrorMenuItem.isHidden = true
@@ -236,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateOngoingReviewItems(snapshot.ongoingReviewEntries)
         updateActivityItems(snapshot.recentActivityEntries)
         updateOpenAtLoginItems()
-        statusSummaryMenuItem?.title = snapshot.statusSummary
+        openReviewsMenuItem?.title = snapshot.openReviewsSummary
         statusItem?.button?.toolTip = snapshot.statusTitle
     }
 

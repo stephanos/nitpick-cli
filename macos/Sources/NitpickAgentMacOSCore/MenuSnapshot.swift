@@ -48,24 +48,15 @@ public struct MenuSnapshot: Equatable {
         self.currentUnix = currentUnix
     }
 
-    public var statusSummary: String {
-        if let statusIssue {
-            return statusIssue.title
+    public var openReviewsSummary: String {
+        let total = runningReviewCount + queuedReviewCount
+        if total == 0 {
+            return "no open reviews"
         }
-        guard hostIsRunning else {
-            return "agent stopped"
+        if total == 1 {
+            return "1 open review"
         }
-        var parts: [String] = []
-        if runningReviewCount > 0 {
-            parts.append("\(runningReviewCount) running")
-        }
-        if queuedReviewCount > 0 {
-            parts.append("\(queuedReviewCount) queued")
-        }
-        if parts.isEmpty {
-            return reviewSourceEnabled ? "idle" : "idle · discovery off"
-        }
-        return parts.joined(separator: " · ")
+        return "\(total) open reviews"
     }
 
     public var statusTitle: String {
