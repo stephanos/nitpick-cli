@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let host = HostProcess()
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
+    private var statusSummaryMenuItem: NSMenuItem?
     private var agentErrorMenuItem: NSMenuItem?
     private var lastDiscoveryRefreshMenuItem: NSMenuItem?
     private var reviewsHeaderMenuItem: NSMenuItem?
@@ -79,11 +80,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        menu.addItem(sectionHeaderMenuItem("Status"))
+
+        let statusSummaryMenuItem = NSMenuItem(title: "starting…", action: nil, keyEquivalent: "")
+        statusSummaryMenuItem.isEnabled = false
+        self.statusSummaryMenuItem = statusSummaryMenuItem
+        menu.addItem(statusSummaryMenuItem)
+
         let agentErrorMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         agentErrorMenuItem.isHidden = true
         agentErrorMenuItem.isEnabled = false
         self.agentErrorMenuItem = agentErrorMenuItem
         menu.addItem(agentErrorMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
 
         let reviewsHeaderMenuItem = sectionHeaderMenuItem("Reviews")
         self.reviewsHeaderMenuItem = reviewsHeaderMenuItem
@@ -204,6 +214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hostIsRunning: host.isRunning,
             activityCount: latestHostStatus?.activityCount ?? 0,
             runningActivityCount: latestHostStatus?.runningActivityCount ?? 0,
+            queuedReviewCount: latestHostStatus?.queuedReviewCount ?? 0,
+            runningReviewCount: latestHostStatus?.runningReviewCount ?? 0,
             artifactCount: latestHostStatus?.artifactCount ?? 0,
             localOnlyArtifactCount: latestHostStatus?.localOnlyArtifactCount ?? 0,
             pendingSyncArtifactCount: latestHostStatus?.pendingSyncArtifactCount ?? 0,
@@ -218,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateOngoingReviewItems(snapshot.ongoingReviewEntries)
         updateActivityItems(snapshot.recentActivityEntries)
         updateOpenAtLoginItems()
+        statusSummaryMenuItem?.title = snapshot.statusSummary
         statusItem?.button?.toolTip = snapshot.statusTitle
     }
 

@@ -4,6 +4,8 @@ public struct MenuSnapshot: Equatable {
     public var hostIsRunning: Bool
     public var activityCount: Int
     public var runningActivityCount: Int
+    public var queuedReviewCount: Int
+    public var runningReviewCount: Int
     public var artifactCount: Int
     public var localOnlyArtifactCount: Int
     public var pendingSyncArtifactCount: Int
@@ -18,6 +20,8 @@ public struct MenuSnapshot: Equatable {
         hostIsRunning: Bool,
         activityCount: Int,
         runningActivityCount: Int = 0,
+        queuedReviewCount: Int = 0,
+        runningReviewCount: Int = 0,
         artifactCount: Int = 0,
         localOnlyArtifactCount: Int = 0,
         pendingSyncArtifactCount: Int = 0,
@@ -31,6 +35,8 @@ public struct MenuSnapshot: Equatable {
         self.hostIsRunning = hostIsRunning
         self.activityCount = activityCount
         self.runningActivityCount = runningActivityCount
+        self.queuedReviewCount = queuedReviewCount
+        self.runningReviewCount = runningReviewCount
         self.artifactCount = artifactCount
         self.localOnlyArtifactCount = localOnlyArtifactCount
         self.pendingSyncArtifactCount = pendingSyncArtifactCount
@@ -40,6 +46,26 @@ public struct MenuSnapshot: Equatable {
         self.statusIssue = statusIssue
         self.activities = activities
         self.currentUnix = currentUnix
+    }
+
+    public var statusSummary: String {
+        if let statusIssue {
+            return statusIssue.title
+        }
+        guard hostIsRunning else {
+            return "agent stopped"
+        }
+        var parts: [String] = []
+        if runningReviewCount > 0 {
+            parts.append("\(runningReviewCount) running")
+        }
+        if queuedReviewCount > 0 {
+            parts.append("\(queuedReviewCount) queued")
+        }
+        if parts.isEmpty {
+            return reviewSourceEnabled ? "idle" : "idle · discovery off"
+        }
+        return parts.joined(separator: " · ")
     }
 
     public var statusTitle: String {
