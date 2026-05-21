@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hostClient = HostClient()
     private var statusItem: NSStatusItem?
     private var openReviewsMenuItem: NSMenuItem?
+    private var statusHeaderMenuItem: NSMenuItem?
     private var agentErrorMenuItem: NSMenuItem?
     private var lastDiscoveryRefreshMenuItem: NSMenuItem?
     private var reviewsHeaderMenuItem: NSMenuItem?
@@ -81,6 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(reloadConfigItem)
 
         menu.addItem(NSMenuItem.separator())
+
+        let statusHeaderMenuItem = sectionHeaderMenuItem("Status")
+        self.statusHeaderMenuItem = statusHeaderMenuItem
+        menu.addItem(statusHeaderMenuItem)
 
         let openReviewsMenuItem = NSMenuItem(title: "no open reviews", action: nil, keyEquivalent: "")
         openReviewsMenuItem.isEnabled = false
