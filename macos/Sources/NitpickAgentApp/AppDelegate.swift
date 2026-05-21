@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastDiscoveryRefreshMenuItem: NSMenuItem?
     private var reviewsHeaderMenuItem: NSMenuItem?
     private var reviewsSeparatorMenuItem: NSMenuItem?
+    private var activityHeaderMenuItem: NSMenuItem?
+    private var activitySeparatorMenuItem: NSMenuItem?
     private var ongoingReviewMenuItems: [NSMenuItem] = []
     private var openAtLoginMenuItem: NSMenuItem?
     private var openAtLoginMessageItem: NSMenuItem?
@@ -93,6 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.agentErrorMenuItem = agentErrorMenuItem
         menu.addItem(agentErrorMenuItem)
 
+        let lastDiscoveryRefreshMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        lastDiscoveryRefreshMenuItem.isEnabled = false
+        self.lastDiscoveryRefreshMenuItem = lastDiscoveryRefreshMenuItem
+        menu.addItem(lastDiscoveryRefreshMenuItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let reviewsHeaderMenuItem = sectionHeaderMenuItem("Reviews")
@@ -111,12 +118,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.reviewsSeparatorMenuItem = reviewsSeparatorMenuItem
         menu.addItem(reviewsSeparatorMenuItem)
 
-        menu.addItem(sectionHeaderMenuItem("Activity Log"))
-
-        let lastDiscoveryRefreshMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        lastDiscoveryRefreshMenuItem.isEnabled = false
-        self.lastDiscoveryRefreshMenuItem = lastDiscoveryRefreshMenuItem
-        menu.addItem(lastDiscoveryRefreshMenuItem)
+        let activityHeaderMenuItem = sectionHeaderMenuItem("Activity Log")
+        self.activityHeaderMenuItem = activityHeaderMenuItem
+        menu.addItem(activityHeaderMenuItem)
 
         for _ in 0 ..< 5 {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -126,7 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
 
-        menu.addItem(NSMenuItem.separator())
+        let activitySeparatorMenuItem = NSMenuItem.separator()
+        self.activitySeparatorMenuItem = activitySeparatorMenuItem
+        menu.addItem(activitySeparatorMenuItem)
 
         let versionItem = NSMenuItem(title: appVersionTitle(), action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
@@ -261,6 +267,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateActivityItems(_ entries: [ActivityMenuEntry]) {
+        let hasEntries = !entries.isEmpty
+        activityHeaderMenuItem?.isHidden = !hasEntries
+        activitySeparatorMenuItem?.isHidden = !hasEntries
         let font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         updateMenuItems(activityMenuItems, entries: entries, font: font)
     }
