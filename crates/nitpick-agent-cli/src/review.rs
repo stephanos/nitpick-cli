@@ -8,6 +8,7 @@ use crate::{CliError, CliOptions, CliRunContext};
 pub enum ReviewCommand {
     Run { subject: String },
     Chat { target: String },
+    Editor { target: String },
     Requests { only_new: bool },
     Sync { activity_id: String, target: String },
     List { include_all: bool },
@@ -26,6 +27,9 @@ pub enum ReviewSubcommand {
         subject: String,
     },
     Chat {
+        target: String,
+    },
+    Editor {
         target: String,
     },
     Requests {
@@ -47,6 +51,7 @@ impl From<ReviewSubcommand> for ReviewCommand {
         match command {
             ReviewSubcommand::Run { subject } => Self::Run { subject },
             ReviewSubcommand::Chat { target } => Self::Chat { target },
+            ReviewSubcommand::Editor { target } => Self::Editor { target },
             ReviewSubcommand::Requests { only_new } => Self::Requests { only_new },
             ReviewSubcommand::Sync {
                 activity_id,
@@ -99,6 +104,13 @@ pub fn run(
                     ))
                 })?;
             Ok(String::new())
+        }
+        ReviewCommand::Editor { target } => {
+            let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
+                .map_err(CliError::from)?;
+            crate::support::apply_sandbox_option(&mut config, &options);
+            crate::support::open_cached_checkout(&target, &config, &context.data_dir, None)
+                .map_err(CliError::from)
         }
         ReviewCommand::Requests { only_new } => {
             Ok(format_review_requests(&client.review_requests(only_new)?))
@@ -186,6 +198,60 @@ mod tests {
                 target: "acme/platform#42".into(),
             })
         );
+    }
+
+    #[test]
+    fn parses_review_editor_command() {
+        let command = parse_command([
+            "review".to_owned(),
+            "editor".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command parses");
+
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::Editor {
+                target: "acme/platform#42".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_review_editor_command_with_github_url() {
+        let command = parse_command([
+            "review".to_owned(),
+            "editor".to_owned(),
+            "https://github.com/acme/platform/pull/42".to_owned(),
+        ])
+        .expect("command parses");
+
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::Editor {
+                target: "https://github.com/acme/platform/pull/42".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_review_editor_without_target() {
+        let error =
+            parse_command(["review".to_owned(), "editor".to_owned()]).expect_err("command fails");
+
+        assert!(error.contains("Usage: nitpick review editor <TARGET>"));
+    }
+
+    #[test]
+    fn rejects_review_open_command() {
+        let error = parse_command([
+            "review".to_owned(),
+            "open".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect_err("command fails");
+
+        assert!(error.contains("unrecognized subcommand 'open'"));
     }
 
     #[test]

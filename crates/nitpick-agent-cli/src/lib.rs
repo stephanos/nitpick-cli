@@ -12,7 +12,7 @@ use nitpick_agent_core::AgentError;
 
 pub use activity::{
     ActivityArgs, ActivityCommand, daemon_log_path, ensure_resumable_activity, format_activities,
-    format_activity, format_activity_logs, format_daemon_log, format_reviews, inspect_checkout,
+    format_activity, format_activity_logs, format_daemon_log, format_reviews,
     parse_activities_json, parse_activity_json, resolve_log_activity,
 };
 pub use artifact::{

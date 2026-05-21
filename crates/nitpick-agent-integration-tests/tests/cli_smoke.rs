@@ -177,7 +177,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
 
     let review_chat = run_cli_command(
         CliCommand::Review(ReviewCommand::Chat {
-            target: "stephanos/nitpick-agent#42".into(),
+            target: "https://github.com/stephanos/nitpick-agent/pull/42".into(),
         }),
         &host_addr,
         temp.path().to_path_buf(),

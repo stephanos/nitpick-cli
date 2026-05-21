@@ -3,8 +3,7 @@ use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, Artifact, ArtifactContent,
 };
-use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
-use std::{path::Path, process::Command};
+use nitpick_agent_github::PullRequestRef;
 
 use crate::{CliError, CliOptions, CliRunContext};
 
@@ -12,7 +11,6 @@ use crate::{CliError, CliOptions, CliRunContext};
 pub enum ActivityCommand {
     List,
     Logs { target: String },
-    Inspect { pull_request: String },
 }
 
 #[derive(Args)]
@@ -26,7 +24,6 @@ pub struct ActivityArgs {
 pub enum ActivitySubcommand {
     List,
     Logs { target: String },
-    Inspect { pull_request: String },
 }
 
 impl From<ActivitySubcommand> for ActivityCommand {
@@ -34,7 +31,6 @@ impl From<ActivitySubcommand> for ActivityCommand {
         match command {
             ActivitySubcommand::List => Self::List,
             ActivitySubcommand::Logs { target } => Self::Logs { target },
-            ActivitySubcommand::Inspect { pull_request } => Self::Inspect { pull_request },
         }
     }
 }
@@ -55,10 +51,6 @@ pub fn run(
             let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
             let artifacts = client.activity_artifacts(activity.id.as_str())?;
             Ok(format_activity_logs(activity, &artifacts))
-        }
-        ActivityCommand::Inspect { pull_request } => {
-            inspect_checkout_with_discovery(&pull_request, &GitHubCliDiscovery::new("gh"), None)
-                .map_err(Into::into)
         }
     }
 }
@@ -166,18 +158,6 @@ pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> Stri
     lines.join("\n")
 }
 
-pub fn inspect_checkout(
-    pull_request: &str,
-    checkout_root: &Path,
-    editor: Option<&Path>,
-) -> Result<String, String> {
-    inspect_checkout_with_discovery(
-        pull_request,
-        &GitHubCliDiscovery::with_checkout_commands("gh", "git", checkout_root),
-        editor,
-    )
-}
-
 pub fn daemon_log_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("logs").join("daemon.log")
 }
@@ -257,46 +237,6 @@ fn format_artifact_content(content: &ArtifactContent) -> String {
     }
 }
 
-fn inspect_checkout_with_discovery(
-    pull_request: &str,
-    discovery: &GitHubCliDiscovery,
-    editor: Option<&Path>,
-) -> Result<String, String> {
-    let reference = pull_request
-        .parse::<PullRequestRef>()
-        .map_err(|error| format!("invalid PR reference: {error}"))?;
-    let checkout = discovery.checkout_path_for(&reference);
-    if !checkout.join(".git").is_dir() {
-        return Err(format!("checkout not found for {pull_request}"));
-    }
-
-    let editor = editor
-        .map(std::path::PathBuf::from)
-        .or_else(editor_from_env)
-        .ok_or_else(|| "set VISUAL or EDITOR to inspect checkouts".to_owned())?;
-    let status = Command::new(&editor)
-        .arg(&checkout)
-        .status()
-        .map_err(|error| format!("failed to start editor `{}`: {error}", editor.display()))?;
-    if !status.success() {
-        return Err(format!("editor `{}` failed: {status}", editor.display()));
-    }
-    Ok(format!("opened {}", checkout.display()))
-}
-
-fn editor_from_env() -> Option<std::path::PathBuf> {
-    std::env::var_os("VISUAL")
-        .or_else(|| std::env::var_os("EDITOR"))
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            if cfg!(target_os = "macos") {
-                Some(std::path::PathBuf::from("open"))
-            } else {
-                None
-            }
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ActivityCommand, format_activities, format_reviews};
@@ -336,28 +276,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_inspect_command() {
-        let command = parse_command([
+    fn rejects_inspect_command() {
+        let error = parse_command([
             "activity".to_owned(),
             "inspect".to_owned(),
             "acme/platform#42".to_owned(),
         ])
-        .expect("command parses");
+        .expect_err("command fails");
 
-        assert_eq!(
-            command,
-            CliCommand::Activity(ActivityCommand::Inspect {
-                pull_request: "acme/platform#42".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_inspect_without_pr_ref() {
-        let error = parse_command(["activity".to_owned(), "inspect".to_owned()])
-            .expect_err("command fails");
-
-        assert!(error.contains("Usage: nitpick activity inspect <PULL_REQUEST>"));
+        assert!(error.contains("unrecognized subcommand 'inspect'"));
     }
 
     #[test]
@@ -590,51 +517,5 @@ mod tests {
         .expect("logs daemon");
 
         assert_eq!(output, "daemon started\n");
-    }
-
-    #[test]
-    fn inspect_checkout_opens_existing_checkout_with_editor() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let checkout_root = dir.path().join("checkouts");
-        let checkout = checkout_root.join("acme/platform/pr-42");
-        std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
-        let editor = dir.path().join("editor");
-        let log = dir.path().join("editor.log");
-        std::fs::write(
-            &editor,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$1\" > '{}'\n", log.display()),
-        )
-        .expect("editor");
-        make_executable(&editor);
-
-        let output =
-            super::inspect_checkout("acme/platform#42", &checkout_root, Some(editor.as_path()))
-                .expect("inspect");
-
-        assert_eq!(output, format!("opened {}", checkout.display()));
-        assert_eq!(
-            std::fs::read_to_string(log).expect("log"),
-            format!("{}\n", checkout.display())
-        );
-    }
-
-    #[test]
-    fn inspect_checkout_reports_missing_checkout() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let checkout_root = dir.path().join("checkouts");
-        let editor = dir.path().join("editor");
-
-        let error = super::inspect_checkout("acme/platform#42", &checkout_root, Some(&editor))
-            .expect_err("missing checkout");
-
-        assert_eq!(error, "checkout not found for acme/platform#42");
-    }
-
-    fn make_executable(path: &std::path::Path) {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).expect("chmod");
     }
 }

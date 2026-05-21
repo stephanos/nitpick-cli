@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, process::Command};
 
 use nitpick_agent_core::{Activity, ActivityStore, FsActivityStore};
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
@@ -48,6 +48,27 @@ pub(crate) fn require_cached_checkout(
     Ok(checkout)
 }
 
+pub(crate) fn open_cached_checkout(
+    target: &str,
+    config: &nitpick_agent_host::AgentConfig,
+    data_dir: &Path,
+    editor: Option<&Path>,
+) -> Result<String, String> {
+    let checkout = require_cached_checkout(target, config, data_dir)?;
+    let editor = editor
+        .map(std::path::PathBuf::from)
+        .or_else(editor_from_env)
+        .ok_or_else(|| "set VISUAL or EDITOR to open review checkouts".to_owned())?;
+    let status = Command::new(&editor)
+        .arg(&checkout)
+        .status()
+        .map_err(|error| format!("failed to start editor `{}`: {error}", editor.display()))?;
+    if !status.success() {
+        return Err(format!("editor `{}` failed: {status}", editor.display()));
+    }
+    Ok(format!("opened {}", checkout.display()))
+}
+
 fn configured_github_discovery(
     config: &nitpick_agent_host::AgentConfig,
     data_dir: &Path,
@@ -66,6 +87,19 @@ fn configured_github_discovery(
     }
 }
 
+fn editor_from_env() -> Option<std::path::PathBuf> {
+    std::env::var_os("VISUAL")
+        .or_else(|| std::env::var_os("EDITOR"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            if cfg!(target_os = "macos") {
+                Some(std::path::PathBuf::from("open"))
+            } else {
+                None
+            }
+        })
+}
+
 fn provider_session_missing(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     error.contains("session not found")
@@ -79,4 +113,62 @@ fn clear_provider_session_id(data_dir: &Path, activity: &Activity) -> Result<(),
     stored.session.provider_session_id = None;
     stored.touch();
     store.save(&stored).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn open_cached_checkout_opens_existing_checkout_with_editor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let checkout = data_dir.join("checkouts/acme/platform/pr-42");
+        std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
+        let editor = dir.path().join("editor");
+        let log = dir.path().join("editor.log");
+        std::fs::write(
+            &editor,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$1\" > '{}'\n", log.display()),
+        )
+        .expect("editor");
+        make_executable(&editor);
+
+        let output = super::open_cached_checkout(
+            "https://github.com/acme/platform/pull/42",
+            &nitpick_agent_host::AgentConfig::default(),
+            &data_dir,
+            Some(editor.as_path()),
+        )
+        .expect("open");
+
+        assert_eq!(output, format!("opened {}", checkout.display()));
+        assert_eq!(
+            std::fs::read_to_string(log).expect("log"),
+            format!("{}\n", checkout.display())
+        );
+    }
+
+    #[test]
+    fn open_cached_checkout_reports_missing_checkout() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let editor = dir.path().join("editor");
+
+        let error = super::open_cached_checkout(
+            "acme/platform#42",
+            &nitpick_agent_host::AgentConfig::default(),
+            &data_dir,
+            Some(&editor),
+        )
+        .expect_err("missing checkout");
+
+        assert_eq!(error, "checkout not found for acme/platform#42");
+    }
+
+    fn make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod");
+    }
 }
