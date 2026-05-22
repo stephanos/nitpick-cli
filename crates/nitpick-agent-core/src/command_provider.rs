@@ -416,9 +416,10 @@ impl AgentProvider for CommandAgentProvider {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_sandbox(input.disable_sandbox);
         let repo_dir = self.sandbox_repo_dir(&input.repo_dir, &sandbox)?;
+        let args = self.prompt_args();
         self.run_prompt_in_dir_with_sandbox(
             &chat_prompt(self.model.as_deref(), input),
-            &[],
+            &args,
             repo_dir.as_deref(),
             None,
             &sandbox,
@@ -446,7 +447,15 @@ impl CommandAgentProvider {
             (AgentProviderKind::Claude, Some(session_id)) => {
                 vec!["--session-id".into(), session_id.into()]
             }
+            (AgentProviderKind::Codex, _) => self.prompt_args(),
             _ => Vec::new(),
+        }
+    }
+
+    fn prompt_args(&self) -> Vec<String> {
+        match self.kind {
+            AgentProviderKind::Claude => Vec::new(),
+            AgentProviderKind::Codex => vec!["exec".into()],
         }
     }
 

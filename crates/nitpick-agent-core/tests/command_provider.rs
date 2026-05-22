@@ -43,6 +43,45 @@ fn command_provider_runs_chat_command_and_stores_output() {
 }
 
 #[test]
+fn codex_command_provider_runs_chat_with_exec() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let command = dir.path().join("provider");
+    let args_log = dir.path().join("args.log");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat >/dev/null\nprintf command-response\n",
+            args_log.display()
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(CommandAgentProvider::new(
+        AgentProviderKind::Codex,
+        Some("test-model".into()),
+        &command,
+    ));
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+
+    let activity = runtime
+        .start_chat(ChatInput {
+            repo_dir: dir.path().to_path_buf(),
+            prompt: "hello".into(),
+            ..ChatInput::default()
+        })
+        .expect("chat runs");
+
+    assert_eq!(activity.error, None);
+    assert_eq!(
+        activity.output.unwrap().chat_text(),
+        Some("command-response")
+    );
+    assert_eq!(fs::read_to_string(args_log).expect("args"), "exec\n");
+}
+
+#[test]
 fn claude_command_provider_passes_review_session_id() {
     let dir = tempfile::tempdir().expect("temp dir");
     let repo_dir = dir.path().join("repo");
@@ -126,7 +165,7 @@ fn codex_command_provider_does_not_use_claude_session_flag() {
         })
         .expect("review runs");
 
-    assert_eq!(fs::read_to_string(args_log).expect("args"), "\n");
+    assert_eq!(fs::read_to_string(args_log).expect("args"), "exec\n");
 }
 
 #[test]
@@ -376,7 +415,7 @@ fn codex_command_provider_review_with_tools_passes_mcp_server_config_overrides()
 
     assert_eq!(
         fs::read_to_string(args_log).expect("args"),
-        "-c mcp_servers.nitpick-review.command=\"/bin/nitpick-agent-host\" -c mcp_servers.nitpick-review.args=[\"review-mcp\",\"/tmp/nitpick-state.json\"]\n"
+        "exec -c mcp_servers.nitpick-review.command=\"/bin/nitpick-agent-host\" -c mcp_servers.nitpick-review.args=[\"review-mcp\",\"/tmp/nitpick-state.json\"]\n"
     );
 }
 
