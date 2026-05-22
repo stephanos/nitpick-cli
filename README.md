@@ -94,7 +94,7 @@ GitHub token permissions:
 
 For fine-grained PATs and GitHub App tokens, those repository permissions are the practical minimum. For classic PATs, `repo` is the practical minimum for private repositories; `public_repo` is enough for public-only repositories.
 
-Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. Review commands run from the checked-out PR repository and must write structured review output to `.nitpick/review-output.json`; stdout is ignored for review annotations. nitpick validates that JSON before creating review summary/comment artifacts, including rejecting absolute paths, `..` path escapes, missing files, empty comments, and invalid line numbers.
+Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. Review commands run from the checked-out PR repository with Nitpick MCP tools available. Agents record inline findings with `add_review_comment` and call `finish_review` when done; Nitpick validates comments before creating local review comment artifacts, including rejecting absolute paths, `..` path escapes, missing files, empty comments, and invalid line numbers.
 
 Review command execution is sandboxed by default on macOS with a Seatbelt profile that gives the provider read/write access to the checked-out repository and denies writes elsewhere. Disable this only for debugging:
 

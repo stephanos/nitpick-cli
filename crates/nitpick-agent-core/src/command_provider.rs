@@ -7,27 +7,56 @@ use std::{
 
 use crate::{
     AgentError, AgentProvider, AgentProviderKind, AgentResult, AgentSession, ChatInput,
-    REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, validate_review_output_file_for_diff,
+    REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
+    validate_review_output_file_for_diff,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSandboxConfig {
     pub enabled: bool,
+    extra_read_paths: Vec<PathBuf>,
+    extra_read_write_paths: Vec<PathBuf>,
 }
 
 impl CommandSandboxConfig {
     pub fn macos_seatbelt() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            extra_read_paths: Vec::new(),
+            extra_read_write_paths: Vec::new(),
+        }
     }
 
     pub fn unsandboxed() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            extra_read_paths: Vec::new(),
+            extra_read_write_paths: Vec::new(),
+        }
+    }
+
+    fn with_extra_read_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.extra_read_paths.extend(paths);
+        self
+    }
+
+    fn with_extra_read_write_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.extra_read_write_paths.extend(paths);
+        self
     }
 }
 
 impl Default for CommandSandboxConfig {
     fn default() -> Self {
         Self::macos_seatbelt()
+    }
+}
+
+impl CommandSandboxConfig {
+    fn with_review_tool_paths(self, tools: &ReviewToolConfig) -> Self {
+        let paths = review_tool_sandbox_paths(&tools.mcp_config_path);
+        self.with_extra_read_paths(paths.read_paths)
+            .with_extra_read_write_paths(paths.read_write_paths)
     }
 }
 
@@ -193,7 +222,7 @@ impl CommandAgentProvider {
             let mut command = Command::new("sandbox-exec");
             command
                 .arg("-p")
-                .arg(macos_sandbox_profile(repo_dir, &provider_command)?);
+                .arg(macos_sandbox_profile(repo_dir, &provider_command, sandbox)?);
             command.arg(&provider_command);
             command.args(args);
             Ok(command)
@@ -354,6 +383,34 @@ impl AgentProvider for CommandAgentProvider {
         validate_review_output_file_for_diff(&repo_dir, &output_path, &input.diff)
     }
 
+    fn supports_review_tools(&self) -> bool {
+        true
+    }
+
+    #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
+    fn review_with_tools(
+        &self,
+        session: &mut AgentSession,
+        input: &ReviewInput,
+        tools: &ReviewToolConfig,
+    ) -> AgentResult<ReviewOutput> {
+        session.provider = Some(self.kind.clone());
+        let sandbox = self.effective_sandbox(input.disable_sandbox);
+        let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
+            AgentError::provider(format!(
+                "canonicalize review repository {}: {error}",
+                input.repo_dir.display()
+            ))
+        })?;
+        let prompt = review_tool_prompt(self.model.as_deref(), input, &tools.instructions);
+        let args = self.review_tool_args(session, tools);
+        let sandbox = sandbox.with_review_tool_paths(tools);
+        self.run_prompt_in_dir_with_sandbox(&prompt, &args, Some(&repo_dir), None, &sandbox)?;
+        Ok(ReviewOutput {
+            comments: Vec::new(),
+        })
+    }
+
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repo_dir = %input.repo_dir.display()))]
     fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
         session.provider = Some(self.kind.clone());
@@ -392,6 +449,27 @@ impl CommandAgentProvider {
             _ => Vec::new(),
         }
     }
+
+    fn review_tool_args(&self, session: &AgentSession, tools: &ReviewToolConfig) -> Vec<String> {
+        let mut args = self.review_args(session);
+        match self.kind {
+            AgentProviderKind::Claude => {
+                args.push("--mcp-config".into());
+                args.push(to_command_path(&tools.mcp_config_path));
+            }
+            AgentProviderKind::Codex => {
+                let server = codex_mcp_server_config(&tools.mcp_config_path);
+                args.push("-c".into());
+                args.push(format!(
+                    "mcp_servers.nitpick-review.command={}",
+                    server.command
+                ));
+                args.push("-c".into());
+                args.push(format!("mcp_servers.nitpick-review.args={}", server.args));
+            }
+        }
+        args
+    }
 }
 
 fn review_prompt(model: Option<&str>, input: &ReviewInput, output_path: &str) -> String {
@@ -423,6 +501,44 @@ fn initial_review_prompt(input: &ReviewInput, output_path: &str) -> String {
     prompt.replace("{review_output_path}", output_path)
 }
 
+fn review_tool_prompt(model: Option<&str>, input: &ReviewInput, tool_instructions: &str) -> String {
+    format!(
+        "{}\n\nmodel: {}\nrepository: {}\nnumber: {}\ntitle: {}\nauthor: {}\nrepo_dir: {}\ntool instructions:\n{}\n\ninstructions:\n{}\n\ndiff:\n{}\n",
+        initial_review_tool_prompt(input),
+        model.unwrap_or("(default)"),
+        input.subject.repository,
+        input
+            .subject
+            .number
+            .map(|number| number.to_string())
+            .unwrap_or_else(|| "(none)".into()),
+        input.subject.title,
+        input.subject.author,
+        input.repo_dir.display(),
+        tool_instructions,
+        input.instructions,
+        input.diff,
+    )
+}
+
+fn initial_review_tool_prompt(input: &ReviewInput) -> String {
+    let prompt = input.review_prompt.trim();
+    let prompt = if prompt.is_empty() {
+        include_str!("../../../examples/review-prompt.md")
+    } else {
+        prompt
+    };
+    let prompt = prompt.replace(
+        "Write review annotations as JSON to `{review_output_path}` relative to the repository root. Do not return review annotations on stdout.",
+        "Record review annotations with the Nitpick review MCP tools. Do not write review annotations to stdout or to a file.",
+    );
+    let prompt = prompt.replace(
+        "The JSON object must contain `comments`. Each comment must use a repository-relative path, a line number inside the diff changeset, and a body. Use line 0 only for file-level comments on files in the diff changeset.",
+        "Each comment must use a repository-relative path, a line number inside the diff changeset, and a body. Use line 0 only for file-level comments on files in the diff changeset.",
+    );
+    prompt.replace("{review_output_path}", "the Nitpick review MCP tools")
+}
+
 fn chat_prompt(model: Option<&str>, input: &ChatInput) -> String {
     format!(
         "You are answering a development question.\n\nmodel: {}\nrepo_dir: {}\ncontext:\n{}\n\nprompt:\n{}\n",
@@ -433,8 +549,74 @@ fn chat_prompt(model: Option<&str>, input: &ChatInput) -> String {
     )
 }
 
+fn to_command_path(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+struct CodexMcpServerConfig {
+    command: String,
+    args: String,
+}
+
+struct ReviewToolSandboxPaths {
+    read_paths: Vec<PathBuf>,
+    read_write_paths: Vec<PathBuf>,
+}
+
+fn codex_mcp_server_config(config_path: &Path) -> CodexMcpServerConfig {
+    let config = fs_err::read(config_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let server = &config["mcpServers"]["nitpick-review"];
+    let command = server["command"]
+        .as_str()
+        .map(serde_json::to_string)
+        .and_then(Result::ok)
+        .unwrap_or_else(|| "\"nitpick-agent-host\"".into());
+    let args = server["args"]
+        .as_array()
+        .map(|args| {
+            args.iter()
+                .filter_map(|arg| arg.as_str().map(ToOwned::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .and_then(|args| serde_json::to_string(&args).ok())
+        .unwrap_or_else(|| "[]".into());
+    CodexMcpServerConfig { command, args }
+}
+
+fn review_tool_sandbox_paths(config_path: &Path) -> ReviewToolSandboxPaths {
+    let config = fs_err::read(config_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let server = &config["mcpServers"]["nitpick-review"];
+    let mut read_paths = vec![config_path.to_path_buf()];
+    let mut read_write_paths = Vec::new();
+    if let Some(command) = server["command"].as_str() {
+        read_paths.push(PathBuf::from(command));
+    }
+    if let Some(state_path) = server["args"]
+        .as_array()
+        .and_then(|args| args.iter().filter_map(|arg| arg.as_str()).nth(1))
+        .map(PathBuf::from)
+        && let Some(parent) = state_path.parent()
+    {
+        read_write_paths.push(parent.to_path_buf());
+    }
+    ReviewToolSandboxPaths {
+        read_paths,
+        read_write_paths,
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn macos_sandbox_profile(repo_dir: &Path, provider_command: &Path) -> AgentResult<String> {
+fn macos_sandbox_profile(
+    repo_dir: &Path,
+    provider_command: &Path,
+    sandbox: &CommandSandboxConfig,
+) -> AgentResult<String> {
     let repo_dir = repo_dir
         .canonicalize()
         .map_err(|error| AgentError::sandbox(format!("canonicalize sandbox repo dir: {error}")))?;
@@ -443,6 +625,16 @@ fn macos_sandbox_profile(repo_dir: &Path, provider_command: &Path) -> AgentResul
         .canonicalize()
         .unwrap_or_else(|_| provider_command.to_path_buf());
     let command = escape_sandbox_string(&command.to_string_lossy());
+    let extra_reads = sandbox
+        .extra_read_paths
+        .iter()
+        .map(|path| sandbox_literal_rule("file-read*", path))
+        .collect::<String>();
+    let extra_read_writes = sandbox
+        .extra_read_write_paths
+        .iter()
+        .map(|path| sandbox_subpath_rule("file-read* file-write*", path))
+        .collect::<String>();
     Ok(format!(
         r#"(version 1)
 (deny default)
@@ -453,11 +645,78 @@ fn macos_sandbox_profile(repo_dir: &Path, provider_command: &Path) -> AgentResul
 (allow file-read* file-write* (literal "/dev/null"))
 (allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (literal "{command}"))
 (allow file-read* file-write* (subpath "{repo}"))
+{extra_reads}{extra_read_writes}
 "#
     ))
 }
 
 #[cfg(target_os = "macos")]
+fn sandbox_literal_rule(operation: &str, path: &Path) -> String {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let path = escape_sandbox_string(&path.to_string_lossy());
+    format!(r#"(allow {operation} (literal "{path}"))"#) + "\n"
+}
+
+#[cfg(target_os = "macos")]
+fn sandbox_subpath_rule(operation: &str, path: &Path) -> String {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let path = escape_sandbox_string(&path.to_string_lossy());
+    format!(r#"(allow {operation} (subpath "{path}"))"#) + "\n"
+}
+
+#[cfg(target_os = "macos")]
 fn escape_sandbox_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_sandbox_profile_includes_review_tool_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_dir = dir.path().join("repo");
+        fs_err::create_dir(&repo_dir).expect("repo dir");
+        let provider_command = dir.path().join("provider");
+        fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let mcp_command = dir.path().join("nitpick-agent-host");
+        fs_err::write(&mcp_command, "#!/bin/sh\n").expect("mcp command");
+        let state_path = dir.path().join("session.json");
+        let mcp_config_path = dir.path().join("mcp.json");
+        fs_err::write(
+            &mcp_config_path,
+            serde_json::json!({
+                "mcpServers": {
+                    "nitpick-review": {
+                        "command": mcp_command,
+                        "args": ["review-mcp", state_path]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("mcp config");
+        let sandbox =
+            CommandSandboxConfig::macos_seatbelt().with_review_tool_paths(&ReviewToolConfig {
+                mcp_config_path: mcp_config_path.clone(),
+                instructions: String::new(),
+            });
+
+        let profile =
+            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox).expect("profile");
+
+        assert!(profile.contains(&format!(
+            r#"(literal "{}")"#,
+            mcp_config_path.canonicalize().expect("config path").display()
+        )));
+        assert!(profile.contains(&format!(
+            r#"(literal "{}")"#,
+            mcp_command.canonicalize().expect("mcp command").display()
+        )));
+        assert!(profile.contains(&format!(
+            r#"(subpath "{}")"#,
+            dir.path().canonicalize().expect("temp dir").display()
+        )));
+    }
 }

@@ -1,13 +1,25 @@
-use std::sync::Arc;
+use std::{
+    fs,
+    process::Command,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use nitpick_agent_cli::{
     CliCommand, DebugCommand, ReviewCommand, ReviewListStatus, SystemCommand, run_cli_command,
 };
-use nitpick_agent_core::FsProcessedReviewStore;
-use nitpick_agent_core::{ActivityStore, FsActivityStore};
-use nitpick_agent_host::{HostDaemon, api_router};
+use nitpick_agent_core::{
+    ActivityStatus, ActivityStore, AgentProvider, AgentResult, AgentSession, ArtifactContent,
+    ArtifactKind, ChatInput, FsActivityStore, FsProcessedReviewStore, ReviewInput, ReviewOutput,
+    ReviewToolConfig,
+};
+use nitpick_agent_host::{
+    HostDaemon, api_router,
+    review_mcp::{AddReviewCommentInput, ReviewMcpTools, load_review_mcp_session_state},
+};
 use nitpick_agent_integration_tests::support::{
-    ManualClock, RecordingProvider, StubDiscovery, github_auto_review_config, pull_request,
+    ManualClock, RecordingProvider, StubDiscovery, github_auto_review_config,
+    github_disabled_config, pull_request,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -162,7 +174,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     .expect("review run command");
     assert!(review_run.contains("activity-"));
     assert!(review_run.contains(
-        "ReviewSummary Pending { destination: \"github-review\", remote_id: Some(\"99\"), remote_url: Some(\"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99\") }"
+        "ReviewComment Pending { destination: \"github-review\", remote_id: Some(\"99\"), remote_url: Some(\"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99\") }"
     ), "{review_run}");
 
     let daemon_logs = run_cli_command(
@@ -289,6 +301,175 @@ async fn review_chat_clears_missing_provider_session_id() {
             .provider_session_id,
         None
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_run_uses_mcp_tools_for_local_smoke_comments() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = temp.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    run_git(&repo_dir, &["init"]);
+    fs::create_dir(repo_dir.join("src")).expect("src dir");
+    fs::write(
+        repo_dir.join("src/lib.rs"),
+        "pub fn value() -> i32 {\n    1\n}\n",
+    )
+    .expect("repo file");
+    run_git(&repo_dir, &["add", "."]);
+    run_git(
+        &repo_dir,
+        &[
+            "-c",
+            "user.email=nitpick@example.com",
+            "-c",
+            "user.name=Nitpick",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    );
+    fs::write(
+        repo_dir.join("src/lib.rs"),
+        "pub fn value() -> i32 {\n    1\n}\n\npub fn extra() -> i32 {\n    2\n}\n",
+    )
+    .expect("changed repo file");
+    let diff = run_git(&repo_dir, &["diff", "--", "src/lib.rs"]);
+
+    let store = Arc::new(FsActivityStore::new(temp.path().join("store")).expect("store"));
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        github_disabled_config(),
+        Arc::new(
+            FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
+        ),
+        Arc::new(McpSmokeProvider),
+        Arc::new(StubDiscovery::new(vec![])),
+        Arc::new(ManualClock::new(1_000)),
+    );
+    let host_addr = serve_host(daemon).await;
+
+    let review_run = run_cli_command(
+        CliCommand::Review(ReviewCommand::Run {
+            subject: "local-smoke".into(),
+        }),
+        &host_addr,
+        repo_dir,
+        diff,
+        String::new(),
+        temp.path().join("config.toml"),
+        temp.path().join("data"),
+    )
+    .expect("review run command");
+
+    assert!(review_run.contains("activity-"));
+    let activity = wait_for_completed_review(store.as_ref());
+    let activities = store.list().expect("activities");
+    assert_eq!(activities.len(), 1);
+    let artifacts = store
+        .list_artifacts_for(&activity.id)
+        .expect("activity artifacts");
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0].kind, ArtifactKind::ReviewComment);
+    assert!(
+        artifacts
+            .iter()
+            .all(|artifact| !matches!(artifact.content, ArtifactContent::ReviewSummary(_)))
+    );
+    assert_eq!(
+        artifacts[0].content,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 4,
+            body: "smoke comment from MCP tools".into(),
+        })
+    );
+}
+
+struct McpSmokeProvider;
+
+impl AgentProvider for McpSmokeProvider {
+    fn supports_review_tools(&self) -> bool {
+        true
+    }
+
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        panic!("MCP smoke provider should use review_with_tools");
+    }
+
+    fn review_with_tools(
+        &self,
+        _session: &mut AgentSession,
+        input: &ReviewInput,
+        tools: &ReviewToolConfig,
+    ) -> AgentResult<ReviewOutput> {
+        let state_path = state_path_from_config(&tools.mcp_config_path);
+        let state = load_review_mcp_session_state(&state_path)?;
+        assert_eq!(state.repo_dir, input.repo_dir);
+        assert!(!state.finished);
+
+        let tools = ReviewMcpTools::from_state_path(state_path);
+        tools.add_review_comment(AddReviewCommentInput {
+            path: "src/lib.rs".into(),
+            line: 4,
+            body: "smoke comment from MCP tools".into(),
+        })?;
+        tools.finish_review()?;
+        Ok(ReviewOutput::default())
+    }
+
+    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+        Ok(String::new())
+    }
+}
+
+fn state_path_from_config(config_path: &std::path::Path) -> String {
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(config_path).expect("mcp config bytes"))
+            .expect("mcp config json");
+    let args = config["mcpServers"]["nitpick-review"]["args"]
+        .as_array()
+        .expect("server args");
+    assert_eq!(args[0], "review-mcp");
+    args[1].as_str().expect("state path").to_owned()
+}
+
+fn run_git(repo_dir: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_dir)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {} failed\nstdout:\n{}\nstderr:\n{}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8(output.stdout).expect("git output utf-8")
+}
+
+fn wait_for_completed_review(store: &FsActivityStore) -> nitpick_agent_core::Activity {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let activities = store.list().expect("activities");
+        if let Some(activity) = activities
+            .iter()
+            .find(|activity| activity.kind == nitpick_agent_core::ActivityKind::Review)
+            && activity.status == ActivityStatus::Completed
+        {
+            return activity.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "review did not complete: {activities:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn make_executable(path: &std::path::Path) {

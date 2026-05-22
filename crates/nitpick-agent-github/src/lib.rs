@@ -1082,7 +1082,7 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
                         "path": comment.path,
                         "line": comment.line,
                         "side": "RIGHT",
-                        "body": comment.body,
+                        "body": robot_prefixed_body(&comment.body),
                     }],
                 });
                 sync_with_github_cli(
@@ -1189,7 +1189,7 @@ fn review_comment_payload(comment: ReviewComment) -> serde_json::Value {
         "path": comment.path,
         "line": comment.line,
         "side": "RIGHT",
-        "body": comment.body,
+        "body": robot_prefixed_body(&comment.body),
     })
 }
 
@@ -1466,6 +1466,14 @@ fn github_comment_body(artifact: &Artifact) -> String {
         ArtifactContent::ChatResponse(response) => {
             format!("<!-- nitpick-agent:{} -->\n\n{response}\n", artifact.id)
         }
+    }
+}
+
+fn robot_prefixed_body(body: &str) -> String {
+    if body.starts_with("🤖 ") {
+        body.to_owned()
+    } else {
+        format!("🤖 {body}")
     }
 }
 

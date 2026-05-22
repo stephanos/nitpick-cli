@@ -11,6 +11,7 @@ nitpick-agent-client = { path = "../nitpick-agent-client" }
 nitpick-agent-cli = { path = "../nitpick-agent-cli" }
 nitpick-agent-github = { path = "../nitpick-agent-github" }
 nitpick-agent-host = { path = "../nitpick-agent-host" }
+serde_json.workspace = true
 tempfile = "3.27.0"
 
 [dev-dependencies]

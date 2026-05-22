@@ -73,7 +73,7 @@ fn github_cli_destination_posts_artifact_with_gh_pr_comment() {
     assert!(
         fs::read_to_string(body_file)
             .expect("body")
-            .starts_with("🤖")
+            .contains("looks good")
     );
     assert_eq!(
         outcome.sync_state,
@@ -82,6 +82,46 @@ fn github_cli_destination_posts_artifact_with_gh_pr_comment() {
             remote_id: Some("https://github.com/acme/platform/pull/42#issuecomment-99".into())
         }
     );
+}
+
+#[test]
+fn github_cli_destination_does_not_prefix_plain_review_comment_body() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let body_file = dir.path().join("body");
+    fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\ncat > {}\nprintf 'https://github.com/acme/platform/pull/42#issuecomment-99\\n'\n",
+            body_file.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let artifact = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "Prefer this.".into(),
+        }),
+    );
+    let destination = GitHubCliSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    destination.sync(&artifact).expect("sync outcome");
+
+    let body = fs::read_to_string(body_file).expect("body");
+    assert!(body.contains("Prefer this."));
+    assert!(!body.contains("🤖 Prefer this."));
 }
 
 #[test]
@@ -121,7 +161,11 @@ fn github_cli_review_destination_posts_summary_with_gh_pr_review() {
         fs::read_to_string(args_file).expect("args"),
         "pr review 42 --repo acme/platform --comment --body-file -\n"
     );
-    assert!(fs::read_to_string(body_file).expect("body").starts_with("🤖"));
+    assert!(
+        fs::read_to_string(body_file)
+            .expect("body")
+            .contains("looks good")
+    );
     assert_eq!(
         outcome.sync_state,
         ArtifactSyncState::Synced {
@@ -199,6 +243,54 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#discussion_r99"}}
 }
 
 #[test]
+fn github_cli_review_destination_prefixes_inline_comment_body_once() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+cat > {payload}
+printf '{{"html_url":"https://github.com/acme/platform/pull/42#discussion_r99"}}\n'
+"#,
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+    let artifact = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "🤖 Prefer this.".into(),
+        }),
+    );
+
+    destination.sync(&artifact).expect("sync outcome");
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["comments"][0]["body"], "🤖 Prefer this.");
+}
+
+#[test]
 fn github_cli_review_destination_batches_summary_and_inline_comments_into_pending_review() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
@@ -270,7 +362,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
             .expect("payload json");
     assert_eq!(payload["commit_id"], "abc123");
     assert!(payload.get("event").is_none());
-    assert_eq!(payload["body"], "🤖 summary body");
+    assert_eq!(payload["body"], "summary body");
     assert_eq!(payload["comments"].as_array().expect("comments").len(), 2);
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
     assert_eq!(payload["comments"][0]["line"], 12);
@@ -289,6 +381,70 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
                 "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
             )
         }));
+}
+
+#[test]
+fn github_cli_review_destination_batches_inline_comments_without_review_body() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+cat > {payload}
+printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+"#,
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+    let first_comment = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "Prefer this.".into(),
+        }),
+    );
+    let second_comment = Artifact::local(
+        ArtifactId::new("artifact-2"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/main.rs".into(),
+            line: 8,
+            body: "🤖 Already prefixed.".into(),
+        }),
+    );
+
+    let outcomes = destination
+        .sync_batch(&[first_comment, second_comment])
+        .expect("sync outcomes");
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert!(payload.get("body").is_none());
+    assert_eq!(payload["comments"].as_array().expect("comments").len(), 2);
+    assert_eq!(payload["comments"][0]["body"], "🤖 Prefer this.");
+    assert_eq!(payload["comments"][1]["body"], "🤖 Already prefixed.");
+    assert_eq!(outcomes.len(), 2);
 }
 
 #[test]
@@ -331,7 +487,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     let payload: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
-    assert_eq!(payload["body"], "🤖 updated summary");
+    assert_eq!(payload["body"], "updated summary");
     assert_eq!(review.state, "PENDING");
 }
 

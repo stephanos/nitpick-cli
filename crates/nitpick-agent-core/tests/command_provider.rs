@@ -1,8 +1,8 @@
 use std::{env, fs, os::unix::fs::PermissionsExt, sync::Arc};
 
 use nitpick_agent_core::{
-    AgentProvider, AgentProviderKind, AgentRuntime, ChatInput, CommandAgentProvider,
-    CommandSandboxConfig, MemoryActivityStore, ReviewInput, ReviewSubject,
+    AgentProvider, AgentProviderKind, AgentRuntime, AgentSession, ChatInput, CommandAgentProvider,
+    CommandSandboxConfig, MemoryActivityStore, ReviewInput, ReviewSubject, ReviewToolConfig,
     validate_review_output_file, validate_review_output_file_for_diff,
 };
 
@@ -256,6 +256,127 @@ fn command_provider_rejects_missing_review_output_json_file() {
     assert_eq!(
         activity.error.as_deref(),
         Some("review output file missing: .nitpick/review-output.json")
+    );
+}
+
+#[test]
+fn command_provider_review_with_tools_passes_mcp_config_and_skips_review_output_json() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    let command = dir.path().join("provider");
+    let args_log = dir.path().join("args.log");
+    let prompt_log = dir.path().join("prompt.log");
+    let mcp_config_path = dir.path().join("mcp.json");
+    fs::write(&mcp_config_path, "{\"mcpServers\":{}}").expect("mcp config");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat > '{}'\n",
+            args_log.display(),
+            prompt_log.display()
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+    let provider = CommandAgentProvider::new(
+        AgentProviderKind::Claude,
+        Some("test-model".into()),
+        &command,
+    );
+    let mut session = AgentSession {
+        provider_session_id: Some("123e4567-e89b-12d3-a456-426614174000".into()),
+        ..AgentSession::default()
+    };
+
+    let output = provider
+        .review_with_tools(
+            &mut session,
+            &ReviewInput {
+                repo_dir: repo_dir.clone(),
+                review_prompt:
+                    "Custom prompt: use {review_output_path}.\n\nExtra configured guidance.".into(),
+                instructions: "focus on correctness".into(),
+                diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
+                subject: ReviewSubject {
+                    repository: "acme/platform".into(),
+                    number: Some(42),
+                    ..ReviewSubject::default()
+                },
+                ..ReviewInput::default()
+            },
+            &ReviewToolConfig {
+                mcp_config_path: mcp_config_path.clone(),
+                instructions: "Use add_review_comment, then finish_review.".into(),
+            },
+        )
+        .expect("review with tools");
+
+    assert_eq!(output.comments, vec![]);
+    assert!(!repo_dir.join(".nitpick/review-output.json").exists());
+    assert_eq!(session.provider, Some(AgentProviderKind::Claude));
+    let args = fs::read_to_string(args_log).expect("args");
+    assert!(args.contains("--mcp-config"));
+    assert!(args.contains(mcp_config_path.to_str().expect("utf-8 path")));
+    let prompt = fs::read_to_string(prompt_log).expect("prompt");
+    assert!(prompt.starts_with("Custom prompt: use the Nitpick review MCP tools."));
+    assert!(prompt.contains("Extra configured guidance."));
+    assert!(prompt.contains("Use add_review_comment, then finish_review."));
+    assert!(prompt.contains("focus on correctness"));
+    assert!(!prompt.contains(".nitpick/review-output.json"));
+}
+
+#[test]
+fn codex_command_provider_review_with_tools_passes_mcp_server_config_overrides() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    let command = dir.path().join("provider");
+    let args_log = dir.path().join("args.log");
+    let mcp_config_path = dir.path().join("mcp.json");
+    fs::write(
+        &mcp_config_path,
+        serde_json::json!({
+            "mcpServers": {
+                "nitpick-review": {
+                    "command": "/bin/nitpick-agent-host",
+                    "args": ["review-mcp", "/tmp/nitpick-state.json"]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("mcp config");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat >/dev/null\n",
+            args_log.display(),
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+    let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &command);
+    let mut session = AgentSession::default();
+
+    provider
+        .review_with_tools(
+            &mut session,
+            &ReviewInput {
+                repo_dir,
+                diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
+                ..ReviewInput::default()
+            },
+            &ReviewToolConfig {
+                mcp_config_path,
+                instructions: "Use tools".into(),
+            },
+        )
+        .expect("review with tools");
+
+    assert_eq!(
+        fs::read_to_string(args_log).expect("args"),
+        "-c mcp_servers.nitpick-review.command=\"/bin/nitpick-agent-host\" -c mcp_servers.nitpick-review.args=[\"review-mcp\",\"/tmp/nitpick-state.json\"]\n"
     );
 }
 

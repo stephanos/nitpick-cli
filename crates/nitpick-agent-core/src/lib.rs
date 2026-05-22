@@ -10,6 +10,7 @@ mod model;
 mod provider;
 mod repo_path;
 mod review_output;
+mod review_session;
 mod review_source;
 mod runtime;
 mod session;
@@ -30,11 +31,12 @@ pub use json::{parse_json_bytes, parse_json_str, read_json, read_json_dir, write
 pub use model::{
     ChatInput, ReviewComment, ReviewInput, ReviewOutput, ReviewRequest, ReviewSubject,
 };
-pub use provider::AgentProvider;
+pub use provider::{AgentProvider, ReviewToolConfig};
 pub use repo_path::RepoPath;
 pub use review_output::{
     REVIEW_OUTPUT_RELATIVE_PATH, validate_review_output_file, validate_review_output_file_for_diff,
 };
+pub use review_session::ReviewCommentValidator;
 pub use review_source::{
     FsProcessedReviewStore, MemoryProcessedReviewStore, ProcessedReview, ProcessedReviewStore,
     ReviewSource,

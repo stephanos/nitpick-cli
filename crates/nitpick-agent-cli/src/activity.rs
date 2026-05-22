@@ -168,9 +168,7 @@ fn format_activity_output(output: &ActivityOutput) -> String {
             output
                 .comments
                 .iter()
-                .map(|comment| {
-                    format!("{}:{} {}", comment.path, comment.line, comment.body)
-                })
+                .map(|comment| format!("{}:{} {}", comment.path, comment.line, comment.body))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -351,7 +349,6 @@ mod tests {
         activity.error = Some("provider failed".into());
         activity.output = Some(nitpick_agent_core::ActivityOutput::Review(
             nitpick_agent_core::ReviewOutput {
-                summary: "summary body".into(),
                 comments: vec![nitpick_agent_core::ReviewComment {
                     path: "src/lib.rs".into(),
                     line: 12,
@@ -368,7 +365,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "activity: activity-1\nkind: Review\nstatus: Error\nlabel: review on acme/platform#42\nupdated: 1200\nerror: provider failed\noutput:\nsummary body\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
+            "activity: activity-1\nkind: Review\nstatus: Error\nlabel: review on acme/platform#42\nupdated: 1200\nerror: provider failed\noutput:\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
         );
     }
 

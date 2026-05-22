@@ -5,13 +5,16 @@ use std::{
 use nitpick_agent_core::{
     FsActivityStore, FsProcessedReviewStore, config_path_from_env_value, data_dir_from_env_value,
 };
-use nitpick_agent_host::{AgentConfig, HostDaemon, api_router};
+use nitpick_agent_host::{AgentConfig, HostDaemon, api_router, review_mcp};
 
 #[tokio::main]
 async fn main() -> ExitCode {
     init_tracing();
     if env::args().nth(1).as_deref() == Some("daemon") {
         return run_daemon().await;
+    }
+    if env::args().nth(1).as_deref() == Some("review-mcp") {
+        return run_review_mcp().await;
     }
 
     let (daemon, config_path, data_dir) = match build_daemon() {
@@ -40,6 +43,20 @@ async fn main() -> ExitCode {
             println!("model: {}", status.model.as_deref().unwrap_or("(default)"));
             ExitCode::SUCCESS
         }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+async fn run_review_mcp() -> ExitCode {
+    let Some(state_path) = env::args_os().nth(2).map(PathBuf::from) else {
+        eprintln!("review-mcp requires a session state path");
+        return ExitCode::from(2);
+    };
+    match review_mcp::serve_review_mcp_stdio(state_path).await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(2)

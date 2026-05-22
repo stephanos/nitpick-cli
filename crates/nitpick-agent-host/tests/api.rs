@@ -443,6 +443,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     assert_eq!(payload["body"], "summary body");
     assert_eq!(payload["comments"].as_array().expect("comments").len(), 1);
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
+    assert_eq!(payload["comments"][0]["body"], "🤖 Prefer this.");
     assert_eq!(
         store.get_artifact(&summary.id).expect("summary").sync_state,
         ArtifactSyncState::Pending {
@@ -689,6 +690,98 @@ exit 1
             .as_str()
             .expect("error text")
             .contains("submit or clear the draft review")
+    );
+}
+
+#[tokio::test]
+async fn activity_artifact_sync_endpoint_does_not_update_pending_body_for_local_comments() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
+  if [ "$3" = "--method" ]; then
+    cat >/dev/null
+    printf 'unexpected pending body update' >&2
+    exit 1
+  fi
+  printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}'
+  exit 0
+fi
+exit 1
+"#,
+            commands = commands_file.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let store = Arc::new(MemoryActivityStore::default());
+    let activity = store.create(ActivityKind::Review).expect("activity");
+    let activity_id = activity.id.clone();
+    let pending_comment = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewComment,
+            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+                path: "src/lib.rs".into(),
+                line: 12,
+                body: "Already staged.".into(),
+            }),
+        )
+        .expect("pending comment artifact");
+    let local_comment = store
+        .create_artifact(
+            activity_id.clone(),
+            ArtifactKind::ReviewComment,
+            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+                path: "src/main.rs".into(),
+                line: 8,
+                body: "New comment.".into(),
+            }),
+        )
+        .expect("local comment artifact");
+    store
+        .save_artifacts(&[pending_comment.clone(), local_comment])
+        .expect("save artifacts");
+    store
+        .update_artifact_sync_state(
+            &pending_comment.id,
+            ArtifactSyncState::Pending {
+                destination: "github-review".into(),
+                remote_id: Some("99".into()),
+                remote_url: Some(
+                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into(),
+                ),
+            },
+        )
+        .expect("mark pending");
+    let app = api_router(HostDaemon::with_config(
+        store,
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            ..AgentConfig::default()
+        },
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            &format!("/activities/{activity_id}/artifact-sync"),
+            &serde_json::json!({
+                "destination": "github-review",
+                "target": "acme/platform#42"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "api repos/acme/platform/pulls/42/reviews/99\n"
     );
 }
 
@@ -1179,8 +1272,11 @@ impl AgentProvider for FakeProvider {
         _input: &ReviewInput,
     ) -> AgentResult<ReviewOutput> {
         Ok(ReviewOutput {
-            summary: "looks good".into(),
-            ..ReviewOutput::default()
+            comments: vec![nitpick_agent_core::ReviewComment {
+                path: "src/lib.rs".into(),
+                line: 1,
+                body: "looks good".into(),
+            }],
         })
     }
 

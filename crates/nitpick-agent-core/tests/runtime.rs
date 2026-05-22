@@ -35,11 +35,13 @@ impl AgentProvider for RecordingProvider {
         session.provider_session_id = Some("provider-review-session".into());
 
         Ok(ReviewOutput {
-            summary: format!("reviewed {}", input.subject.repository),
             comments: vec![ReviewComment {
                 path: "src/lib.rs".into(),
                 line: 12,
-                body: "Prefer a local artifact before syncing.".into(),
+                body: format!(
+                    "Prefer a local artifact before syncing {}.",
+                    input.subject.repository
+                ),
             }],
         })
     }
@@ -102,8 +104,8 @@ fn review_activity_runs_provider_and_persists_completion() {
     );
     assert!(matches!(
         activity.output,
-        Some(ActivityOutput::Review(ReviewOutput { ref summary, .. }))
-            if summary == "reviewed acme/platform"
+        Some(ActivityOutput::Review(ReviewOutput { ref comments }))
+            if comments.len() == 1 && comments[0].path == "src/lib.rs"
     ));
 
     let persisted = store.get(&activity.id).expect("persisted activity");
@@ -112,16 +114,18 @@ fn review_activity_runs_provider_and_persists_completion() {
     let artifacts = store
         .list_artifacts_for(&activity.id)
         .expect("local artifacts");
-    assert_eq!(artifacts.len(), 2);
+    assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0].activity_id, activity.id);
-    assert_eq!(artifacts[0].kind, ArtifactKind::ReviewSummary);
+    assert_eq!(artifacts[0].kind, ArtifactKind::ReviewComment);
     assert_eq!(artifacts[0].sync_state, ArtifactSyncState::LocalOnly);
     assert_eq!(
         artifacts[0].content,
-        ArtifactContent::ReviewSummary("reviewed acme/platform".into())
+        ArtifactContent::ReviewComment(ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "Prefer a local artifact before syncing acme/platform.".into(),
+        })
     );
-    assert_eq!(artifacts[1].kind, ArtifactKind::ReviewComment);
-    assert_eq!(artifacts[1].sync_state, ArtifactSyncState::LocalOnly);
 }
 
 #[test]

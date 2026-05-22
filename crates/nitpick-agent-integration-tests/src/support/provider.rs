@@ -1,7 +1,8 @@
 use std::sync::Mutex;
 
 use nitpick_agent_core::{
-    AgentError, AgentProvider, AgentResult, AgentSession, ChatInput, ReviewInput, ReviewOutput,
+    AgentError, AgentProvider, AgentResult, AgentSession, ChatInput, ReviewComment, ReviewInput,
+    ReviewOutput,
 };
 
 #[derive(Default)]
@@ -44,8 +45,11 @@ impl AgentProvider for RecordingProvider {
             .expect("lock")
             .push(input.clone());
         Ok(ReviewOutput {
-            summary: "review complete".into(),
-            ..ReviewOutput::default()
+            comments: vec![ReviewComment {
+                path: "src/lib.rs".into(),
+                line: 1,
+                body: "review complete".into(),
+            }],
         })
     }
 

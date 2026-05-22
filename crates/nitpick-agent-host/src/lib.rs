@@ -1,5 +1,6 @@
 mod api;
 mod polling_state;
+pub mod review_mcp;
 mod review_slots;
 
 use std::{
@@ -14,7 +15,8 @@ use nitpick_agent_core::{
     AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent, ArtifactId,
     ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, Clock,
     CommandAgentProvider, CommandSandboxConfig, HostStatus, MemoryProcessedReviewStore,
-    ProcessedReviewStore, ReviewInput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
+    ProcessedReviewStore, ReviewInput, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig,
+    SessionStatus, SystemClock,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -27,6 +29,67 @@ use serde::Deserialize;
 pub use api::api_router;
 
 const ACTIVITY_PRUNE_AGE_SECS: u64 = 24 * 60 * 60;
+
+#[derive(Clone)]
+pub struct HostReviewProvider {
+    inner: Arc<dyn AgentProvider>,
+}
+
+impl HostReviewProvider {
+    pub fn new(inner: Arc<dyn AgentProvider>) -> Self {
+        Self { inner }
+    }
+}
+
+impl AgentProvider for HostReviewProvider {
+    fn review(
+        &self,
+        session: &mut nitpick_agent_core::AgentSession,
+        input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        if !self.inner.supports_review_tools() {
+            return self.inner.review(session, input);
+        }
+
+        let handle = review_mcp::ReviewMcpServerHandle::start(input)?;
+        let tools = handle.tool_config();
+        self.inner.review_with_tools(session, input, &tools)?;
+        let state = handle.session_state()?;
+        if !state.finished {
+            return Err(AgentError::provider(
+                "provider exited before calling finish_review",
+            ));
+        }
+        Ok(ReviewOutput {
+            comments: state.comments,
+        })
+    }
+
+    fn supports_review_tools(&self) -> bool {
+        self.inner.supports_review_tools()
+    }
+
+    fn review_with_tools(
+        &self,
+        session: &mut nitpick_agent_core::AgentSession,
+        input: &ReviewInput,
+        tools: &ReviewToolConfig,
+    ) -> AgentResult<ReviewOutput> {
+        self.inner.review_with_tools(session, input, tools)
+    }
+
+    fn chat(
+        &self,
+        session: &mut nitpick_agent_core::AgentSession,
+        input: &ChatInput,
+    ) -> AgentResult<String> {
+        self.inner.chat(session, input)
+    }
+
+    fn attach_session(&self, session: &nitpick_agent_core::AgentSession) -> AgentResult<()> {
+        self.inner.attach_session(session)
+    }
+}
 
 #[derive(Clone)]
 pub struct HostDaemon {
@@ -761,7 +824,10 @@ impl HostDaemon {
     }
 
     fn runtime(&self) -> AgentRuntime {
-        AgentRuntime::new(self.provider.clone(), self.store.clone())
+        AgentRuntime::new(
+            Arc::new(HostReviewProvider::new(self.provider.clone())),
+            self.store.clone(),
+        )
     }
 
     fn run_enqueued_review(

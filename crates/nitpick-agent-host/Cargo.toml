@@ -8,6 +8,8 @@ axum.workspace = true
 fs-err = "3.3.0"
 nitpick-agent-core.workspace = true
 nitpick-agent-github = { path = "../nitpick-agent-github" }
+rmcp.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

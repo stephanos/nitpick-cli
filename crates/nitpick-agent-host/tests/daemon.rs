@@ -243,10 +243,7 @@ impl AgentProvider for BlockingProvider {
         while !*released {
             released = self.release_changed.wait(released).expect("release wait");
         }
-        Ok(ReviewOutput {
-            summary: "done".into(),
-            ..ReviewOutput::default()
-        })
+        Ok(ReviewOutput::default())
     }
 
     fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
