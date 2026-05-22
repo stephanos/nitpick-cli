@@ -13,7 +13,6 @@ pub const REVIEW_OUTPUT_RELATIVE_PATH: &str = ".nitpick/review-output.json";
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrictReviewOutput {
-    summary: String,
     comments: Vec<StrictReviewComment>,
 }
 
@@ -84,10 +83,6 @@ fn validate_review_output(
     output: StrictReviewOutput,
     changeset: Option<&DiffChangeset>,
 ) -> AgentResult<ReviewOutput> {
-    if output.summary.trim().is_empty() {
-        return Err(AgentError::invalid_input("review summary is empty"));
-    }
-
     let mut comments = Vec::with_capacity(output.comments.len());
     for comment in output.comments {
         let comment_path = RepoPath::parse(&comment.path)?;
@@ -121,7 +116,6 @@ fn validate_review_output(
     }
 
     Ok(ReviewOutput {
-        summary: output.summary,
         comments,
     })
 }

@@ -43,7 +43,6 @@ impl ReviewRequest {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewOutput {
-    pub summary: String,
     pub comments: Vec<ReviewComment>,
 }
 

@@ -162,14 +162,17 @@ fn review_label_for_target(target: &str) -> Result<String, String> {
 fn format_activity_output(output: &ActivityOutput) -> String {
     match output {
         ActivityOutput::Review(output) => {
-            let mut lines = vec![output.summary.clone()];
-            for comment in &output.comments {
-                lines.push(format!(
-                    "{}:{} {}",
-                    comment.path, comment.line, comment.body
-                ));
+            if output.comments.is_empty() {
+                return "no review comments".into();
             }
-            lines.join("\n")
+            output
+                .comments
+                .iter()
+                .map(|comment| {
+                    format!("{}:{} {}", comment.path, comment.line, comment.body)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
         }
         ActivityOutput::Chat(output) => output.clone(),
     }

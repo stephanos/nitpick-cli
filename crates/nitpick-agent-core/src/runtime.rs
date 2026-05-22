@@ -167,11 +167,7 @@ fn review_artifacts(
     activity: &Activity,
     output: &ReviewOutput,
 ) -> AgentResult<Vec<crate::Artifact>> {
-    let mut artifacts = vec![store.create_artifact(
-        activity.id.clone(),
-        ArtifactKind::ReviewSummary,
-        ArtifactContent::ReviewSummary(output.summary.clone()),
-    )?];
+    let mut artifacts = Vec::with_capacity(output.comments.len());
 
     for comment in &output.comments {
         artifacts.push(store.create_artifact(
