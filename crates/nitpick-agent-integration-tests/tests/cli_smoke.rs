@@ -10,8 +10,8 @@ use nitpick_agent_cli::{
 };
 use nitpick_agent_core::{
     ActivityStatus, ActivityStore, AgentProvider, AgentResult, AgentSession, ArtifactContent,
-    ArtifactKind, ChatInput, FsActivityStore, FsProcessedReviewStore, ReviewInput, ReviewOutput,
-    ReviewToolConfig,
+    ArtifactKind, ArtifactSyncState, ChatInput, FsActivityStore, FsProcessedReviewStore,
+    ReviewInput, ReviewOutput, ReviewToolConfig,
 };
 use nitpick_agent_host::{
     HostDaemon, api_router,
@@ -78,8 +78,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     std::fs::write(&daemon_log, "daemon started\n").expect("daemon log");
     let mut config = github_auto_review_config();
     config.github_command = Some(fake_gh.display().to_string());
+    let store = Arc::new(FsActivityStore::new(temp.path().join("store")).expect("store"));
     let daemon = HostDaemon::with_dependencies(
-        Arc::new(FsActivityStore::new(temp.path().join("store")).expect("store")),
+        store.clone(),
         config,
         Arc::new(
             FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
@@ -173,9 +174,21 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     )
     .expect("review run command");
     assert!(review_run.contains("activity-"));
-    assert!(review_run.contains(
-        "ReviewComment Pending { destination: \"github-review\", remote_id: Some(\"99\"), remote_url: Some(\"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99\") }"
-    ), "{review_run}");
+    assert!(review_run.contains("check status: nitpick review show stephanos/nitpick-agent#42"));
+    assert!(review_run.contains("list active reviews: nitpick review list --status active"));
+    let activity_id = activity_id_from_review_run(&review_run);
+    let activity = wait_for_completed_activity(store.as_ref(), &activity_id);
+    let artifacts = wait_for_synced_artifacts(store.as_ref(), &activity.id);
+    assert!(matches!(
+        artifacts[0].sync_state,
+        ArtifactSyncState::Pending {
+            ref destination,
+            ref remote_id,
+            ref remote_url
+        } if destination == "github-review"
+            && remote_id.as_deref() == Some("99")
+            && remote_url.as_deref() == Some("https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99")
+    ));
 
     let daemon_logs = run_cli_command(
         CliCommand::Debug(DebugCommand::Logs {
@@ -437,6 +450,8 @@ async fn review_run_uses_mcp_tools_for_local_smoke_comments() {
     .expect("review run command");
 
     assert!(review_run.contains("activity-"));
+    assert!(review_run.contains("check status: nitpick review show local-smoke"));
+    assert!(review_run.contains("list active reviews: nitpick review list --status active"));
     let activity = wait_for_completed_review(store.as_ref());
     let activities = store.list().expect("activities");
     assert_eq!(activities.len(), 1);
@@ -542,6 +557,60 @@ fn wait_for_completed_review(store: &FsActivityStore) -> nitpick_agent_core::Act
         assert!(
             Instant::now() < deadline,
             "review did not complete: {activities:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_completed_activity(
+    store: &FsActivityStore,
+    activity_id: &nitpick_agent_core::ActivityId,
+) -> nitpick_agent_core::Activity {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let activities = store.list().expect("activities");
+        if let Some(activity) = activities
+            .iter()
+            .find(|activity| &activity.id == activity_id)
+            && activity.status == ActivityStatus::Completed
+        {
+            return activity.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "activity {activity_id} did not complete: {activities:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn activity_id_from_review_run(output: &str) -> nitpick_agent_core::ActivityId {
+    output
+        .lines()
+        .next()
+        .and_then(|line| line.split_once(':'))
+        .map(|(id, _)| nitpick_agent_core::ActivityId::new(id))
+        .expect("review run activity id")
+}
+
+fn wait_for_synced_artifacts(
+    store: &FsActivityStore,
+    activity_id: &nitpick_agent_core::ActivityId,
+) -> Vec<nitpick_agent_core::Artifact> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let artifacts = store
+            .list_artifacts_for(activity_id)
+            .expect("activity artifacts");
+        if artifacts
+            .iter()
+            .any(|artifact| !matches!(artifact.sync_state, ArtifactSyncState::LocalOnly))
+        {
+            return artifacts;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "review artifacts did not sync: {artifacts:?}"
         );
         std::thread::sleep(Duration::from_millis(10));
     }

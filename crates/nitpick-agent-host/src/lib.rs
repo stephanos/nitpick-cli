@@ -836,13 +836,34 @@ impl HostDaemon {
         input: ReviewInput,
         slot_acquired: bool,
     ) -> AgentResult<Activity> {
+        let github_sync_target = github_review_sync_target(&input);
         if !slot_acquired {
             self.review_slots.wait_and_acquire()?;
         }
         let result = self.runtime().run_review(activity, input);
         self.review_slots.release()?;
+        if let Ok(activity) = &result
+            && activity.status == ActivityStatus::Completed
+            && let Some(target) = github_sync_target.as_deref()
+            && let Err(error) =
+                self.sync_activity_artifacts(&activity.id, "github-review", Some(target))
+        {
+            tracing::warn!(
+                activity_id = %activity.id,
+                target,
+                error = %error,
+                "sync completed review artifacts failed"
+            );
+        }
         result
     }
+}
+
+fn github_review_sync_target(input: &ReviewInput) -> Option<String> {
+    input
+        .subject
+        .number
+        .map(|number| format!("{}#{}", input.subject.repository, number))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

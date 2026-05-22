@@ -1224,6 +1224,7 @@ fn sync_with_github_cli(
         .ok_or_else(|| AgentError::github_cli("GitHub CLI stdin unavailable"))?
         .write_all(body.as_bytes())
         .map_err(|error| AgentError::github_cli(format!("write GitHub body: {error}")))?;
+    drop(child.stdin.take());
 
     let output = child
         .wait_with_output()
@@ -1329,6 +1330,7 @@ fn run_github_cli_with_input(command: &Path, args: &[&str], body: &str) -> Agent
         .ok_or_else(|| AgentError::github_cli("GitHub CLI stdin unavailable"))?
         .write_all(body.as_bytes())
         .map_err(|error| AgentError::github_cli(format!("write GitHub body: {error}")))?;
+    drop(child.stdin.take());
 
     let output = child
         .wait_with_output()

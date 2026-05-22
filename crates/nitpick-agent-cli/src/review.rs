@@ -1,7 +1,7 @@
 use clap::{Args, Subcommand, ValueEnum};
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, ActivityId, ActivityKind, ActivityStatus, ReviewInput, ReviewRequest, ReviewSubject,
+    Activity, ActivityKind, ActivityStatus, ReviewInput, ReviewRequest, ReviewSubject,
 };
 
 use crate::{CliError, CliOptions, CliRunContext};
@@ -73,31 +73,12 @@ pub fn run(
         ReviewCommand::Run { subject } => {
             let mut input = review_input(subject.clone(), context.repo_dir, context.diff);
             input.disable_sandbox = options.disable_sandbox;
-            let mut activity = client.review(&input)?;
-            if is_github_target(&subject) {
-                activity = wait_for_terminal_activity(&client, &activity.id)?;
-            }
-            let output = crate::activity::format_activity(&activity);
+            let activity = client.review(&input)?;
+            let output = format_review_started(&activity, &subject);
             if let Some(error) = activity.error {
                 return Err(error.into());
             }
-            let artifacts = if is_github_target(&subject) {
-                client.sync_activity_artifacts(
-                    activity.id.as_str(),
-                    "github-review",
-                    Some(&subject),
-                )?
-            } else {
-                Vec::new()
-            };
-            if artifacts.is_empty() {
-                Ok(output)
-            } else {
-                Ok(format!(
-                    "{output}\n{}",
-                    crate::artifact::format_artifacts(&artifacts)
-                ))
-            }
+            Ok(output)
         }
         ReviewCommand::Chat { target } => {
             let activities = client.activities()?;
@@ -256,44 +237,18 @@ fn format_review_activity(activity: &Activity) -> String {
     format!("{label} {:?} {}", activity.status, activity.id)
 }
 
-fn is_github_target(target: &str) -> bool {
-    target
-        .parse::<nitpick_agent_github::PullRequestRef>()
-        .is_ok()
-}
-
-fn wait_for_terminal_activity(
-    client: &HostClient,
-    activity_id: &ActivityId,
-) -> Result<Activity, CliError> {
-    for _ in 0..120 {
-        let Some(activity) = client
-            .activities()?
-            .into_iter()
-            .find(|activity| &activity.id == activity_id)
-        else {
-            return Err(CliError::from(format!(
-                "activity {activity_id} disappeared"
-            )));
-        };
-        if matches!(
-            activity.status,
-            ActivityStatus::Completed | ActivityStatus::Error | ActivityStatus::Cancelled
-        ) {
-            return Ok(activity);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    Err(CliError::from(format!(
-        "timed out waiting for activity {activity_id} to finish"
-    )))
+fn format_review_started(activity: &Activity, subject: &str) -> String {
+    format!(
+        "{}\ncheck status: nitpick review show {subject}\nlist active reviews: nitpick review list --status active",
+        crate::activity::format_activity(activity)
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ReviewCommand, format_review_requests, review_input};
+    use super::{ReviewCommand, format_review_requests, format_review_started, review_input};
     use crate::{CliCommand, parse_command};
-    use nitpick_agent_core::ReviewRequest;
+    use nitpick_agent_core::{Activity, ActivityStatus, ReviewRequest};
 
     #[test]
     fn parses_review_run_command() {
@@ -309,6 +264,20 @@ mod tests {
             CliCommand::Review(ReviewCommand::Run {
                 subject: "acme/platform#42".into(),
             })
+        );
+    }
+
+    #[test]
+    fn formats_review_run_status_instructions() {
+        let activity = Activity {
+            id: "activity-7".into(),
+            status: ActivityStatus::Running,
+            ..Activity::default()
+        };
+
+        assert_eq!(
+            format_review_started(&activity, "acme/platform#42"),
+            "activity-7: Running\ncheck status: nitpick review show acme/platform#42\nlist active reviews: nitpick review list --status active"
         );
     }
 

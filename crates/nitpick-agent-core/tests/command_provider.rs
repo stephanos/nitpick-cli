@@ -78,7 +78,10 @@ fn codex_command_provider_runs_chat_with_exec() {
         activity.output.unwrap().chat_text(),
         Some("command-response")
     );
-    assert_eq!(fs::read_to_string(args_log).expect("args"), "exec\n");
+    assert_eq!(
+        fs::read_to_string(args_log).expect("args"),
+        "--dangerously-bypass-approvals-and-sandbox exec\n"
+    );
 }
 
 #[test]
@@ -165,7 +168,10 @@ fn codex_command_provider_does_not_use_claude_session_flag() {
         })
         .expect("review runs");
 
-    assert_eq!(fs::read_to_string(args_log).expect("args"), "exec\n");
+    assert_eq!(
+        fs::read_to_string(args_log).expect("args"),
+        "--dangerously-bypass-approvals-and-sandbox exec\n"
+    );
 }
 
 #[test]
@@ -415,7 +421,7 @@ fn codex_command_provider_review_with_tools_passes_mcp_server_config_overrides()
 
     assert_eq!(
         fs::read_to_string(args_log).expect("args"),
-        "exec -c mcp_servers.nitpick-review.command=\"/bin/nitpick-agent-host\" -c mcp_servers.nitpick-review.args=[\"review-mcp\",\"/tmp/nitpick-state.json\"]\n"
+        "--dangerously-bypass-approvals-and-sandbox exec -c mcp_servers.nitpick-review.command=\"/bin/nitpick-agent-host\" -c mcp_servers.nitpick-review.args=[\"review-mcp\",\"/tmp/nitpick-state.json\"]\n"
     );
 }
 

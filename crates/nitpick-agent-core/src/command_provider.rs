@@ -317,6 +317,13 @@ impl CommandAgentProvider {
             self.sandbox.clone()
         }
     }
+
+    fn effective_prompt_sandbox(&self, disable_sandbox: bool) -> CommandSandboxConfig {
+        match self.kind {
+            AgentProviderKind::Claude => self.effective_sandbox(disable_sandbox),
+            AgentProviderKind::Codex => CommandSandboxConfig::unsandboxed(),
+        }
+    }
 }
 
 fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
@@ -349,7 +356,7 @@ impl AgentProvider for CommandAgentProvider {
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
     fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
         session.provider = Some(self.kind.clone());
-        let sandbox = self.effective_sandbox(input.disable_sandbox);
+        let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
         let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
             AgentError::provider(format!(
                 "canonicalize review repository {}: {error}",
@@ -395,7 +402,7 @@ impl AgentProvider for CommandAgentProvider {
         tools: &ReviewToolConfig,
     ) -> AgentResult<ReviewOutput> {
         session.provider = Some(self.kind.clone());
-        let sandbox = self.effective_sandbox(input.disable_sandbox);
+        let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
         let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
             AgentError::provider(format!(
                 "canonicalize review repository {}: {error}",
@@ -414,7 +421,7 @@ impl AgentProvider for CommandAgentProvider {
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repo_dir = %input.repo_dir.display()))]
     fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
         session.provider = Some(self.kind.clone());
-        let sandbox = self.effective_sandbox(input.disable_sandbox);
+        let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
         let repo_dir = self.sandbox_repo_dir(&input.repo_dir, &sandbox)?;
         let args = self.prompt_args();
         self.run_prompt_in_dir_with_sandbox(
@@ -455,7 +462,12 @@ impl CommandAgentProvider {
     fn prompt_args(&self) -> Vec<String> {
         match self.kind {
             AgentProviderKind::Claude => Vec::new(),
-            AgentProviderKind::Codex => vec!["exec".into()],
+            AgentProviderKind::Codex => {
+                vec![
+                    "--dangerously-bypass-approvals-and-sandbox".into(),
+                    "exec".into(),
+                ]
+            }
         }
     }
 
