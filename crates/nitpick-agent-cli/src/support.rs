@@ -54,7 +54,17 @@ pub(crate) fn open_cached_checkout(
     data_dir: &Path,
     editor: Option<&Path>,
 ) -> Result<String, String> {
-    let checkout = require_cached_checkout(target, config, data_dir)?;
+    let pull_request = target
+        .parse::<PullRequestRef>()
+        .map_err(|error| format!("invalid GitHub pull request reference: {error}"))?;
+    let discovery = configured_github_discovery(config, data_dir);
+    let mut checkout = discovery.checkout_path_for(&pull_request);
+    if !checkout.join(".git").is_dir() {
+        let review_input = discovery
+            .review_input(&(&pull_request).into())
+            .map_err(|error| error.to_string())?;
+        checkout = review_input.repo_dir;
+    }
     let editor = editor
         .map(std::path::PathBuf::from)
         .or_else(editor_from_env)
@@ -148,20 +158,98 @@ mod tests {
     }
 
     #[test]
-    fn open_cached_checkout_reports_missing_checkout() {
+    fn open_cached_checkout_fetches_missing_checkout_before_opening_editor() {
         let dir = tempfile::tempdir().expect("temp dir");
         let data_dir = dir.path().join("data");
+        let checkout = data_dir.join("checkouts/acme/platform/pr-42");
+        let gh = dir.path().join("gh");
+        let git = dir.path().join("git");
         let editor = dir.path().join("editor");
-
-        let error = super::open_cached_checkout(
-            "acme/platform#42",
-            &nitpick_agent_host::AgentConfig::default(),
-            &data_dir,
-            Some(&editor),
+        let log = dir.path().join("commands.log");
+        std::fs::write(
+            &gh,
+            format!(
+                r#"#!/bin/sh
+printf 'gh %s\n' "$*" >> '{}'
+if [ "$1 $2" = "pr view" ]; then
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  exit 0
+fi
+if [ "$1 $2" = "pr diff" ]; then
+  printf 'diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n'
+  exit 0
+fi
+if [ "$1 $2" = "repo clone" ]; then
+  mkdir -p "$4/.git"
+  exit 0
+fi
+exit 1
+"#,
+                log.display()
+            ),
         )
-        .expect_err("missing checkout");
+        .expect("gh");
+        std::fs::write(
+            &git,
+            format!(
+                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        )
+        .expect("git");
+        std::fs::write(
+            &editor,
+            format!(
+                "#!/bin/sh\nprintf 'editor %s\\n' \"$1\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .expect("editor");
+        make_executable(&gh);
+        make_executable(&git);
+        make_executable(&editor);
+        let config = nitpick_agent_host::AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            ..nitpick_agent_host::AgentConfig::default()
+        };
+        let old_path = std::env::var_os("PATH");
+        let path = match old_path.as_deref() {
+            Some(old_path) => {
+                let mut paths = vec![dir.path().to_path_buf()];
+                paths.extend(std::env::split_paths(old_path));
+                std::env::join_paths(paths).expect("join path")
+            }
+            None => dir.path().into(),
+        };
 
-        assert_eq!(error, "checkout not found for acme/platform#42");
+        let output = unsafe {
+            std::env::set_var("PATH", &path);
+            let output =
+                super::open_cached_checkout("acme/platform#42", &config, &data_dir, Some(&editor));
+            match old_path {
+                Some(old_path) => std::env::set_var("PATH", old_path),
+                None => std::env::remove_var("PATH"),
+            }
+            output
+        }
+        .expect("open");
+
+        assert_eq!(output, format!("opened {}", checkout.display()));
+        assert_eq!(
+            std::fs::read_to_string(log).expect("log"),
+            format!(
+                "gh pr view 42 --repo acme/platform --json title,author,url,headRefOid,headRefName,state,mergedAt\n\
+gh pr diff 42 --repo acme/platform\n\
+gh repo clone acme/platform {} -- --quiet\n\
+git -C {} fetch origin feature/watcher --quiet\n\
+git -C {} checkout -B feature/watcher origin/feature/watcher --quiet\n\
+editor {}\n",
+                checkout.display(),
+                checkout.display(),
+                checkout.display(),
+                checkout.display()
+            )
+        );
     }
 
     fn make_executable(path: &std::path::Path) {
