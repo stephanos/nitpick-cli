@@ -15,7 +15,6 @@ pub const REVIEW_OUTPUT_RELATIVE_PATH: &str = ".nitpick/review-output.json";
 struct StrictReviewOutput {
     summary: String,
     comments: Vec<StrictReviewComment>,
-    journey: StrictReviewJourney,
 }
 
 #[derive(serde::Deserialize)]
@@ -24,20 +23,6 @@ struct StrictReviewComment {
     path: String,
     line: u32,
     body: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StrictReviewJourney {
-    summary: String,
-    steps: Vec<StrictReviewJourneyStep>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StrictReviewJourneyStep {
-    file: String,
-    reason: String,
 }
 
 pub fn validate_review_output_file(
@@ -138,18 +123,6 @@ fn validate_review_output(
     Ok(ReviewOutput {
         summary: output.summary,
         comments,
-        journey: crate::ReviewJourney {
-            summary: output.journey.summary,
-            steps: output
-                .journey
-                .steps
-                .into_iter()
-                .map(|step| crate::ReviewJourneyStep {
-                    file: step.file,
-                    reason: step.reason,
-                })
-                .collect(),
-        },
     })
 }
 

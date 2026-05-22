@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use nitpick_agent_core::{
     ActivityKind, ActivityOutput, ActivityStatus, AgentProvider, AgentResult, AgentRuntime,
     AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, MemoryActivityStore,
-    ReviewComment, ReviewInput, ReviewJourney, ReviewOutput, ReviewSubject,
+    ReviewComment, ReviewInput, ReviewOutput, ReviewSubject,
 };
 
 #[derive(Default)]
@@ -41,10 +41,6 @@ impl AgentProvider for RecordingProvider {
                 line: 12,
                 body: "Prefer a local artifact before syncing.".into(),
             }],
-            journey: ReviewJourney {
-                summary: "read the diff".into(),
-                steps: Vec::new(),
-            },
         })
     }
 

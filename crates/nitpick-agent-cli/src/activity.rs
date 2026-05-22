@@ -354,7 +354,6 @@ mod tests {
                     line: 12,
                     body: "comment body".into(),
                 }],
-                journey: nitpick_agent_core::ReviewJourney::default(),
             },
         ));
         let artifact = nitpick_agent_core::Artifact::local(

@@ -52,7 +52,7 @@ fn claude_command_provider_passes_review_session_id() {
     fs::write(
         &command,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat >/dev/null\nmkdir -p .nitpick\nprintf '{{\"summary\":\"review-response\",\"comments\":[],\"journey\":{{\"summary\":\"done\",\"steps\":[]}}}}' > .nitpick/review-output.json\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat >/dev/null\nmkdir -p .nitpick\nprintf '{{\"summary\":\"review-response\",\"comments\":[]}}' > .nitpick/review-output.json\n",
             args_log.display()
         ),
     )
@@ -98,7 +98,7 @@ fn codex_command_provider_does_not_use_claude_session_flag() {
     fs::write(
         &command,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat >/dev/null\nmkdir -p .nitpick\nprintf '{{\"summary\":\"review-response\",\"comments\":[],\"journey\":{{\"summary\":\"done\",\"steps\":[]}}}}' > .nitpick/review-output.json\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat >/dev/null\nmkdir -p .nitpick\nprintf '{{\"summary\":\"review-response\",\"comments\":[]}}' > .nitpick/review-output.json\n",
             args_log.display()
         ),
     )
@@ -138,7 +138,7 @@ fn command_provider_reads_review_output_from_validated_json_file() {
     let command = dir.path().join("provider");
     fs::write(
         &command,
-        "#!/bin/sh\ncat >/dev/null\nmkdir -p .nitpick\ncat > .nitpick/review-output.json <<'JSON'\n{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src.rs\",\"line\":1,\"body\":\"use a clearer name\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}\nJSON\nprintf ignored-stdout\n",
+        "#!/bin/sh\ncat >/dev/null\nmkdir -p .nitpick\ncat > .nitpick/review-output.json <<'JSON'\n{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src.rs\",\"line\":1,\"body\":\"use a clearer name\"}]}\nJSON\nprintf ignored-stdout\n",
     )
     .expect("write command");
     make_executable(&command);
@@ -185,7 +185,7 @@ fn command_provider_uses_configured_review_prompt() {
     fs::write(
         &command,
         format!(
-            "#!/bin/sh\ncat > '{}'\nmkdir -p .nitpick\nprintf '{{\"summary\":\"review-response\",\"comments\":[],\"journey\":{{\"summary\":\"done\",\"steps\":[]}}}}' > .nitpick/review-output.json\n",
+            "#!/bin/sh\ncat > '{}'\nmkdir -p .nitpick\nprintf '{{\"summary\":\"review-response\",\"comments\":[]}}' > .nitpick/review-output.json\n",
             prompt_log.display()
         ),
     )
@@ -304,7 +304,7 @@ fn validate_review_output_file_rejects_paths_that_escape_repo() {
     let output_path = repo_dir.join(".nitpick-review.json");
     fs::write(
         &output_path,
-        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"../outside.rs\",\"line\":1,\"body\":\"bad path\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}",
+        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"../outside.rs\",\"line\":1,\"body\":\"bad path\"}]}",
     )
     .expect("write output");
 
@@ -325,7 +325,7 @@ fn validate_review_output_file_rejects_directory_comment_path() {
     let output_path = repo_dir.join(".nitpick-review.json");
     fs::write(
         &output_path,
-        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src\",\"line\":0,\"body\":\"directory note\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}",
+        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src\",\"line\":0,\"body\":\"directory note\"}]}",
     )
     .expect("write output");
 
@@ -343,7 +343,7 @@ fn validate_review_output_file_accepts_line_zero_for_file_in_diff_changeset() {
     let output_path = repo_dir.join(".nitpick-review.json");
     fs::write(
         &output_path,
-        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src.rs\",\"line\":0,\"body\":\"file-level note\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}",
+        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src.rs\",\"line\":0,\"body\":\"file-level note\"}]}",
     )
     .expect("write output");
 
@@ -366,7 +366,7 @@ fn validate_review_output_file_rejects_comment_line_outside_diff_changeset() {
     let output_path = repo_dir.join(".nitpick-review.json");
     fs::write(
         &output_path,
-        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src.rs\",\"line\":2,\"body\":\"not changed\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}",
+        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"src.rs\",\"line\":2,\"body\":\"not changed\"}]}",
     )
     .expect("write output");
 
@@ -392,7 +392,7 @@ fn validate_review_output_file_uses_target_path_for_renamed_file() {
     let output_path = repo_dir.join(".nitpick-review.json");
     fs::write(
         &output_path,
-        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"new.rs\",\"line\":1,\"body\":\"renamed file note\"}],\"journey\":{\"summary\":\"checked diff\",\"steps\":[]}}",
+        "{\"summary\":\"review summary\",\"comments\":[{\"path\":\"new.rs\",\"line\":1,\"body\":\"renamed file note\"}]}",
     )
     .expect("write output");
 
