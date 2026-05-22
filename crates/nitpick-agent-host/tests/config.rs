@@ -169,52 +169,64 @@ command = "/opt/bin/gh"
 }
 
 #[test]
-fn load_resolves_relative_review_extra_prompt_path_next_to_config() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config_path = dir.path().join("nested/config.toml");
-    std::fs::create_dir_all(config_path.parent().expect("parent")).expect("mkdir");
-    std::fs::create_dir_all(config_path.parent().expect("config parent").join("prompts"))
-        .expect("mkdir prompts");
-    std::fs::write(
-        config_path
-            .parent()
-            .expect("config parent")
-            .join("prompts/extra.md"),
-        "Prefer correctness.",
-    )
-    .expect("write extra prompt");
-    std::fs::write(
-        &config_path,
-        r#"
-[reviews]
-extra_prompt_path = "prompts/extra.md"
-"#,
-    )
-    .expect("write config");
-
-    let config = AgentConfig::load(&config_path).expect("config loads");
-
-    assert_eq!(
-        config.review_extra_prompt_path,
-        Some(
-            config_path
-                .parent()
-                .expect("config parent")
-                .join("prompts/extra.md")
-        )
-    );
-}
-
-#[test]
-fn load_rejects_missing_review_extra_prompt_path() {
+fn load_rejects_relative_review_extra_prompt_path() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config_path = dir.path().join("config.toml");
     std::fs::write(
         &config_path,
         r#"
 [reviews]
-extra_prompt_path = "missing.md"
+extra_prompt_path = "extra.md"
 "#,
+    )
+    .expect("write config");
+
+    let error = AgentConfig::load(&config_path).expect_err("config fails");
+
+    assert!(
+        error
+            .to_string()
+            .contains("review extra prompt path must be absolute")
+    );
+}
+
+#[test]
+fn load_accepts_absolute_review_extra_prompt_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let extra_prompt_path = dir.path().join("extra.md");
+    std::fs::write(&extra_prompt_path, "Prefer correctness.").expect("write extra prompt");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[reviews]
+extra_prompt_path = "{}"
+"#,
+            extra_prompt_path.display()
+        ),
+    )
+    .expect("write config");
+
+    let config = AgentConfig::load(&config_path).expect("config loads");
+
+    assert_eq!(config.review_extra_prompt_path, Some(extra_prompt_path));
+}
+
+#[test]
+fn load_rejects_missing_review_extra_prompt_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let extra_prompt_path = dir.path().join("missing.md");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[reviews]
+extra_prompt_path = "{}"
+"#,
+            extra_prompt_path.display()
+        ),
     )
     .expect("write config");
 

@@ -1204,7 +1204,7 @@ impl AgentConfig {
             .max(1);
         let review_prompt_path = review_prompt_path(config_dir);
         let review_extra_prompt_path =
-            review_optional_path(reviews.extra_prompt_path.as_deref(), config_dir);
+            review_extra_prompt_path(reviews.extra_prompt_path.as_deref())?;
         if let Some(path) = &review_extra_prompt_path
             && !path.is_file()
         {
@@ -1457,12 +1457,20 @@ fn review_prompt_path(config_dir: Option<&Path>) -> PathBuf {
     resolve_config_path(PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME), config_dir)
 }
 
-fn review_optional_path(raw_path: Option<&str>, config_dir: Option<&Path>) -> Option<PathBuf> {
-    raw_path
+fn review_extra_prompt_path(raw_path: Option<&str>) -> AgentResult<Option<PathBuf>> {
+    let path = raw_path
         .map(str::trim)
         .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .map(|path| resolve_config_path(path, config_dir))
+        .map(PathBuf::from);
+    if let Some(path) = &path
+        && !path.is_absolute()
+    {
+        return Err(AgentError::config(format!(
+            "review extra prompt path must be absolute: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 fn resolve_config_path(path: PathBuf, config_dir: Option<&Path>) -> PathBuf {
