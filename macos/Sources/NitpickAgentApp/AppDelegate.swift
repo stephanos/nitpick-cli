@@ -2,6 +2,9 @@ import AppKit
 import NitpickAgentMacOSCore
 import Sparkle
 
+private let agentErrorLogLineLimit = 20
+private let agentErrorLogCharacterLimit = 12_000
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let identity = MenuBarIdentity()
@@ -382,16 +385,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "log: \(logURL.path)",
         ]
         let log = daemonLogContentsOverride ?? (try? String(contentsOf: logURL)) ?? ""
-        let tail = log
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .suffix(120)
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let tail = boundedAgentErrorLogPreview(log)
         if !tail.isEmpty {
             lines.append("")
             lines.append(tail)
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func boundedAgentErrorLogPreview(_ log: String) -> String {
+        let logLines = log.split(separator: "\n", omittingEmptySubsequences: false)
+        var preview = logLines
+            .suffix(agentErrorLogLineLimit)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if preview.isEmpty {
+            return ""
+        }
+        if logLines.count > agentErrorLogLineLimit {
+            preview = "[showing last \(agentErrorLogLineLimit) log lines]\n\(preview)"
+        }
+        if preview.count > agentErrorLogCharacterLimit {
+            preview = "[truncated to last \(agentErrorLogCharacterLimit) characters]\n"
+                + String(preview.suffix(agentErrorLogCharacterLimit))
+        }
+        return preview
     }
 
     @objc private func quit(_ sender: Any?) {

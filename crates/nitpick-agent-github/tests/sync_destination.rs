@@ -85,6 +85,52 @@ fn github_cli_destination_posts_artifact_with_gh_pr_comment() {
 }
 
 #[test]
+fn github_cli_destination_posts_raw_pr_comment_body() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let args_file = dir.path().join("args");
+    let body_file = dir.path().join("body");
+    fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > {}\ncat > {}\nprintf 'https://github.com/acme/platform/pull/42#issuecomment-99\\n'\n",
+            args_file.display(),
+            body_file.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let outcome = destination
+        .post_comment("🤖 Review completed: no findings.")
+        .expect("sync outcome");
+
+    assert_eq!(
+        fs::read_to_string(args_file).expect("args"),
+        "pr comment 42 --repo acme/platform --body-file -\n"
+    );
+    assert_eq!(
+        fs::read_to_string(body_file).expect("body"),
+        "🤖 Review completed: no findings."
+    );
+    assert_eq!(
+        outcome.sync_state,
+        ArtifactSyncState::Synced {
+            destination: "github".into(),
+            remote_id: Some("https://github.com/acme/platform/pull/42#issuecomment-99".into())
+        }
+    );
+}
+
+#[test]
 fn github_cli_destination_does_not_prefix_plain_review_comment_body() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");

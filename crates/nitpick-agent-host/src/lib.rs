@@ -13,10 +13,10 @@ use std::{
 
 use fs_err as fs;
 use nitpick_agent_core::{
-    Activity, ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
-    AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent, ArtifactId,
-    ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, Clock,
-    CommandAgentProvider, CommandSandboxConfig, HostStatus, MemoryProcessedReviewStore,
+    Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentError,
+    AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
+    ArtifactId, ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult,
+    Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus, MemoryProcessedReviewStore,
     ProcessedReviewStore, ReviewInput, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig,
     SessionStatus, SystemClock,
 };
@@ -31,6 +31,7 @@ use serde::Deserialize;
 pub use api::api_router;
 
 const ACTIVITY_PRUNE_AGE_SECS: u64 = 24 * 60 * 60;
+const NO_FINDINGS_REVIEW_COMMENT: &str = "🤖 Review completed: no findings.";
 
 #[derive(Clone)]
 pub struct HostReviewProvider {
@@ -567,6 +568,34 @@ impl HostDaemon {
         Ok(Some(updated))
     }
 
+    fn sync_completed_github_review(&self, activity: &Activity, target: &str) -> AgentResult<()> {
+        self.sync_activity_artifacts(&activity.id, "github-review", Some(target))?;
+        if self.completed_review_has_no_comments(activity)? {
+            let target = target.parse::<PullRequestRef>().map_err(|error| {
+                AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
+            })?;
+            GitHubCliSyncDestination::new(
+                target,
+                self.config.github_command.as_deref().unwrap_or("gh"),
+            )
+            .post_comment(NO_FINDINGS_REVIEW_COMMENT)?;
+        }
+        Ok(())
+    }
+
+    fn completed_review_has_no_comments(&self, activity: &Activity) -> AgentResult<bool> {
+        if let Some(ActivityOutput::Review(output)) = &activity.output
+            && !output.comments.is_empty()
+        {
+            return Ok(false);
+        }
+        Ok(!self
+            .store
+            .list_artifacts_for(&activity.id)?
+            .iter()
+            .any(|artifact| matches!(artifact.content, ArtifactContent::ReviewComment(_))))
+    }
+
     fn reconcile_submitted_github_review_artifacts(
         &self,
         artifacts: &[Artifact],
@@ -984,8 +1013,7 @@ impl HostDaemon {
         if let Ok(activity) = &result
             && activity.status == ActivityStatus::Completed
             && let Some(target) = github_sync_target.as_deref()
-            && let Err(error) =
-                self.sync_activity_artifacts(&activity.id, "github-review", Some(target))
+            && let Err(error) = self.sync_completed_github_review(activity, target)
         {
             tracing::warn!(
                 activity_id = %activity.id,

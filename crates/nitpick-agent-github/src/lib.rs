@@ -49,6 +49,23 @@ impl GitHubCliSyncDestination {
             command: command.into(),
         }
     }
+
+    pub fn post_comment(&self, body: &str) -> AgentResult<ArtifactSyncOutcome> {
+        sync_with_github_cli(
+            &self.command,
+            &[
+                "pr",
+                "comment",
+                &self.target.number.to_string(),
+                "--repo",
+                &format!("{}/{}", self.target.owner, self.target.repo),
+                "--body-file",
+                "-",
+            ],
+            body,
+            self.name(),
+        )
+    }
 }
 
 pub struct GitHubCliReviewSyncDestination {
@@ -1033,63 +1050,7 @@ impl ArtifactSyncDestination for GitHubCliSyncDestination {
     }
 
     fn sync(&self, artifact: &Artifact) -> AgentResult<ArtifactSyncOutcome> {
-        tracing::debug!(
-            command = %self.command.display(),
-            repository = %format!("{}/{}", self.target.owner, self.target.repo),
-            number = self.target.number,
-            "posting GitHub PR comment"
-        );
-        let started = Instant::now();
-        let mut child = Command::new(&self.command)
-            .args([
-                "pr",
-                "comment",
-                &self.target.number.to_string(),
-                "--repo",
-                &format!("{}/{}", self.target.owner, self.target.repo),
-                "--body-file",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                AgentError::github_cli(format!(
-                    "failed to start GitHub CLI `{}`: {error}",
-                    self.command.display()
-                ))
-            })?;
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| AgentError::github_cli("GitHub CLI stdin unavailable"))?
-            .write_all(github_comment_body(artifact).as_bytes())
-            .map_err(|error| {
-                AgentError::github_cli(format!("write GitHub comment body: {error}"))
-            })?;
-
-        let output = child
-            .wait_with_output()
-            .map_err(|error| AgentError::github_cli(format!("wait for GitHub CLI: {error}")))?;
-        tracing::debug!(
-            command = %self.command.display(),
-            status = %output.status,
-            duration_ms = started.elapsed().as_millis(),
-            "GitHub PR comment command finished"
-        );
-        if !output.status.success() {
-            return Err(github_cli_status_error(&output));
-        }
-        let remote_id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-
-        Ok(ArtifactSyncOutcome {
-            sync_state: ArtifactSyncState::Synced {
-                destination: self.name().into(),
-                remote_id: (!remote_id.is_empty()).then_some(remote_id.clone()),
-            },
-            remote_id: (!remote_id.is_empty()).then_some(remote_id),
-        })
+        self.post_comment(&github_comment_body(artifact))
     }
 }
 

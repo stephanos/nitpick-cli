@@ -138,6 +138,33 @@ final class AppDelegateMenuTests: XCTestCase {
     }
 
     @MainActor
+    func testStoppedAgentStatusDetailsOnlyShowRecentDaemonLogLines() throws {
+        let appDelegate = AppDelegate()
+        let lines = (1...25).map { "daemon line \($0)" }.joined(separator: "\n")
+        appDelegate.setDaemonLogContentsForTesting(lines)
+
+        appDelegate.applyStoppedAgentForTesting()
+
+        let details = try XCTUnwrap(appDelegate.statusDetailsForTesting())
+        XCTAssertTrue(details.contains("[showing last 20 log lines]"))
+        XCTAssertFalse(details.contains("daemon line 5"))
+        XCTAssertTrue(details.contains("daemon line 6"))
+        XCTAssertTrue(details.contains("daemon line 25"))
+    }
+
+    @MainActor
+    func testStoppedAgentStatusDetailsCapsVeryLargeDaemonLogText() throws {
+        let appDelegate = AppDelegate()
+        appDelegate.setDaemonLogContentsForTesting(String(repeating: "x", count: 20_000))
+
+        appDelegate.applyStoppedAgentForTesting()
+
+        let details = try XCTUnwrap(appDelegate.statusDetailsForTesting())
+        XCTAssertTrue(details.contains("[truncated to last 12000 characters]"))
+        XCTAssertLessThanOrEqual(details.count, 12_300)
+    }
+
+    @MainActor
     func testActivityRowsAreClickable() throws {
         let appDelegate = AppDelegate()
         let menu = appDelegate.makeMenuForTesting()

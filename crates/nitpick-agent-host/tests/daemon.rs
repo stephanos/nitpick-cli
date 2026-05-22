@@ -5,11 +5,12 @@ use std::sync::{
 
 use nitpick_agent_core::{
     ActivityKind, ActivityStatus, ActivityStore, AgentProvider, AgentProviderKind, AgentResult,
-    AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, FsActivityStore,
-    HostStatus, MemoryActivityStore, ReviewInput, ReviewOutput, SessionStatus,
+    AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, FixedClock,
+    FsActivityStore, HostStatus, MemoryActivityStore, MemoryProcessedReviewStore, ReviewInput,
+    ReviewOutput, ReviewRequest, ReviewSource, SessionStatus,
 };
 use nitpick_agent_github::PullRequestRef;
-use nitpick_agent_host::HostDaemon;
+use nitpick_agent_host::{AgentConfig, HostDaemon};
 
 #[test]
 fn host_status_reports_current_activity_count() {
@@ -282,6 +283,49 @@ fn enqueue_review_serializes_multiple_updated_heads_for_same_pr() {
     wait_until(|| provider.started.load(Ordering::SeqCst) == 3);
 }
 
+#[test]
+fn enqueue_review_posts_no_findings_pr_comment_when_completed_review_has_no_comments() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let body_file = dir.path().join("body");
+    std::fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\ncat > {}\nprintf 'https://github.com/acme/platform/pull/42#issuecomment-99\\n'\n",
+            body_file.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+
+    let store = Arc::new(MemoryActivityStore::default());
+    let config = AgentConfig {
+        github_command: Some(gh.display().to_string()),
+        ..AgentConfig::default()
+    };
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        config,
+        Arc::new(MemoryProcessedReviewStore::default()),
+        Arc::new(NoFindingsProvider),
+        Arc::new(EmptyReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+
+    daemon
+        .enqueue_review(review_input_for_head("sha-one"))
+        .expect("enqueue review");
+
+    wait_until(|| {
+        std::fs::read_to_string(&body_file)
+            .is_ok_and(|body| body == "🤖 Review completed: no findings.")
+    });
+    assert_eq!(
+        std::fs::read_to_string(body_file).expect("body"),
+        "🤖 Review completed: no findings."
+    );
+}
+
 fn review_input_for_head(head_sha: &str) -> ReviewInput {
     ReviewInput {
         subject: nitpick_agent_core::ReviewSubject {
@@ -292,6 +336,14 @@ fn review_input_for_head(head_sha: &str) -> ReviewInput {
         head_sha: head_sha.into(),
         ..ReviewInput::default()
     }
+}
+
+fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("chmod");
 }
 
 fn wait_until(condition: impl Fn() -> bool) {
@@ -335,5 +387,37 @@ impl AgentProvider for BlockingProvider {
 
     fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
         Ok("done".into())
+    }
+}
+
+struct NoFindingsProvider;
+
+impl AgentProvider for NoFindingsProvider {
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        Ok(ReviewOutput::default())
+    }
+
+    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+        Ok("done".into())
+    }
+}
+
+struct EmptyReviewSource;
+
+impl ReviewSource for EmptyReviewSource {
+    fn name(&self) -> &'static str {
+        "empty"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        Ok(Vec::new())
+    }
+
+    fn review_input(&self, _request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        Ok(ReviewInput::default())
     }
 }
