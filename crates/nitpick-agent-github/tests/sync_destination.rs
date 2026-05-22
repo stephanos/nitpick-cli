@@ -73,7 +73,7 @@ fn github_cli_destination_posts_artifact_with_gh_pr_comment() {
     assert!(
         fs::read_to_string(body_file)
             .expect("body")
-            .contains("looks good")
+            .starts_with("🤖")
     );
     assert_eq!(
         outcome.sync_state,
@@ -121,11 +121,7 @@ fn github_cli_review_destination_posts_summary_with_gh_pr_review() {
         fs::read_to_string(args_file).expect("args"),
         "pr review 42 --repo acme/platform --comment --body-file -\n"
     );
-    assert!(
-        fs::read_to_string(body_file)
-            .expect("body")
-            .contains("looks good")
-    );
+    assert!(fs::read_to_string(body_file).expect("body").starts_with("🤖"));
     assert_eq!(
         outcome.sync_state,
         ArtifactSyncState::Synced {
@@ -192,7 +188,7 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#discussion_r99"}}
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
     assert_eq!(payload["comments"][0]["line"], 12);
     assert_eq!(payload["comments"][0]["side"], "RIGHT");
-    assert_eq!(payload["comments"][0]["body"], "Prefer this.");
+    assert_eq!(payload["comments"][0]["body"], "🤖 Prefer this.");
     assert_eq!(
         outcome.sync_state,
         ArtifactSyncState::Synced {
@@ -274,16 +270,16 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
             .expect("payload json");
     assert_eq!(payload["commit_id"], "abc123");
     assert!(payload.get("event").is_none());
-    assert_eq!(payload["body"], "summary body");
+    assert_eq!(payload["body"], "🤖 summary body");
     assert_eq!(payload["comments"].as_array().expect("comments").len(), 2);
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
     assert_eq!(payload["comments"][0]["line"], 12);
     assert_eq!(payload["comments"][0]["side"], "RIGHT");
-    assert_eq!(payload["comments"][0]["body"], "Prefer this.");
+    assert_eq!(payload["comments"][0]["body"], "🤖 Prefer this.");
     assert_eq!(payload["comments"][1]["path"], "src/main.rs");
     assert_eq!(payload["comments"][1]["line"], 8);
     assert_eq!(payload["comments"][1]["side"], "RIGHT");
-    assert_eq!(payload["comments"][1]["body"], "Also this.");
+    assert_eq!(payload["comments"][1]["body"], "🤖 Also this.");
     assert_eq!(outcomes.len(), 3);
     assert!(outcomes.iter().all(|outcome| outcome.sync_state
         == ArtifactSyncState::Pending {
@@ -332,6 +328,10 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         fs::read_to_string(commands_file).expect("commands"),
         "api repos/acme/platform/pulls/42/reviews/99 --method PUT --input -\n"
     );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["body"], "🤖 updated summary");
     assert_eq!(review.state, "PENDING");
 }
 
