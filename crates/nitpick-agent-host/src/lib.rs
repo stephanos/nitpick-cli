@@ -1120,7 +1120,7 @@ pub struct AgentConfig {
     pub checkout_dir: Option<String>,
     pub max_concurrent_reviews: usize,
     pub review_prompt_path: PathBuf,
-    pub review_extra_instructions: String,
+    pub review_extra_prompt_path: Option<PathBuf>,
     pub sandbox: AgentSandboxConfig,
     pub github_discovery: GitHubDiscoveryConfig,
 }
@@ -1135,7 +1135,7 @@ impl Default for AgentConfig {
             checkout_dir: None,
             max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
             review_prompt_path: PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME),
-            review_extra_instructions: String::new(),
+            review_extra_prompt_path: None,
             sandbox: AgentSandboxConfig::default(),
             github_discovery: GitHubDiscoveryConfig::default(),
         }
@@ -1174,12 +1174,17 @@ impl AgentConfig {
             .max_concurrent
             .unwrap_or(DEFAULT_MAX_CONCURRENT_REVIEWS)
             .max(1);
-        let review_prompt_path = review_prompt_path(reviews.prompt_path.as_deref(), config_dir);
-        let review_extra_instructions = reviews
-            .extra_instructions
-            .map(|instructions| instructions.trim().to_owned())
-            .filter(|instructions| !instructions.is_empty())
-            .unwrap_or_default();
+        let review_prompt_path = review_prompt_path(config_dir);
+        let review_extra_prompt_path =
+            review_optional_path(reviews.extra_prompt_path.as_deref(), config_dir);
+        if let Some(path) = &review_extra_prompt_path
+            && !path.is_file()
+        {
+            return Err(AgentError::config(format!(
+                "review extra prompt path is not a file: {}",
+                path.display()
+            )));
+        }
         let sandbox = AgentSandboxConfig::from_mode(agent.sandbox)?;
 
         Ok(Self {
@@ -1190,7 +1195,7 @@ impl AgentConfig {
             checkout_dir: None,
             max_concurrent_reviews,
             review_prompt_path,
-            review_extra_instructions,
+            review_extra_prompt_path,
             sandbox,
             github_discovery,
         })
@@ -1375,9 +1380,18 @@ impl AgentConfig {
                 )));
             }
         };
-        if !self.review_extra_instructions.is_empty() {
-            prompt.push_str("\n\nAdditional instructions:\n");
-            prompt.push_str(&self.review_extra_instructions);
+        if let Some(path) = &self.review_extra_prompt_path {
+            let instructions = fs::read_to_string(path).map_err(|error| {
+                AgentError::config(format!(
+                    "failed to read review extra prompt {}: {error}",
+                    path.display()
+                ))
+            })?;
+            let instructions = instructions.trim();
+            if !instructions.is_empty() {
+                prompt.push_str("\n\nConfigured extra review prompt:\n");
+                prompt.push_str(instructions);
+            }
         }
         input.review_prompt = prompt;
         Ok(input)
@@ -1411,12 +1425,19 @@ fn config_example_path(config_path: &Path) -> PathBuf {
         .join(name)
 }
 
-fn review_prompt_path(raw_path: Option<&str>, config_dir: Option<&Path>) -> PathBuf {
-    let path = raw_path
+fn review_prompt_path(config_dir: Option<&Path>) -> PathBuf {
+    resolve_config_path(PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME), config_dir)
+}
+
+fn review_optional_path(raw_path: Option<&str>, config_dir: Option<&Path>) -> Option<PathBuf> {
+    raw_path
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME));
+        .map(|path| resolve_config_path(path, config_dir))
+}
+
+fn resolve_config_path(path: PathBuf, config_dir: Option<&Path>) -> PathBuf {
     if path.is_absolute() {
         path
     } else if let Some(config_dir) = config_dir {
@@ -1470,8 +1491,7 @@ struct RawAgentConfig {
 #[serde(deny_unknown_fields)]
 struct RawReviewsConfig {
     max_concurrent: Option<usize>,
-    prompt_path: Option<String>,
-    extra_instructions: Option<String>,
+    extra_prompt_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

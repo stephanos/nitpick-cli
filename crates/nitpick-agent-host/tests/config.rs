@@ -1,7 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use nitpick_agent_core::{
-    ActivityKind, ActivityStore, AgentProviderKind, HostStatus, MemoryActivityStore,
+    ActivityKind, ActivityStore, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
+    ChatInput, HostStatus, MemoryActivityStore, ReviewInput, ReviewOutput, ReviewRequest,
+    ReviewSource,
 };
 use nitpick_agent_host::{
     AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon,
@@ -20,7 +22,7 @@ fn default_config_uses_claude_without_model_pin() {
         config.review_prompt_path,
         std::path::PathBuf::from("review-prompt.md")
     );
-    assert_eq!(config.review_extra_instructions, "");
+    assert_eq!(config.review_extra_prompt_path, None);
 }
 
 #[test]
@@ -144,8 +146,6 @@ sandbox = "none"
 
 [reviews]
 max_concurrent = 5
-prompt_path = "prompts/review.md"
-extra_instructions = "focus on correctness"
 
 [github]
 command = "/opt/bin/gh"
@@ -165,33 +165,110 @@ command = "/opt/bin/gh"
         }
     );
     assert_eq!(config.max_concurrent_reviews, 5);
-    assert_eq!(
-        config.review_prompt_path,
-        std::path::PathBuf::from("prompts/review.md")
-    );
-    assert_eq!(config.review_extra_instructions, "focus on correctness");
+    assert_eq!(config.review_extra_prompt_path, None);
 }
 
 #[test]
-fn load_resolves_relative_review_prompt_path_next_to_config() {
+fn load_resolves_relative_review_extra_prompt_path_next_to_config() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config_path = dir.path().join("nested/config.toml");
     std::fs::create_dir_all(config_path.parent().expect("parent")).expect("mkdir");
+    std::fs::create_dir_all(config_path.parent().expect("config parent").join("prompts"))
+        .expect("mkdir prompts");
+    std::fs::write(
+        config_path
+            .parent()
+            .expect("config parent")
+            .join("prompts/extra.md"),
+        "Prefer correctness.",
+    )
+    .expect("write extra prompt");
     std::fs::write(
         &config_path,
         r#"
 [reviews]
-prompt_path = "prompts/review.md"
+extra_prompt_path = "prompts/extra.md"
 "#,
     )
     .expect("write config");
 
-    let config = AgentConfig::load(&config_path).expect("config");
+    let config = AgentConfig::load(&config_path).expect("config loads");
 
     assert_eq!(
-        config.review_prompt_path,
-        dir.path().join("nested/prompts/review.md")
+        config.review_extra_prompt_path,
+        Some(
+            config_path
+                .parent()
+                .expect("config parent")
+                .join("prompts/extra.md")
+        )
     );
+}
+
+#[test]
+fn load_rejects_missing_review_extra_prompt_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[reviews]
+extra_prompt_path = "missing.md"
+"#,
+    )
+    .expect("write config");
+
+    let error = AgentConfig::load(&config_path).expect_err("config fails");
+
+    assert!(
+        error
+            .to_string()
+            .contains("review extra prompt path is not a file")
+    );
+}
+
+#[test]
+fn rejects_review_prompt_path_config() {
+    let error = AgentConfig::from_toml(
+        r#"
+[reviews]
+prompt_path = "review-prompt.md"
+"#,
+    )
+    .expect_err("prompt_path is rejected");
+
+    assert!(error.to_string().contains("prompt_path"));
+}
+
+#[test]
+fn configured_review_extra_prompt_file_is_appended_to_review_prompt() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_path = dir.path().join("review.md");
+    let extra_prompt_path = dir.path().join("extra.md");
+    std::fs::write(&prompt_path, "Base review prompt.").expect("write prompt");
+    std::fs::write(&extra_prompt_path, "Prefer correctness over style.")
+        .expect("write extra prompt");
+    let config = AgentConfig {
+        review_prompt_path: prompt_path,
+        review_extra_prompt_path: Some(extra_prompt_path),
+        ..AgentConfig::default()
+    };
+    let provider = Arc::new(RecordingReviewProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        Arc::new(MemoryActivityStore::default()),
+        config,
+        Arc::new(nitpick_agent_core::MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(EmptyReviewSource),
+        Arc::new(nitpick_agent_core::SystemClock),
+    );
+
+    daemon.start_review(ReviewInput::default()).expect("review");
+
+    let prompt = provider.review_prompt();
+    assert!(prompt.contains("Base review prompt."));
+    assert!(prompt.contains("Configured extra review prompt:"));
+    assert!(prompt.contains("Prefer correctness over style."));
 }
 
 #[test]
@@ -346,4 +423,46 @@ fn host_status_reports_configured_agent() {
             review_source_last_poll_summary: None,
         }
     );
+}
+
+#[derive(Default)]
+struct RecordingReviewProvider {
+    review_prompt: Mutex<String>,
+}
+
+impl RecordingReviewProvider {
+    fn review_prompt(&self) -> String {
+        self.review_prompt.lock().expect("prompt lock").clone()
+    }
+}
+
+impl AgentProvider for RecordingReviewProvider {
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        *self.review_prompt.lock().expect("prompt lock") = input.review_prompt.clone();
+        Ok(ReviewOutput::default())
+    }
+
+    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+        Ok(String::new())
+    }
+}
+
+struct EmptyReviewSource;
+
+impl ReviewSource for EmptyReviewSource {
+    fn name(&self) -> &'static str {
+        "empty"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        Ok(Vec::new())
+    }
+
+    fn review_input(&self, _request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        Ok(ReviewInput::default())
+    }
 }
