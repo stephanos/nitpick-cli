@@ -304,6 +304,81 @@ async fn review_chat_clears_missing_provider_session_id() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn review_chat_resumes_with_activity_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_provider = temp.path().join("provider");
+    let resume_log = temp.path().join("resume.log");
+    fs::write(
+        &fake_provider,
+        format!(
+            "#!/bin/sh\nprintf 'pwd=%s args=%s\\n' \"$PWD\" \"$*\" > '{}'\n",
+            resume_log.display()
+        ),
+    )
+    .expect("fake provider");
+    make_executable(&fake_provider);
+    let config_path = temp.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n",
+            fake_provider.display(),
+        ),
+    )
+    .expect("config");
+    let data_dir = temp.path().join("data");
+    let checkout = data_dir.join("checkouts/stephanos/subvoc/pr-1");
+    fs::create_dir_all(checkout.join(".git")).expect("checkout");
+    let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
+    let processed = Arc::new(
+        FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
+    );
+    let mut activity = store
+        .create(nitpick_agent_core::ActivityKind::Review)
+        .expect("activity");
+    activity.label = Some("review on stephanos/subvoc#1".into());
+    activity.status = nitpick_agent_core::ActivityStatus::Completed;
+    activity.session.provider = Some(nitpick_agent_core::AgentProviderKind::Codex);
+    activity.session.provider_session_id = Some("codex-session-1".into());
+    activity.session.status = nitpick_agent_core::SessionStatus::Completed;
+    store.save(&activity).expect("save activity");
+    let daemon = HostDaemon::with_dependencies(
+        store,
+        github_disabled_config(),
+        processed,
+        Arc::new(RecordingProvider::default()),
+        Arc::new(StubDiscovery::new(vec![])),
+        Arc::new(ManualClock::new(1_000)),
+    );
+    let host_addr = serve_host(daemon).await;
+
+    let output = run_cli_command(
+        CliCommand::Review(ReviewCommand::Chat {
+            target: "https://github.com/stephanos/subvoc/pull/1".into(),
+        }),
+        &host_addr,
+        temp.path().to_path_buf(),
+        String::new(),
+        String::new(),
+        config_path,
+        data_dir,
+    )
+    .expect("review chat command");
+
+    assert_eq!(output, "");
+    assert_eq!(
+        fs::read_to_string(resume_log).expect("review chat args"),
+        format!(
+            "pwd={} args=resume codex-session-1\n",
+            checkout
+                .canonicalize()
+                .expect("canonical checkout")
+                .display()
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn review_run_uses_mcp_tools_for_local_smoke_comments() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path().join("repo");
