@@ -101,6 +101,52 @@ impl GitHubCliReviewSyncDestination {
             &serde_json::json!({ "body": body }).to_string(),
         )
     }
+
+    pub fn review_comments(&self) -> AgentResult<Vec<GitHubReviewComment>> {
+        let mut comments = github_review_comments_from_cli(
+            &self.command,
+            &[&format!(
+                "repos/{}/{}/pulls/{}/comments",
+                self.target.owner, self.target.repo, self.target.number
+            )],
+        )?;
+        let reviews = github_reviews_from_cli(
+            &self.command,
+            &[&format!(
+                "repos/{}/{}/pulls/{}/reviews",
+                self.target.owner, self.target.repo, self.target.number
+            )],
+        )?;
+        for review in reviews
+            .into_iter()
+            .filter(|review| review.state == "PENDING")
+        {
+            let pending_comments = github_review_comments_from_cli(
+                &self.command,
+                &[&format!(
+                    "repos/{}/{}/pulls/{}/reviews/{}/comments",
+                    self.target.owner, self.target.repo, self.target.number, review.id
+                )],
+            )?;
+            comments.extend(pending_comments.into_iter().map(|mut comment| {
+                comment.draft = true;
+                comment
+            }));
+        }
+        let mut seen = HashSet::new();
+        comments.retain(|comment| seen.insert(comment.id.clone()));
+        Ok(comments)
+    }
+
+    pub fn delete_review_comment(&self, comment_id: &str) -> AgentResult<()> {
+        github_delete_from_cli(
+            &self.command,
+            &[&format!(
+                "repos/{}/{}/pulls/comments/{}",
+                self.target.owner, self.target.repo, comment_id
+            )],
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1185,6 +1231,33 @@ pub struct GitHubReviewResponse {
     pub commit_id: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubReviewComment {
+    pub id: String,
+    pub review_id: Option<String>,
+    pub path: String,
+    pub line: Option<u32>,
+    pub body: String,
+    pub author: Option<String>,
+    pub draft: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct GitHubReviewCommentResponse {
+    id: u64,
+    pull_request_review_id: Option<u64>,
+    path: Option<String>,
+    line: Option<u32>,
+    body: String,
+    user: Option<GitHubUserResponse>,
+    state: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct GitHubUserResponse {
+    login: String,
+}
+
 fn review_comment_payload(comment: ReviewComment) -> serde_json::Value {
     serde_json::json!({
         "path": comment.path,
@@ -1292,6 +1365,76 @@ fn github_review_from_cli(
         return Err(github_cli_status_error(&output));
     }
     parse_github_json(&output.stdout, "GitHub review response")
+}
+
+fn github_review_comments_from_cli(
+    command: &Path,
+    endpoint_args: &[&str],
+) -> AgentResult<Vec<GitHubReviewComment>> {
+    let mut args = vec!["api"];
+    args.extend_from_slice(endpoint_args);
+    tracing::debug!(command = %command.display(), args = ?args, "running GitHub review comments API command");
+    let output = Command::new(command)
+        .args(&args)
+        .output()
+        .map_err(|error| {
+            AgentError::github_cli(format!("run GitHub CLI `{}`: {error}", command.display()))
+        })?;
+    if !output.status.success() {
+        return Err(github_cli_status_error(&output));
+    }
+    let comments: Vec<GitHubReviewCommentResponse> =
+        parse_github_json(&output.stdout, "GitHub review comments response")?;
+    Ok(comments
+        .into_iter()
+        .map(|comment| GitHubReviewComment {
+            id: comment.id.to_string(),
+            review_id: comment
+                .pull_request_review_id
+                .map(|review_id| review_id.to_string()),
+            path: comment.path.unwrap_or_default(),
+            line: comment.line,
+            body: comment.body,
+            author: comment.user.map(|user| user.login),
+            draft: comment.state.as_deref() == Some("PENDING"),
+        })
+        .collect())
+}
+
+fn github_reviews_from_cli(
+    command: &Path,
+    endpoint_args: &[&str],
+) -> AgentResult<Vec<GitHubReviewResponse>> {
+    let mut args = vec!["api"];
+    args.extend_from_slice(endpoint_args);
+    tracing::debug!(command = %command.display(), args = ?args, "running GitHub reviews API command");
+    let output = Command::new(command)
+        .args(&args)
+        .output()
+        .map_err(|error| {
+            AgentError::github_cli(format!("run GitHub CLI `{}`: {error}", command.display()))
+        })?;
+    if !output.status.success() {
+        return Err(github_cli_status_error(&output));
+    }
+    parse_github_json(&output.stdout, "GitHub reviews response")
+}
+
+fn github_delete_from_cli(command: &Path, endpoint_args: &[&str]) -> AgentResult<()> {
+    let mut args = vec!["api"];
+    args.extend_from_slice(endpoint_args);
+    args.extend_from_slice(&["--method", "DELETE"]);
+    tracing::debug!(command = %command.display(), args = ?args, "running GitHub delete API command");
+    let output = Command::new(command)
+        .args(&args)
+        .output()
+        .map_err(|error| {
+            AgentError::github_cli(format!("run GitHub CLI `{}`: {error}", command.display()))
+        })?;
+    if !output.status.success() {
+        return Err(github_cli_status_error(&output));
+    }
+    Ok(())
 }
 
 fn github_review_from_cli_with_input(

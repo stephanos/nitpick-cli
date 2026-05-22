@@ -491,6 +491,86 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     assert_eq!(review.state, "PENDING");
 }
 
+#[test]
+fn github_cli_review_destination_lists_review_comments() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then
+  printf '[{{"id":10,"pull_request_review_id":98,"path":"src/lib.rs","line":12,"body":"Please adjust.","user":{{"login":"alice"}},"state":"SUBMITTED"}}]\n'
+elif [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '[{{"id":98,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-98","state":"COMMENTED","commit_id":"abc123"}},{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"def456"}}]\n'
+elif [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
+  printf '[{{"id":11,"pull_request_review_id":99,"path":"src/lib.rs","line":13,"body":"🤖 Old note.","user":{{"login":"nitpick"}},"state":"PENDING"}}]\n'
+fi
+"#,
+            commands = commands_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let comments = destination.review_comments().expect("comments");
+
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "api repos/acme/platform/pulls/42/comments\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/reviews/99/comments\n"
+    );
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[0].id, "10");
+    assert_eq!(comments[0].author.as_deref(), Some("alice"));
+    assert_eq!(comments[0].draft, false);
+    assert_eq!(comments[1].id, "11");
+    assert_eq!(comments[1].body, "🤖 Old note.");
+    assert_eq!(comments[1].draft, true);
+}
+
+#[test]
+fn github_cli_review_destination_deletes_review_comment() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    fs::write(
+        &gh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\n",
+            commands_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    destination
+        .delete_review_comment("11")
+        .expect("delete comment");
+
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "api repos/acme/platform/pulls/comments/11 --method DELETE\n"
+    );
+}
+
 fn make_executable(path: &std::path::Path) {
     let mut permissions = fs::metadata(path).expect("metadata").permissions();
     permissions.set_mode(0o755);

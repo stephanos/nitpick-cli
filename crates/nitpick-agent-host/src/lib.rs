@@ -22,7 +22,7 @@ use nitpick_agent_core::{
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
-    GitHubCliSyncDestination, GitHubDryRunSyncDestination, PullRequestRef,
+    GitHubCliSyncDestination, GitHubDryRunSyncDestination, GitHubReviewComment, PullRequestRef,
 };
 use polling_state::PollingState;
 use review_slots::ReviewSlotManager;
@@ -35,11 +35,15 @@ const ACTIVITY_PRUNE_AGE_SECS: u64 = 24 * 60 * 60;
 #[derive(Clone)]
 pub struct HostReviewProvider {
     inner: Arc<dyn AgentProvider>,
+    github_command: Option<String>,
 }
 
 impl HostReviewProvider {
-    pub fn new(inner: Arc<dyn AgentProvider>) -> Self {
-        Self { inner }
+    pub fn new(inner: Arc<dyn AgentProvider>, github_command: Option<String>) -> Self {
+        Self {
+            inner,
+            github_command,
+        }
     }
 }
 
@@ -53,7 +57,11 @@ impl AgentProvider for HostReviewProvider {
             return self.inner.review(session, input);
         }
 
-        let handle = review_mcp::ReviewMcpServerHandle::start(input)?;
+        let handle = review_mcp::ReviewMcpServerHandle::start(
+            input,
+            self.existing_review_comments(input),
+            self.review_mcp_github_target(input),
+        )?;
         let tools = handle.tool_config();
         self.inner.review_with_tools(session, input, &tools)?;
         let state = handle.session_state()?;
@@ -62,6 +70,7 @@ impl AgentProvider for HostReviewProvider {
                 "provider exited before calling finish_review",
             ));
         }
+        self.delete_review_comments(&state)?;
         Ok(ReviewOutput {
             comments: state.comments,
         })
@@ -91,6 +100,88 @@ impl AgentProvider for HostReviewProvider {
     fn attach_session(&self, session: &nitpick_agent_core::AgentSession) -> AgentResult<()> {
         self.inner.attach_session(session)
     }
+}
+
+impl HostReviewProvider {
+    fn existing_review_comments(
+        &self,
+        input: &ReviewInput,
+    ) -> Vec<review_mcp::ExistingReviewComment> {
+        let Some(destination) = self.github_review_destination(input) else {
+            return Vec::new();
+        };
+        match destination.review_comments() {
+            Ok(comments) => comments.into_iter().map(existing_review_comment).collect(),
+            Err(error) => {
+                tracing::warn!(error = %error, "fetch existing GitHub review comments failed");
+                Vec::new()
+            }
+        }
+    }
+
+    fn delete_review_comments(&self, state: &review_mcp::ReviewMcpSessionState) -> AgentResult<()> {
+        let Some(github) = &state.github else {
+            return Ok(());
+        };
+        let destination = GitHubCliReviewSyncDestination::new(
+            PullRequestRef {
+                owner: github.owner.clone(),
+                repo: github.repo.clone(),
+                number: github.number,
+            },
+            &github.command,
+        );
+        for comment_id in &state.deleted_comment_ids {
+            destination.delete_review_comment(comment_id)?;
+        }
+        Ok(())
+    }
+
+    fn review_mcp_github_target(
+        &self,
+        input: &ReviewInput,
+    ) -> Option<review_mcp::ReviewMcpGitHubTarget> {
+        let reference = pull_request_ref_from_review_input(input)?;
+        Some(review_mcp::ReviewMcpGitHubTarget {
+            owner: reference.owner,
+            repo: reference.repo,
+            number: reference.number,
+            command: self.github_command.as_deref().unwrap_or("gh").into(),
+        })
+    }
+
+    fn github_review_destination(
+        &self,
+        input: &ReviewInput,
+    ) -> Option<GitHubCliReviewSyncDestination> {
+        let reference = pull_request_ref_from_review_input(input)?;
+        Some(GitHubCliReviewSyncDestination::new(
+            reference,
+            self.github_command.as_deref().unwrap_or("gh"),
+        ))
+    }
+}
+
+fn existing_review_comment(comment: GitHubReviewComment) -> review_mcp::ExistingReviewComment {
+    review_mcp::ExistingReviewComment {
+        id: comment.id,
+        review_id: comment.review_id,
+        path: comment.path,
+        line: comment.line,
+        body: comment.body,
+        author: comment.author,
+        draft: comment.draft,
+    }
+}
+
+fn pull_request_ref_from_review_input(input: &ReviewInput) -> Option<PullRequestRef> {
+    let number = input.subject.number?;
+    let (owner, repo) = input.subject.repository.split_once('/')?;
+    Some(PullRequestRef {
+        owner: owner.into(),
+        repo: repo.into(),
+        number,
+    })
 }
 
 #[derive(Clone)]
@@ -869,7 +960,10 @@ impl HostDaemon {
 
     fn runtime(&self) -> AgentRuntime {
         AgentRuntime::new(
-            Arc::new(HostReviewProvider::new(self.provider.clone())),
+            Arc::new(HostReviewProvider::new(
+                self.provider.clone(),
+                self.config.github_command.clone(),
+            )),
             self.store.clone(),
         )
     }

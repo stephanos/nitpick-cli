@@ -33,6 +33,8 @@ pub struct ActiveReviewSession {
 struct ActiveReviewSessionState {
     validator: ReviewCommentValidator,
     comments: Vec<ReviewComment>,
+    existing_comments: Vec<ExistingReviewComment>,
+    deleted_comment_ids: Vec<String>,
     finished: bool,
 }
 
@@ -54,11 +56,51 @@ pub struct AddReviewCommentResult {
     pub accepted: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub struct ExistingReviewComment {
+    pub id: String,
+    pub review_id: Option<String>,
+    pub path: String,
+    pub line: Option<u32>,
+    pub body: String,
+    pub author: Option<String>,
+    pub draft: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ExistingReviewCommentsResult {
+    pub comments: Vec<ExistingReviewComment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub struct DeleteDraftCommentInput {
+    pub id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct DeleteDraftCommentResult {
+    pub deleted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewMcpGitHubTarget {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub command: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewMcpSessionState {
     pub repo_dir: PathBuf,
     pub diff: String,
     pub comments: Vec<ReviewComment>,
+    #[serde(default)]
+    pub existing_comments: Vec<ExistingReviewComment>,
+    #[serde(default)]
+    pub deleted_comment_ids: Vec<String>,
+    #[serde(default)]
+    pub github: Option<ReviewMcpGitHubTarget>,
     pub finished: bool,
 }
 
@@ -122,6 +164,27 @@ impl ReviewMcpTools {
         }
     }
 
+    pub fn existing_review_comments(&self) -> AgentResult<ExistingReviewCommentsResult> {
+        match &self.session {
+            ReviewMcpSession::Active(session) => session.existing_review_comments(),
+            ReviewMcpSession::File(state_path) => {
+                existing_review_comments_in_state_file(state_path)
+            }
+        }
+    }
+
+    pub fn delete_draft_comment(
+        &self,
+        input: DeleteDraftCommentInput,
+    ) -> AgentResult<DeleteDraftCommentResult> {
+        match &self.session {
+            ReviewMcpSession::Active(session) => session.delete_draft_comment(&input.id),
+            ReviewMcpSession::File(state_path) => {
+                delete_draft_comment_in_state_file(state_path, &input.id)
+            }
+        }
+    }
+
     #[tool(
         name = "add_review_comment",
         description = "Add a review comment to the active review session"
@@ -144,6 +207,31 @@ impl ReviewMcpTools {
             .map(Json)
             .map_err(|error| error.to_string())
     }
+
+    #[tool(
+        name = "existing_review_comments",
+        description = "List existing pull request review comments, including draft comments visible to Nitpick"
+    )]
+    async fn existing_review_comments_tool(
+        &self,
+    ) -> Result<Json<ExistingReviewCommentsResult>, String> {
+        self.existing_review_comments()
+            .map(Json)
+            .map_err(|error| error.to_string())
+    }
+
+    #[tool(
+        name = "delete_draft_comment",
+        description = "Delete an outdated Nitpick draft review comment by id. Only draft comments whose body starts with the robot emoji can be deleted."
+    )]
+    async fn delete_draft_comment_tool(
+        &self,
+        Parameters(input): Parameters<DeleteDraftCommentInput>,
+    ) -> Result<Json<DeleteDraftCommentResult>, String> {
+        self.delete_draft_comment(input)
+            .map(Json)
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl ActiveReviewSession {
@@ -153,6 +241,8 @@ impl ActiveReviewSession {
             state: Arc::new(Mutex::new(ActiveReviewSessionState {
                 validator,
                 comments: Vec::new(),
+                existing_comments: Vec::new(),
+                deleted_comment_ids: Vec::new(),
                 finished: false,
             })),
         })
@@ -193,6 +283,25 @@ impl ActiveReviewSession {
         Ok(self.lock_state()?.comments.clone())
     }
 
+    pub fn existing_review_comments(&self) -> AgentResult<ExistingReviewCommentsResult> {
+        Ok(ExistingReviewCommentsResult {
+            comments: self.lock_state()?.existing_comments.clone(),
+        })
+    }
+
+    pub fn delete_draft_comment(&self, id: &str) -> AgentResult<DeleteDraftCommentResult> {
+        let mut state = self.lock_state()?;
+        validate_deletable_comment(&state.existing_comments, id)?;
+        if !state
+            .deleted_comment_ids
+            .iter()
+            .any(|deleted_id| deleted_id == id)
+        {
+            state.deleted_comment_ids.push(id.to_owned());
+        }
+        Ok(DeleteDraftCommentResult { deleted: true })
+    }
+
     fn lock_state(&self) -> AgentResult<MutexGuard<'_, ActiveReviewSessionState>> {
         self.state
             .lock()
@@ -201,7 +310,11 @@ impl ActiveReviewSession {
 }
 
 impl ReviewMcpServerHandle {
-    pub fn start(input: &ReviewInput) -> AgentResult<Self> {
+    pub fn start(
+        input: &ReviewInput,
+        existing_comments: Vec<ExistingReviewComment>,
+        github: Option<ReviewMcpGitHubTarget>,
+    ) -> AgentResult<Self> {
         let temp_dir = new_temp_config_dir()?;
         let state_path = temp_dir.join("session.json");
         write_review_mcp_session_state(
@@ -210,6 +323,9 @@ impl ReviewMcpServerHandle {
                 repo_dir: input.repo_dir.clone(),
                 diff: input.diff.clone(),
                 comments: Vec::new(),
+                existing_comments,
+                deleted_comment_ids: Vec::new(),
+                github,
                 finished: false,
             },
         )?;
@@ -293,6 +409,46 @@ fn finish_review_in_state_file(state_path: &Path) -> AgentResult<FinishReviewRes
     })
 }
 
+fn existing_review_comments_in_state_file(
+    state_path: &Path,
+) -> AgentResult<ExistingReviewCommentsResult> {
+    let state = load_review_mcp_session_state(state_path)?;
+    Ok(ExistingReviewCommentsResult {
+        comments: state.existing_comments,
+    })
+}
+
+fn delete_draft_comment_in_state_file(
+    state_path: &Path,
+    id: &str,
+) -> AgentResult<DeleteDraftCommentResult> {
+    update_review_mcp_session_state(state_path, |state| {
+        validate_deletable_comment(&state.existing_comments, id)?;
+        if !state
+            .deleted_comment_ids
+            .iter()
+            .any(|deleted_id| deleted_id == id)
+        {
+            state.deleted_comment_ids.push(id.to_owned());
+        }
+        Ok(DeleteDraftCommentResult { deleted: true })
+    })
+}
+
+fn validate_deletable_comment(comments: &[ExistingReviewComment], id: &str) -> AgentResult<()> {
+    let Some(comment) = comments.iter().find(|comment| comment.id == id) else {
+        return Err(AgentError::invalid_input(format!(
+            "review comment `{id}` is not available to this review session"
+        )));
+    };
+    if !comment.draft || !comment.body.starts_with("🤖") {
+        return Err(AgentError::invalid_input(
+            "can only delete robot-authored draft comments",
+        ));
+    }
+    Ok(())
+}
+
 fn update_review_mcp_session_state<T>(
     state_path: &Path,
     update: impl FnOnce(&mut ReviewMcpSessionState) -> AgentResult<T>,
@@ -314,6 +470,13 @@ fn write_review_mcp_session_state(path: &Path, state: &ReviewMcpSessionState) ->
     })?;
     fs_err::rename(&temp_path, path)
         .map_err(|error| AgentError::io_path("replace review MCP session state", path, error))
+}
+
+pub fn write_review_mcp_session_state_for_test(
+    path: &Path,
+    state: &ReviewMcpSessionState,
+) -> AgentResult<()> {
+    write_review_mcp_session_state(path, state)
 }
 
 struct StateFileLock {
@@ -379,7 +542,7 @@ fn review_mcp_config_json(state_path: &Path) -> String {
 }
 
 fn review_tool_instructions() -> String {
-    "Use the `nitpick-review` MCP server for review output. Call `add_review_comment` for each inline finding, then call `finish_review` exactly once when the review is complete. Do not write `.nitpick/review-output.json`.".into()
+    include_str!("../../../examples/review-mcp-instructions.md").into()
 }
 
 fn review_mcp_server_command() -> String {
