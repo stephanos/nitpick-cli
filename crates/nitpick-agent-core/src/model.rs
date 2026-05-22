@@ -9,6 +9,8 @@ pub struct ReviewInput {
     pub review_prompt: String,
     pub instructions: String,
     pub subject: ReviewSubject,
+    #[serde(default)]
+    pub head_sha: String,
     pub diff: String,
     #[serde(default)]
     pub disable_sandbox: bool,

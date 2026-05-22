@@ -65,6 +65,63 @@ fn github_polling_creates_local_review_and_marks_pr_head_processed() {
 }
 
 #[test]
+fn github_polling_deduplicates_requests_for_same_pr_head_sha() {
+    let harness = TestHarness::new(
+        github_auto_review_config(),
+        Arc::new(StubDiscovery::new(vec![
+            pull_request("sha-one"),
+            pull_request("sha-one"),
+        ])),
+    );
+
+    let result = harness
+        .daemon
+        .poll_review_requests()
+        .expect("poll succeeds");
+
+    assert_eq!(result.discovered_count, 2);
+    assert_eq!(result.enqueued_count, 1);
+    assert_eq!(
+        harness
+            .store
+            .list()
+            .expect("activities")
+            .iter()
+            .filter(|activity| activity.kind == ActivityKind::Review)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn github_polling_allows_same_pr_when_head_sha_changes() {
+    let mut updated = pull_request("sha-two");
+    updated.number = 42;
+    let harness = TestHarness::new(
+        github_auto_review_config(),
+        Arc::new(StubDiscovery::new(vec![pull_request("sha-one"), updated])),
+    );
+
+    let result = harness
+        .daemon
+        .poll_review_requests()
+        .expect("poll succeeds");
+
+    assert_eq!(result.discovered_count, 2);
+    assert_eq!(result.enqueued_count, 2);
+    assert_eq!(
+        harness
+            .store
+            .list()
+            .expect("activities")
+            .iter()
+            .filter(|activity| activity.kind == ActivityKind::Review)
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn github_polling_tick_runs_one_due_poll_and_reports_status() {
     let harness = TestHarness::new(
         github_auto_review_config(),

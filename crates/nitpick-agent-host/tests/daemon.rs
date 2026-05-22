@@ -207,6 +207,93 @@ fn enqueue_review_limits_running_reviews_to_configured_default() {
     });
 }
 
+#[test]
+fn enqueue_review_reuses_active_review_for_same_pr_head_sha() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(BlockingProvider::default());
+    let daemon = HostDaemon::with_provider(store.clone(), provider.clone());
+
+    let input = review_input_for_head("sha-one");
+    let first = daemon
+        .enqueue_review(input.clone())
+        .expect("first review enqueued");
+    let second = daemon
+        .enqueue_review(input)
+        .expect("duplicate review reused");
+
+    assert_eq!(second.id, first.id);
+    assert_eq!(store.list().expect("activities").len(), 1);
+
+    provider.release();
+}
+
+#[test]
+fn enqueue_review_queues_same_pr_when_head_sha_changes() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(BlockingProvider::default());
+    let daemon = HostDaemon::with_provider(store.clone(), provider.clone());
+
+    let first = daemon
+        .enqueue_review(review_input_for_head("sha-one"))
+        .expect("first review enqueued");
+    let second = daemon
+        .enqueue_review(review_input_for_head("sha-two"))
+        .expect("updated head review enqueued");
+
+    assert_ne!(second.id, first.id);
+    assert_eq!(first.status, ActivityStatus::Running);
+    assert_eq!(second.status, ActivityStatus::Queued);
+    assert_eq!(store.list().expect("activities").len(), 2);
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 1);
+
+    provider.release();
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 2);
+    wait_until(|| {
+        store
+            .list()
+            .expect("activities")
+            .iter()
+            .all(|activity| activity.status == ActivityStatus::Completed)
+    });
+}
+
+#[test]
+fn enqueue_review_serializes_multiple_updated_heads_for_same_pr() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(BlockingProvider::default());
+    let daemon = HostDaemon::with_provider(store.clone(), provider.clone());
+
+    let first = daemon
+        .enqueue_review(review_input_for_head("sha-one"))
+        .expect("first review enqueued");
+    let second = daemon
+        .enqueue_review(review_input_for_head("sha-two"))
+        .expect("second review enqueued");
+    let third = daemon
+        .enqueue_review(review_input_for_head("sha-three"))
+        .expect("third review enqueued");
+
+    assert_eq!(first.status, ActivityStatus::Running);
+    assert_eq!(second.status, ActivityStatus::Queued);
+    assert_eq!(third.status, ActivityStatus::Queued);
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 1);
+
+    provider.release();
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 3);
+}
+
+fn review_input_for_head(head_sha: &str) -> ReviewInput {
+    ReviewInput {
+        subject: nitpick_agent_core::ReviewSubject {
+            repository: "acme/platform".into(),
+            number: Some(42),
+            ..nitpick_agent_core::ReviewSubject::default()
+        },
+        head_sha: head_sha.into(),
+        ..ReviewInput::default()
+    }
+}
+
 fn wait_until(condition: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {

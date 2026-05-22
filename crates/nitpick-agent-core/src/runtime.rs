@@ -124,9 +124,15 @@ impl AgentRuntime {
     }
 }
 
-fn review_session_id(input: &ReviewInput) -> String {
+pub fn review_session_id(input: &ReviewInput) -> String {
     let key = match input.subject.number {
-        Some(number) => format!("github:{}#{number}", input.subject.repository),
+        Some(number) if input.head_sha.is_empty() => {
+            format!("github:{}#{number}", input.subject.repository)
+        }
+        Some(number) => format!(
+            "github:{}#{number}@{}",
+            input.subject.repository, input.head_sha
+        ),
         None => format!("review:{}", input.subject.repository),
     };
     uuid_from_key(&key)

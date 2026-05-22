@@ -439,6 +439,7 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
                 title: details.title,
                 author: details.author,
             },
+            head_sha: details.head_sha,
             diff,
             ..ReviewInput::default()
         })

@@ -8,6 +8,7 @@ name = "nitpick"
 path = "src/main.rs"
 
 [dependencies]
+anstyle = "1.0.14"
 clap = { version = "4", features = ["derive"] }
 nitpick-agent-client = { path = "../nitpick-agent-client" }
 nitpick-agent-core.workspace = true

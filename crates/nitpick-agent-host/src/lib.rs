@@ -4,9 +4,11 @@ pub mod review_mcp;
 mod review_slots;
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     thread,
+    time::Duration,
 };
 
 use fs_err as fs;
@@ -741,6 +743,7 @@ impl HostDaemon {
                 Err(error) => Some(Err(error)),
             })
             .collect::<AgentResult<Vec<_>>>()?;
+        let new_requests = deduplicate_review_requests(new_requests);
         for request in &new_requests {
             self.record_review_request_detected_activity(request)?;
         }
@@ -795,9 +798,13 @@ impl HostDaemon {
 
     pub fn enqueue_review(&self, input: ReviewInput) -> AgentResult<Activity> {
         let input = self.config.apply_review_prompt(input)?;
+        if let Some(activity) = self.active_review_for_input(&input)? {
+            return Ok(activity);
+        }
+        let same_pr_active = self.has_active_review_for_same_pr(&input)?;
         let runtime = self.runtime();
         let mut activity = runtime.create_queued_review_activity(&input)?;
-        let slot_acquired = self.review_slots.try_acquire()?;
+        let slot_acquired = !same_pr_active && self.review_slots.try_acquire()?;
         if slot_acquired {
             activity = runtime.mark_activity_running(activity)?;
         }
@@ -807,6 +814,43 @@ impl HostDaemon {
             let _ = daemon.run_enqueued_review(activity, input, slot_acquired);
         });
         Ok(queued)
+    }
+
+    fn active_review_for_input(&self, input: &ReviewInput) -> AgentResult<Option<Activity>> {
+        if input.head_sha.is_empty() {
+            return Ok(None);
+        }
+        let Some(number) = input.subject.number else {
+            return Ok(None);
+        };
+        let label = format!("review on {}#{number}", input.subject.repository);
+        let session_id = nitpick_agent_core::review_session_id(input);
+        Ok(self
+            .store
+            .list()?
+            .into_iter()
+            .filter(|activity| activity.kind == ActivityKind::Review)
+            .filter(|activity| {
+                matches!(
+                    activity.status,
+                    ActivityStatus::Queued | ActivityStatus::Running
+                )
+            })
+            .filter(|activity| activity.label.as_deref() == Some(label.as_str()))
+            .find(|activity| {
+                activity.session.provider_session_id.as_deref() == Some(session_id.as_str())
+            }))
+    }
+
+    fn has_active_review_for_same_pr(&self, input: &ReviewInput) -> AgentResult<bool> {
+        let Some(label) = review_label(input) else {
+            return Ok(false);
+        };
+        Ok(self.store.list()?.into_iter().any(|activity| {
+            activity.kind == ActivityKind::Review
+                && active_review_status(&activity.status)
+                && activity.label.as_deref() == Some(label.as_str())
+        }))
     }
 
     pub fn start_chat(&self, input: ChatInput) -> AgentResult<Activity> {
@@ -838,6 +882,7 @@ impl HostDaemon {
     ) -> AgentResult<Activity> {
         let github_sync_target = github_review_sync_target(&input);
         if !slot_acquired {
+            self.wait_for_prior_reviews_on_same_pr(&activity)?;
             self.review_slots.wait_and_acquire()?;
         }
         let result = self.runtime().run_review(activity, input);
@@ -857,6 +902,25 @@ impl HostDaemon {
         }
         result
     }
+
+    fn wait_for_prior_reviews_on_same_pr(&self, activity: &Activity) -> AgentResult<()> {
+        let Some(label) = activity.label.as_deref() else {
+            return Ok(());
+        };
+        loop {
+            let has_prior = self.store.list()?.into_iter().any(|candidate| {
+                candidate.kind == ActivityKind::Review
+                    && active_review_status(&candidate.status)
+                    && candidate.id != activity.id
+                    && candidate.label.as_deref() == Some(label)
+                    && activity_started_before(&candidate, activity)
+            });
+            if !has_prior {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    }
 }
 
 fn github_review_sync_target(input: &ReviewInput) -> Option<String> {
@@ -864,6 +928,42 @@ fn github_review_sync_target(input: &ReviewInput) -> Option<String> {
         .subject
         .number
         .map(|number| format!("{}#{}", input.subject.repository, number))
+}
+
+fn review_label(input: &ReviewInput) -> Option<String> {
+    input
+        .subject
+        .number
+        .map(|number| format!("review on {}#{number}", input.subject.repository))
+}
+
+fn active_review_status(status: &ActivityStatus) -> bool {
+    matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
+}
+
+fn activity_started_before(candidate: &Activity, activity: &Activity) -> bool {
+    candidate
+        .created_at_unix
+        .cmp(&activity.created_at_unix)
+        .then_with(|| candidate.id.cmp(&activity.id))
+        .is_lt()
+}
+
+fn deduplicate_review_requests(requests: Vec<ReviewRequest>) -> Vec<ReviewRequest> {
+    let mut seen = HashSet::new();
+    requests
+        .into_iter()
+        .filter(|request| seen.insert(review_request_version_key(request)))
+        .collect()
+}
+
+fn review_request_version_key(request: &ReviewRequest) -> (String, Option<u64>, String, String) {
+    (
+        request.repository.clone(),
+        request.number,
+        request.id.clone(),
+        request.head_sha.clone(),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

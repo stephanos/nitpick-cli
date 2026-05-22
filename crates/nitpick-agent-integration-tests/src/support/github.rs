@@ -75,6 +75,7 @@ impl ReviewRequestDiscovery for StubDiscovery {
                 title: "Stub PR".into(),
                 author: "stub-author".into(),
             },
+            head_sha: pull_request.head_sha.clone(),
             diff: format!("diff for {}", pull_request.head_sha),
             ..ReviewInput::default()
         })

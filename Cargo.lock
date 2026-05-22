@@ -950,6 +950,7 @@ dependencies = [
 name = "nitpick-agent-cli"
 version = "0.1.0"
 dependencies = [
+ "anstyle",
  "clap",
  "nitpick-agent-client",
  "nitpick-agent-core",

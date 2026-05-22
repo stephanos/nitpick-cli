@@ -81,14 +81,20 @@ pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> Stri
     let mut lines = vec![
         format!("activity: {}", activity.id),
         format!("kind: {:?}", activity.kind),
-        format!("status: {:?}", activity.status),
     ];
+    if let Some(review) = review_shorthand(activity) {
+        lines.push(format!("review: {review}"));
+    }
+    lines.push(format!(
+        "status: {}",
+        color_activity_status(&activity.status)
+    ));
     if let Some(label) = &activity.label {
         lines.push(format!("label: {label}"));
     }
     lines.push(format!("updated: {}", activity.updated_at_unix));
     if let Some(error) = &activity.error {
-        lines.push(format!("error: {error}"));
+        lines.push(format!("error: {}", color_error(error)));
     }
     if let Some(output) = &activity.output {
         lines.push("output:".into());
@@ -133,6 +139,32 @@ pub fn ensure_resumable_activity(activity: &Activity) -> Result<(), String> {
 
 fn is_active_review_status(status: &ActivityStatus) -> bool {
     matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
+}
+
+fn review_shorthand(activity: &Activity) -> Option<&str> {
+    activity
+        .label
+        .as_deref()
+        .and_then(|label| label.strip_prefix("review on "))
+}
+
+fn color_activity_status(status: &ActivityStatus) -> String {
+    let style = match status {
+        ActivityStatus::Queued => anstyle::AnsiColor::Cyan.on_default(),
+        ActivityStatus::Running => anstyle::AnsiColor::Blue.on_default(),
+        ActivityStatus::Completed => anstyle::AnsiColor::Green.on_default(),
+        ActivityStatus::Error => anstyle::AnsiColor::Red.on_default(),
+        ActivityStatus::Cancelled => anstyle::AnsiColor::Yellow.on_default(),
+    };
+    colorize(format!("{status:?}"), style)
+}
+
+fn color_error(error: &str) -> String {
+    colorize(error, anstyle::AnsiColor::Red.on_default())
+}
+
+fn colorize(value: impl std::fmt::Display, style: anstyle::Style) -> String {
+    format!("{}{}{}", style.render(), value, style.render_reset())
 }
 
 fn format_review_activity(activity: &Activity) -> String {
@@ -365,7 +397,23 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "activity: activity-1\nkind: Review\nstatus: Error\nlabel: review on acme/platform#42\nupdated: 1200\nerror: provider failed\noutput:\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
+            "activity: activity-1\nkind: Review\nreview: acme/platform#42\nstatus: \u{1b}[31mError\u{1b}[0m\nlabel: review on acme/platform#42\nupdated: 1200\nerror: \u{1b}[31mprovider failed\u{1b}[0m\noutput:\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
+        );
+    }
+
+    #[test]
+    fn formats_activity_logs_with_review_shorthand() {
+        let mut activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        activity.status = nitpick_agent_core::ActivityStatus::Completed;
+        activity.label = Some("review on stephanos/subvoc#1".into());
+        activity.updated_at_unix = 1_200;
+
+        assert_eq!(
+            super::format_activity_logs(&activity, &[]),
+            "activity: activity-1\nkind: Review\nreview: stephanos/subvoc#1\nstatus: \u{1b}[32mCompleted\u{1b}[0m\nlabel: review on stephanos/subvoc#1\nupdated: 1200\nartifacts: none"
         );
     }
 

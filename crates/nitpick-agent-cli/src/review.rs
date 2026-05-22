@@ -269,11 +269,11 @@ mod tests {
 
     #[test]
     fn formats_review_run_status_instructions() {
-        let activity = Activity {
-            id: "activity-7".into(),
-            status: ActivityStatus::Running,
-            ..Activity::default()
-        };
+        let mut activity = Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-7"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        activity.status = ActivityStatus::Running;
 
         assert_eq!(
             format_review_started(&activity, "acme/platform#42"),
