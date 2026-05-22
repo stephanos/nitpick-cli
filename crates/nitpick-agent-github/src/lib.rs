@@ -452,8 +452,7 @@ fn search_pull_requests(
     let mut args = vec![
         "search".to_owned(),
         "prs".to_owned(),
-        "--review-requested".to_owned(),
-        "@me".to_owned(),
+        "user-review-requested:@me".to_owned(),
         "--state".to_owned(),
         "open".to_owned(),
     ];
@@ -662,9 +661,8 @@ struct SearchPullRequest {
 }
 
 impl SearchPullRequest {
-    fn into_discovered(self) -> AgentResult<DiscoveredPullRequest> {
-        let (owner, repo) = self
-            .repository
+    fn repository_parts(&self) -> AgentResult<(&str, &str)> {
+        self.repository
             .name_with_owner
             .split_once('/')
             .ok_or_else(|| {
@@ -672,7 +670,11 @@ impl SearchPullRequest {
                     "invalid GitHub repository name `{}`",
                     self.repository.name_with_owner
                 ))
-            })?;
+            })
+    }
+
+    fn into_discovered(self) -> AgentResult<DiscoveredPullRequest> {
+        let (owner, repo) = self.repository_parts()?;
         Ok(DiscoveredPullRequest {
             owner: owner.into(),
             repo: repo.into(),

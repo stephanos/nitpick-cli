@@ -56,6 +56,52 @@ exit 1
 }
 
 #[test]
+fn github_cli_discovery_uses_user_only_review_request_search() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let log = dir.path().join("commands.log");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+echo "$*" >> '{}'
+if [ "$1 $2 $3" = "search prs user-review-requested:@me" ]; then
+  printf '[{{"repository":{{"nameWithOwner":"acme/platform"}},"number":42}}]'
+  exit 0
+fi
+if [ "$1 $2" = "pr view" ] && [ "$3" = "42" ]; then
+  printf '{{"headRefOid":"abc123"}}'
+  exit 0
+fi
+exit 1
+"#,
+            log.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+
+    let prs = GitHubCliDiscovery::new(&gh)
+        .requested_reviews()
+        .expect("requested reviews");
+
+    assert_eq!(
+        prs,
+        vec![DiscoveredPullRequest {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+            head_sha: "abc123".into(),
+        }]
+    );
+    assert_eq!(
+        fs::read_to_string(log).expect("log"),
+        "search prs user-review-requested:@me --state open --limit 100 --json repository,number\n\
+pr view 42 --repo acme/platform --json headRefOid\n"
+    );
+}
+
+#[test]
 fn github_cli_discovery_scopes_requested_reviews_to_allowlist_queries() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
@@ -65,11 +111,11 @@ fn github_cli_discovery_scopes_requested_reviews_to_allowlist_queries() {
         format!(
             r#"#!/bin/sh
 echo "$*" >> '{}'
-if [ "$1 $2" = "search prs" ] && [ "$7 $8" = "--owner stephanos" ]; then
+if [ "$1 $2 $3" = "search prs user-review-requested:@me" ] && [ "$6 $7" = "--owner stephanos" ]; then
   printf '[{{"repository":{{"nameWithOwner":"stephanos/nitpick-agent"}},"number":42}}]'
   exit 0
 fi
-if [ "$1 $2" = "search prs" ] && [ "$7 $8" = "--repo stephanos/nitpick-agent" ]; then
+if [ "$1 $2 $3" = "search prs user-review-requested:@me" ] && [ "$6 $7" = "--repo stephanos/nitpick-agent" ]; then
   printf '[{{"repository":{{"nameWithOwner":"stephanos/nitpick-agent"}},"number":42}},{{"repository":{{"nameWithOwner":"stephanos/nitpick-cli"}},"number":7}}]'
   exit 0
 fi
@@ -113,8 +159,8 @@ exit 1
     );
     assert_eq!(
         fs::read_to_string(log).expect("log"),
-        "search prs --review-requested @me --state open --owner stephanos --limit 100 --json repository,number\n\
-search prs --review-requested @me --state open --repo stephanos/nitpick-agent --limit 100 --json repository,number\n\
+        "search prs user-review-requested:@me --state open --owner stephanos --limit 100 --json repository,number\n\
+search prs user-review-requested:@me --state open --repo stephanos/nitpick-agent --limit 100 --json repository,number\n\
 pr view 42 --repo stephanos/nitpick-agent --json headRefOid\n\
 pr view 7 --repo stephanos/nitpick-cli --json headRefOid\n"
     );
