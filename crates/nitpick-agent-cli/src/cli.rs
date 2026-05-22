@@ -1,9 +1,6 @@
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 
-use crate::{
-    ActivityArgs, ActivityCommand, ArtifactArgs, ArtifactCommand, ChatArgs, ChatCommand,
-    ReviewArgs, ReviewCommand, SystemArgs, SystemCommand,
-};
+use crate::{DebugArgs, DebugCommand, ReviewArgs, ReviewCommand, SystemArgs, SystemCommand};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CliOptions {
@@ -19,12 +16,12 @@ pub struct CliInvocation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommandGroup {
     Help,
+    HelpText(String),
     Version,
+    Status,
     Review(ReviewCommand),
-    Activity(ActivityCommand),
-    Artifact(ArtifactCommand),
     System(SystemCommand),
-    Chat(ChatCommand),
+    Debug(DebugCommand),
 }
 
 #[derive(Parser)]
@@ -39,11 +36,10 @@ struct Cli {
 #[derive(Subcommand)]
 #[command(rename_all = "kebab-case")]
 enum RootCommand {
+    Status,
     Review(ReviewArgs),
-    Activity(ActivityArgs),
-    Artifact(ArtifactArgs),
     System(SystemArgs),
-    Chat(ChatArgs),
+    Debug(DebugArgs),
 }
 
 pub fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<CliInvocation, String> {
@@ -59,7 +55,7 @@ pub fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<CliInv
         Ok(cli) => cli,
         Err(error) if error.kind() == ErrorKind::DisplayHelp => {
             return Ok(CliInvocation {
-                command: CommandGroup::Help,
+                command: CommandGroup::HelpText(error.to_string()),
                 options: CliOptions::default(),
             });
         }
@@ -73,11 +69,10 @@ pub fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<CliInv
     };
 
     let command = match cli.command {
+        Some(RootCommand::Status) => CommandGroup::Status,
         Some(RootCommand::Review(args)) => CommandGroup::Review(args.command.into()),
-        Some(RootCommand::Activity(args)) => CommandGroup::Activity(args.command.into()),
-        Some(RootCommand::Artifact(args)) => CommandGroup::Artifact(args.command.into()),
         Some(RootCommand::System(args)) => CommandGroup::System(args.command.into()),
-        Some(RootCommand::Chat(args)) => CommandGroup::Chat(args.command.into()),
+        Some(RootCommand::Debug(args)) => CommandGroup::Debug(args.command.into()),
         None => CommandGroup::Help,
     };
 
@@ -102,15 +97,15 @@ pub fn help_text(_version: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ChatCommand, CliCommand, parse_invocation};
+    use crate::{CliCommand, parse_invocation};
 
     #[test]
     fn help_text_mentions_nested_commands() {
         let help = super::help_text("0.1.0");
         assert!(help.contains("review"));
-        assert!(help.contains("activity"));
-        assert!(help.contains("artifact"));
         assert!(help.contains("system"));
+        assert!(help.contains("debug"));
+        assert!(help.contains("status"));
         assert!(help.contains("--no-sandbox"));
     }
 
@@ -118,8 +113,8 @@ mod tests {
     fn parses_no_sandbox_global_flag() {
         let invocation = parse_invocation([
             "--no-sandbox".to_owned(),
+            "review".to_owned(),
             "chat".to_owned(),
-            "start".to_owned(),
             "acme/platform#42".to_owned(),
         ])
         .expect("invocation");
@@ -127,9 +122,27 @@ mod tests {
         assert!(invocation.options.disable_sandbox);
         assert_eq!(
             invocation.command,
-            CliCommand::Chat(ChatCommand::Start {
+            CliCommand::Review(crate::ReviewCommand::Chat {
                 target: "acme/platform#42".into(),
             })
         );
+    }
+
+    #[test]
+    fn parses_root_status_command() {
+        let invocation = parse_invocation(["status".to_owned()]).expect("invocation");
+
+        assert_eq!(invocation.command, CliCommand::Status);
+    }
+
+    #[test]
+    fn nested_help_preserves_nested_command_help() {
+        let invocation =
+            parse_invocation(["review".to_owned(), "--help".to_owned()]).expect("help invocation");
+
+        assert!(matches!(
+            invocation.command,
+            CliCommand::HelpText(ref help) if help.contains("Usage: nitpick review")
+        ));
     }
 }

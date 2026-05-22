@@ -1,6 +1,8 @@
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use nitpick_agent_client::HostClient;
-use nitpick_agent_core::{ReviewInput, ReviewRequest, ReviewSubject};
+use nitpick_agent_core::{
+    Activity, ActivityId, ActivityKind, ActivityStatus, ReviewInput, ReviewRequest, ReviewSubject,
+};
 
 use crate::{CliError, CliOptions, CliRunContext};
 
@@ -8,10 +10,9 @@ use crate::{CliError, CliOptions, CliRunContext};
 pub enum ReviewCommand {
     Run { subject: String },
     Chat { target: String },
-    Editor { target: String },
-    Requests { only_new: bool },
-    Sync { activity_id: String, target: String },
-    List { include_all: bool },
+    OpenEditor { target: String },
+    Show { target: String },
+    List { status: ReviewListStatus },
 }
 
 #[derive(Args)]
@@ -29,21 +30,25 @@ pub enum ReviewSubcommand {
     Chat {
         target: String,
     },
-    Editor {
+    OpenEditor {
         target: String,
     },
-    Requests {
-        #[arg(long = "new")]
-        only_new: bool,
-    },
-    Sync {
-        activity_id: String,
+    Show {
         target: String,
     },
     List {
-        #[arg(long = "all")]
-        include_all: bool,
+        #[arg(long = "status", value_enum, default_value_t = ReviewListStatus::Inbox)]
+        status: ReviewListStatus,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ReviewListStatus {
+    Inbox,
+    Requested,
+    Active,
+    History,
+    Any,
 }
 
 impl From<ReviewSubcommand> for ReviewCommand {
@@ -51,16 +56,9 @@ impl From<ReviewSubcommand> for ReviewCommand {
         match command {
             ReviewSubcommand::Run { subject } => Self::Run { subject },
             ReviewSubcommand::Chat { target } => Self::Chat { target },
-            ReviewSubcommand::Editor { target } => Self::Editor { target },
-            ReviewSubcommand::Requests { only_new } => Self::Requests { only_new },
-            ReviewSubcommand::Sync {
-                activity_id,
-                target,
-            } => Self::Sync {
-                activity_id,
-                target,
-            },
-            ReviewSubcommand::List { include_all } => Self::List { include_all },
+            ReviewSubcommand::OpenEditor { target } => Self::OpenEditor { target },
+            ReviewSubcommand::Show { target } => Self::Show { target },
+            ReviewSubcommand::List { status } => Self::List { status },
         }
     }
 }
@@ -73,14 +71,33 @@ pub fn run(
     let client = HostClient::new(&context.host_addr);
     match command {
         ReviewCommand::Run { subject } => {
-            let mut input = review_input(subject, context.repo_dir, context.diff);
+            let mut input = review_input(subject.clone(), context.repo_dir, context.diff);
             input.disable_sandbox = options.disable_sandbox;
-            let activity = client.review(&input)?;
+            let mut activity = client.review(&input)?;
+            if is_github_target(&subject) {
+                activity = wait_for_terminal_activity(&client, &activity.id)?;
+            }
             let output = crate::activity::format_activity(&activity);
             if let Some(error) = activity.error {
                 return Err(error.into());
             }
-            Ok(output)
+            let artifacts = if is_github_target(&subject) {
+                client.sync_activity_artifacts(
+                    activity.id.as_str(),
+                    "github-review",
+                    Some(&subject),
+                )?
+            } else {
+                Vec::new()
+            };
+            if artifacts.is_empty() {
+                Ok(output)
+            } else {
+                Ok(format!(
+                    "{output}\n{}",
+                    crate::artifact::format_artifacts(&artifacts)
+                ))
+            }
         }
         ReviewCommand::Chat { target } => {
             let activities = client.activities()?;
@@ -105,26 +122,36 @@ pub fn run(
                 })?;
             Ok(String::new())
         }
-        ReviewCommand::Editor { target } => {
+        ReviewCommand::OpenEditor { target } => {
             let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
                 .map_err(CliError::from)?;
             crate::support::apply_sandbox_option(&mut config, &options);
             crate::support::open_cached_checkout(&target, &config, &context.data_dir, None)
                 .map_err(CliError::from)
         }
-        ReviewCommand::Requests { only_new } => {
-            Ok(format_review_requests(&client.review_requests(only_new)?))
+        ReviewCommand::Show { target } => {
+            let activities = client.activities()?;
+            let activity = crate::activity::resolve_log_activity(&activities, &target)
+                .map_err(CliError::from)?;
+            let artifacts = client.activity_artifacts(activity.id.as_str())?;
+            Ok(crate::activity::format_activity_logs(activity, &artifacts))
         }
-        ReviewCommand::Sync {
-            activity_id,
-            target,
-        } => Ok(crate::artifact::format_artifacts(
-            &client.sync_activity_artifacts(&activity_id, "github-review", Some(&target))?,
-        )),
-        ReviewCommand::List { include_all } => Ok(crate::activity::format_reviews(
-            &client.activities()?,
-            include_all,
-        )),
+        ReviewCommand::List { status } => {
+            let requests = if matches!(
+                status,
+                ReviewListStatus::Inbox | ReviewListStatus::Requested | ReviewListStatus::Any
+            ) {
+                client.review_requests(false)?
+            } else {
+                Vec::new()
+            };
+            let activities = if matches!(status, ReviewListStatus::Requested) {
+                Vec::new()
+            } else {
+                client.activities()?
+            };
+            Ok(format_review_list(&requests, &activities, status))
+        }
     }
 }
 
@@ -141,15 +168,122 @@ pub fn format_review_requests(requests: &[ReviewRequest]) -> String {
 }
 
 pub fn review_input(subject: String, repo_dir: std::path::PathBuf, diff: String) -> ReviewInput {
-    ReviewInput {
-        repo_dir,
-        subject: ReviewSubject {
+    let review_subject = match subject.parse::<nitpick_agent_github::PullRequestRef>() {
+        Ok(reference) => ReviewSubject {
+            repository: format!("{}/{}", reference.owner, reference.repo),
+            number: Some(reference.number),
+            ..ReviewSubject::default()
+        },
+        Err(_) => ReviewSubject {
             repository: subject,
             ..ReviewSubject::default()
         },
+    };
+    ReviewInput {
+        repo_dir,
+        subject: review_subject,
         diff,
         ..ReviewInput::default()
     }
+}
+
+pub fn format_review_list(
+    requests: &[ReviewRequest],
+    activities: &[Activity],
+    status: ReviewListStatus,
+) -> String {
+    let mut lines = Vec::new();
+    if matches!(
+        status,
+        ReviewListStatus::Inbox | ReviewListStatus::Requested | ReviewListStatus::Any
+    ) {
+        for request in requests {
+            if status == ReviewListStatus::Inbox
+                && activities.iter().any(|activity| {
+                    activity.kind == ActivityKind::Review
+                        && activity.label.as_deref()
+                            == Some(format!("review on {}", request.display_reference()).as_str())
+                        && is_active_review_status(&activity.status)
+                })
+            {
+                continue;
+            }
+            lines.push(format!("{} requested", request.display_reference()));
+        }
+    }
+    for activity in activities {
+        if activity.kind != ActivityKind::Review || !review_status_matches(&activity.status, status)
+        {
+            continue;
+        }
+        lines.push(format_review_activity(activity));
+    }
+    if lines.is_empty() {
+        return "no reviews".into();
+    }
+    lines.join("\n")
+}
+
+fn review_status_matches(status: &ActivityStatus, filter: ReviewListStatus) -> bool {
+    match filter {
+        ReviewListStatus::Inbox | ReviewListStatus::Active => is_active_review_status(status),
+        ReviewListStatus::Requested => false,
+        ReviewListStatus::History => is_history_review_status(status),
+        ReviewListStatus::Any => true,
+    }
+}
+
+fn is_active_review_status(status: &ActivityStatus) -> bool {
+    matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
+}
+
+fn is_history_review_status(status: &ActivityStatus) -> bool {
+    matches!(
+        status,
+        ActivityStatus::Completed | ActivityStatus::Error | ActivityStatus::Cancelled
+    )
+}
+
+fn format_review_activity(activity: &Activity) -> String {
+    let label = activity
+        .label
+        .as_deref()
+        .and_then(|label| label.strip_prefix("review on "))
+        .unwrap_or("review");
+    format!("{label} {:?} {}", activity.status, activity.id)
+}
+
+fn is_github_target(target: &str) -> bool {
+    target
+        .parse::<nitpick_agent_github::PullRequestRef>()
+        .is_ok()
+}
+
+fn wait_for_terminal_activity(
+    client: &HostClient,
+    activity_id: &ActivityId,
+) -> Result<Activity, CliError> {
+    for _ in 0..120 {
+        let Some(activity) = client
+            .activities()?
+            .into_iter()
+            .find(|activity| &activity.id == activity_id)
+        else {
+            return Err(CliError::from(format!(
+                "activity {activity_id} disappeared"
+            )));
+        };
+        if matches!(
+            activity.status,
+            ActivityStatus::Completed | ActivityStatus::Error | ActivityStatus::Cancelled
+        ) {
+            return Ok(activity);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    Err(CliError::from(format!(
+        "timed out waiting for activity {activity_id} to finish"
+    )))
 }
 
 #[cfg(test)]
@@ -201,57 +335,57 @@ mod tests {
     }
 
     #[test]
-    fn parses_review_editor_command() {
+    fn parses_review_open_editor_command() {
         let command = parse_command([
             "review".to_owned(),
-            "editor".to_owned(),
+            "open-editor".to_owned(),
             "acme/platform#42".to_owned(),
         ])
         .expect("command parses");
 
         assert_eq!(
             command,
-            CliCommand::Review(ReviewCommand::Editor {
+            CliCommand::Review(ReviewCommand::OpenEditor {
                 target: "acme/platform#42".into(),
             })
         );
     }
 
     #[test]
-    fn parses_review_editor_command_with_github_url() {
+    fn parses_review_open_editor_command_with_github_url() {
         let command = parse_command([
             "review".to_owned(),
-            "editor".to_owned(),
+            "open-editor".to_owned(),
             "https://github.com/acme/platform/pull/42".to_owned(),
         ])
         .expect("command parses");
 
         assert_eq!(
             command,
-            CliCommand::Review(ReviewCommand::Editor {
+            CliCommand::Review(ReviewCommand::OpenEditor {
                 target: "https://github.com/acme/platform/pull/42".into(),
             })
         );
     }
 
     #[test]
-    fn rejects_review_editor_without_target() {
-        let error =
-            parse_command(["review".to_owned(), "editor".to_owned()]).expect_err("command fails");
+    fn rejects_review_open_editor_without_target() {
+        let error = parse_command(["review".to_owned(), "open-editor".to_owned()])
+            .expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick review editor <TARGET>"));
+        assert!(error.contains("Usage: nitpick review open-editor <TARGET>"));
     }
 
     #[test]
-    fn rejects_review_open_command() {
+    fn rejects_review_editor_command() {
         let error = parse_command([
             "review".to_owned(),
-            "open".to_owned(),
+            "editor".to_owned(),
             "acme/platform#42".to_owned(),
         ])
         .expect_err("command fails");
 
-        assert!(error.contains("unrecognized subcommand 'open'"));
+        assert!(error.contains("unrecognized subcommand 'editor'"));
     }
 
     #[test]
@@ -263,29 +397,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_review_requests_command() {
-        let command =
-            parse_command(["review".to_owned(), "requests".to_owned()]).expect("command parses");
+    fn rejects_review_requests_command() {
+        let error =
+            parse_command(["review".to_owned(), "requests".to_owned()]).expect_err("command fails");
 
-        assert_eq!(
-            command,
-            CliCommand::Review(ReviewCommand::Requests { only_new: false })
-        );
-    }
-
-    #[test]
-    fn parses_new_review_requests_command() {
-        let command = parse_command([
-            "review".to_owned(),
-            "requests".to_owned(),
-            "--new".to_owned(),
-        ])
-        .expect("command parses");
-
-        assert_eq!(
-            command,
-            CliCommand::Review(ReviewCommand::Requests { only_new: true })
-        );
+        assert!(error.contains("unrecognized subcommand 'requests'"));
     }
 
     #[test]
@@ -295,18 +411,27 @@ mod tests {
 
         assert_eq!(
             command,
-            CliCommand::Review(ReviewCommand::List { include_all: false })
+            CliCommand::Review(ReviewCommand::List {
+                status: super::ReviewListStatus::Inbox
+            })
         );
     }
 
     #[test]
-    fn parses_reviews_all_command() {
-        let command = parse_command(["review".to_owned(), "list".to_owned(), "--all".to_owned()])
-            .expect("command parses");
+    fn parses_reviews_status_command() {
+        let command = parse_command([
+            "review".to_owned(),
+            "list".to_owned(),
+            "--status".to_owned(),
+            "history".to_owned(),
+        ])
+        .expect("command parses");
 
         assert_eq!(
             command,
-            CliCommand::Review(ReviewCommand::List { include_all: true })
+            CliCommand::Review(ReviewCommand::List {
+                status: super::ReviewListStatus::History
+            })
         );
     }
 
@@ -323,34 +448,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_review_sync_command() {
-        let command = parse_command([
+    fn rejects_review_sync_command() {
+        let error = parse_command([
             "review".to_owned(),
             "sync".to_owned(),
             "activity-1".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect_err("command fails");
+
+        assert!(error.contains("unrecognized subcommand 'sync'"));
+    }
+
+    #[test]
+    fn parses_review_show_command() {
+        let command = parse_command([
+            "review".to_owned(),
+            "show".to_owned(),
             "acme/platform#42".to_owned(),
         ])
         .expect("command");
 
         assert_eq!(
             command,
-            CliCommand::Review(ReviewCommand::Sync {
-                activity_id: "activity-1".into(),
+            CliCommand::Review(ReviewCommand::Show {
                 target: "acme/platform#42".into(),
             })
         );
-    }
-
-    #[test]
-    fn rejects_review_sync_without_target() {
-        let error = parse_command([
-            "review".to_owned(),
-            "sync".to_owned(),
-            "activity-1".to_owned(),
-        ])
-        .expect_err("command");
-
-        assert!(error.contains("Usage: nitpick review sync <ACTIVITY_ID> <TARGET>"));
     }
 
     #[test]
@@ -374,7 +498,8 @@ mod tests {
             "diff --git".into(),
         );
 
-        assert_eq!(input.subject.repository, "acme/platform#42");
+        assert_eq!(input.subject.repository, "acme/platform");
+        assert_eq!(input.subject.number, Some(42));
         assert_eq!(input.repo_dir, std::path::PathBuf::from("/tmp/repo"));
         assert_eq!(input.diff, "diff --git");
     }

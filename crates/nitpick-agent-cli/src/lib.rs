@@ -1,8 +1,8 @@
 mod activity;
 mod artifact;
-mod chat;
 mod cli;
 mod context;
+mod debug;
 mod review;
 mod support;
 mod system;
@@ -11,22 +11,21 @@ use nitpick_agent_client::HostClientError;
 use nitpick_agent_core::AgentError;
 
 pub use activity::{
-    ActivityArgs, ActivityCommand, daemon_log_path, ensure_resumable_activity, format_activities,
-    format_activity, format_activity_logs, format_daemon_log, format_reviews,
-    parse_activities_json, parse_activity_json, resolve_log_activity,
+    daemon_log_path, ensure_resumable_activity, format_activities, format_activity,
+    format_activity_logs, format_daemon_log, format_reviews, parse_activities_json,
+    parse_activity_json, resolve_log_activity,
 };
-pub use artifact::{
-    ArtifactArgs, ArtifactCommand, format_artifact, format_artifacts, parse_artifact_json,
-    parse_artifacts_json,
-};
-pub use chat::{ChatArgs, ChatCommand, chat_input};
+pub use artifact::{format_artifact, format_artifacts, parse_artifact_json, parse_artifacts_json};
 pub use cli::{
     CliInvocation, CliOptions, CommandGroup as CliCommand, help_text, parse_command,
     parse_invocation,
 };
 pub use context::{CliRunContext, config_path_from_env, data_dir_from_env, host_addr_from_env};
+pub use debug::{DebugArgs, DebugCommand};
 pub use nitpick_agent_core::HostStatus;
-pub use review::{ReviewArgs, ReviewCommand, format_review_requests, review_input};
+pub use review::{
+    ReviewArgs, ReviewCommand, ReviewListStatus, format_review_requests, review_input,
+};
 pub use system::{
     SystemArgs, SystemCommand, format_cleanup_checkouts, format_host_status, host_status_url,
     parse_host_status_json,
@@ -92,11 +91,11 @@ pub fn run_cli_command_typed(
 ) -> Result<String, CliError> {
     match command {
         CliCommand::Help => Ok(help_text(env!("CARGO_PKG_VERSION"))),
+        CliCommand::HelpText(help) => Ok(help),
         CliCommand::Version => Ok(format!("nitpick {}", env!("CARGO_PKG_VERSION"))),
+        CliCommand::Status => system::status(context),
         CliCommand::Review(command) => review::run(command, context, options),
-        CliCommand::Activity(command) => activity::run(command, context, options),
-        CliCommand::Artifact(command) => artifact::run(command, context, options),
         CliCommand::System(command) => system::run(command, context, options),
-        CliCommand::Chat(command) => chat::run(command, context, options),
+        CliCommand::Debug(command) => debug::run(command, context, options),
     }
 }

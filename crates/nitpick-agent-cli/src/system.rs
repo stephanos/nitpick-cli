@@ -6,7 +6,6 @@ use crate::{CliError, CliOptions, CliRunContext};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SystemCommand {
-    Status,
     SyncPending { destination: Option<String> },
     CleanupCheckouts,
 }
@@ -20,7 +19,6 @@ pub struct SystemArgs {
 #[derive(Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum SystemSubcommand {
-    Status,
     SyncPending { destination: Option<String> },
     CleanupCheckouts,
 }
@@ -28,7 +26,6 @@ pub enum SystemSubcommand {
 impl From<SystemSubcommand> for SystemCommand {
     fn from(command: SystemSubcommand) -> Self {
         match command {
-            SystemSubcommand::Status => Self::Status,
             SystemSubcommand::SyncPending { destination } => Self::SyncPending { destination },
             SystemSubcommand::CleanupCheckouts => Self::CleanupCheckouts,
         }
@@ -42,20 +39,24 @@ pub fn run(
 ) -> Result<String, CliError> {
     let client = HostClient::new(&context.host_addr);
     match command {
-        SystemCommand::Status => match client.status() {
-            Ok(status) => Ok(format_host_status(&status)),
-            Err(error) if error.is_unavailable() => Ok(format!(
-                "nitpick-agent-host: not connected\naddress: {}",
-                context.host_addr
-            )),
-            Err(error) => Err(error.into()),
-        },
         SystemCommand::SyncPending { destination } => Ok(crate::artifact::format_artifacts(
             &client.pending_sync_artifacts(destination.as_deref())?,
         )),
         SystemCommand::CleanupCheckouts => {
             Ok(format_cleanup_checkouts(&client.cleanup_checkouts()?))
         }
+    }
+}
+
+pub fn status(context: CliRunContext) -> Result<String, CliError> {
+    let client = HostClient::new(&context.host_addr);
+    match client.status() {
+        Ok(status) => Ok(format_host_status(&status)),
+        Err(error) if error.is_unavailable() => Ok(format!(
+            "nitpick-agent-host: not connected\naddress: {}",
+            context.host_addr
+        )),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -139,11 +140,11 @@ mod tests {
     use crate::{CliCommand, parse_command};
 
     #[test]
-    fn parses_status_command() {
-        let command =
-            parse_command(["system".to_owned(), "status".to_owned()]).expect("command parses");
+    fn rejects_system_status_command() {
+        let error =
+            parse_command(["system".to_owned(), "status".to_owned()]).expect_err("command fails");
 
-        assert_eq!(command, CliCommand::System(SystemCommand::Status));
+        assert!(error.contains("unrecognized subcommand 'status'"));
     }
 
     #[test]

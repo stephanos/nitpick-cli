@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use nitpick_agent_cli::{
-    ActivityCommand, CliCommand, ReviewCommand, SystemCommand, run_cli_command,
+    CliCommand, DebugCommand, ReviewCommand, ReviewListStatus, SystemCommand, run_cli_command,
 };
 use nitpick_agent_core::FsProcessedReviewStore;
 use nitpick_agent_core::{ActivityStore, FsActivityStore};
@@ -31,7 +31,11 @@ async fn cli_commands_talk_to_the_host_api() {
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> {log}
-if [ "$1" = "pr" ]; then
+if [ "$1 $2" = "pr view" ] && [ "$6" = "--json" ] && [ "$7" = "title,author,url,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{{"title":"Stub PR","author":{{"login":"stub-author"}},"url":"https://github.com/stephanos/nitpick-agent/pull/42","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}}\n'
+  exit 0
+fi
+if [ "$1 $2" = "pr view" ]; then
   printf '{{"headRefOid":"abc123"}}\n'
   exit 0
 fi
@@ -76,7 +80,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     let repo_dir = temp.path().to_path_buf();
 
     let status = run_cli_command(
-        CliCommand::System(SystemCommand::Status),
+        CliCommand::Status,
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -88,7 +92,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(status.contains("nitpick-agent-host: connected"));
 
     let requests = run_cli_command(
-        CliCommand::Review(ReviewCommand::Requests { only_new: true }),
+        CliCommand::Review(ReviewCommand::List {
+            status: ReviewListStatus::Requested,
+        }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -96,13 +102,13 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         config_path.clone(),
         data_dir.clone(),
     )
-    .expect("review requests command");
-    assert_eq!(requests, "github stephanos/nitpick-agent#42");
+    .expect("review list requested command");
+    assert_eq!(requests, "stephanos/nitpick-agent#42 requested");
 
     daemon.poll_review_requests().expect("poll");
 
     let activities = run_cli_command(
-        CliCommand::Activity(ActivityCommand::List),
+        CliCommand::Debug(DebugCommand::Activities),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -114,7 +120,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(activities.contains("activity-1: Completed"));
 
     let reviews = run_cli_command(
-        CliCommand::Review(ReviewCommand::List { include_all: true }),
+        CliCommand::Review(ReviewCommand::List {
+            status: ReviewListStatus::History,
+        }),
         &host_addr,
         repo_dir.clone(),
         String::new(),
@@ -123,10 +131,10 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("reviews command");
-    assert!(reviews.contains("Completed review on stephanos/nitpick-agent#42 activity-"));
+    assert!(reviews.contains("stephanos/nitpick-agent#42 Completed activity-"));
 
     let logs = run_cli_command(
-        CliCommand::Activity(ActivityCommand::Logs {
+        CliCommand::Debug(DebugCommand::Logs {
             target: "stephanos/nitpick-agent#42".into(),
         }),
         &host_addr,
@@ -140,10 +148,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(logs.contains("activity: activity-2"));
     assert!(logs.contains("review complete"));
 
-    let review_sync = run_cli_command(
-        CliCommand::Review(ReviewCommand::Sync {
-            activity_id: "activity-2".into(),
-            target: "stephanos/nitpick-agent#42".into(),
+    let review_run = run_cli_command(
+        CliCommand::Review(ReviewCommand::Run {
+            subject: "stephanos/nitpick-agent#42".into(),
         }),
         &host_addr,
         repo_dir.clone(),
@@ -152,17 +159,14 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         config_path.clone(),
         data_dir.clone(),
     )
-    .expect("review sync command");
-    assert!(review_sync.contains(
-        "artifact-1: ReviewSummary Pending { destination: \"github-review\", remote_id: Some(\"99\"), remote_url: Some(\"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99\") }"
-    ));
-    assert_eq!(
-        std::fs::read_to_string(review_sync_log).expect("review sync args"),
-        "pr view 42 --repo stephanos/nitpick-agent --json headRefOid\napi repos/stephanos/nitpick-agent/pulls/42/reviews --method POST --input -\n"
-    );
+    .expect("review run command");
+    assert!(review_run.contains("activity-"));
+    assert!(review_run.contains(
+        "ReviewSummary Pending { destination: \"github-review\", remote_id: Some(\"99\"), remote_url: Some(\"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99\") }"
+    ), "{review_run}");
 
     let daemon_logs = run_cli_command(
-        CliCommand::Activity(ActivityCommand::Logs {
+        CliCommand::Debug(DebugCommand::Logs {
             target: "daemon".into(),
         }),
         &host_addr,

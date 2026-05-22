@@ -1,59 +1,7 @@
-use clap::{Args, Subcommand};
-use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, Artifact, ArtifactContent,
 };
 use nitpick_agent_github::PullRequestRef;
-
-use crate::{CliError, CliOptions, CliRunContext};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ActivityCommand {
-    List,
-    Logs { target: String },
-}
-
-#[derive(Args)]
-pub struct ActivityArgs {
-    #[command(subcommand)]
-    pub command: ActivitySubcommand,
-}
-
-#[derive(Subcommand)]
-#[command(rename_all = "kebab-case")]
-pub enum ActivitySubcommand {
-    List,
-    Logs { target: String },
-}
-
-impl From<ActivitySubcommand> for ActivityCommand {
-    fn from(command: ActivitySubcommand) -> Self {
-        match command {
-            ActivitySubcommand::List => Self::List,
-            ActivitySubcommand::Logs { target } => Self::Logs { target },
-        }
-    }
-}
-
-pub fn run(
-    command: ActivityCommand,
-    context: CliRunContext,
-    _options: CliOptions,
-) -> Result<String, CliError> {
-    let client = HostClient::new(&context.host_addr);
-    match command {
-        ActivityCommand::List => Ok(format_activities(&client.activities()?)),
-        ActivityCommand::Logs { target } if target == "daemon" => {
-            format_daemon_log(&daemon_log_path(&context.data_dir)).map_err(Into::into)
-        }
-        ActivityCommand::Logs { target } => {
-            let activities = client.activities()?;
-            let activity = resolve_log_activity(&activities, &target).map_err(CliError::from)?;
-            let artifacts = client.activity_artifacts(activity.id.as_str())?;
-            Ok(format_activity_logs(activity, &artifacts))
-        }
-    }
-}
 
 pub fn parse_activity_json(body: &str) -> Result<Activity, String> {
     serde_json::from_str(body).map_err(|error| format!("invalid host activity response: {error}"))
@@ -239,40 +187,15 @@ fn format_artifact_content(content: &ArtifactContent) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivityCommand, format_activities, format_reviews};
+    use super::{format_activities, format_reviews};
     use crate::{CliCommand, parse_command, run_cli_command};
 
     #[test]
-    fn parses_activities_command() {
-        let command =
-            parse_command(["activity".to_owned(), "list".to_owned()]).expect("command parses");
-
-        assert_eq!(command, CliCommand::Activity(ActivityCommand::List));
-    }
-
-    #[test]
-    fn parses_logs_command() {
-        let command = parse_command([
-            "activity".to_owned(),
-            "logs".to_owned(),
-            "acme/platform#42".to_owned(),
-        ])
-        .expect("command");
-
-        assert_eq!(
-            command,
-            CliCommand::Activity(ActivityCommand::Logs {
-                target: "acme/platform#42".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_logs_without_target() {
+    fn rejects_activity_command() {
         let error =
-            parse_command(["activity".to_owned(), "logs".to_owned()]).expect_err("command fails");
+            parse_command(["activity".to_owned(), "list".to_owned()]).expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick activity logs <TARGET>"));
+        assert!(error.contains("unrecognized subcommand 'activity'"));
     }
 
     #[test]
@@ -284,7 +207,7 @@ mod tests {
         ])
         .expect_err("command fails");
 
-        assert!(error.contains("unrecognized subcommand 'inspect'"));
+        assert!(error.contains("unrecognized subcommand 'activity'"));
     }
 
     #[test]
@@ -504,7 +427,7 @@ mod tests {
         std::fs::write(&path, "daemon started\n").expect("write log");
 
         let output = run_cli_command(
-            CliCommand::Activity(ActivityCommand::Logs {
+            CliCommand::Debug(crate::DebugCommand::Logs {
                 target: "daemon".into(),
             }),
             "127.0.0.1:1",
