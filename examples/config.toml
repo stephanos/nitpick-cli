@@ -12,7 +12,6 @@ sandbox = "macos-seatbelt"
 [reviews]
 max_concurrent = 3
 # Optional file with user guidance appended to every review prompt.
-# Relative paths are resolved next to this config file.
 extra_prompt_path = ""
 
 [github]
