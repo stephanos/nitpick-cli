@@ -12,7 +12,11 @@ pub fn parse_activities_json(body: &str) -> Result<Vec<Activity>, String> {
 }
 
 pub fn format_activity(activity: &Activity) -> String {
-    format!("{}: {:?}", activity.id, activity.status)
+    format!(
+        "{}  {}",
+        crate::style::status_lower(&activity.status),
+        crate::style::label(activity.id.to_string())
+    )
 }
 
 pub fn format_activities(activities: &[Activity]) -> String {
@@ -79,34 +83,54 @@ pub fn resolve_log_activity<'a>(
 
 pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> String {
     let mut lines = vec![
-        format!("activity: {}", activity.id),
-        format!("kind: {:?}", activity.kind),
+        format!("{} {}", crate::style::label("activity"), activity.id),
+        format!(
+            "{} {}",
+            crate::style::label("kind"),
+            format!("{:?}", activity.kind)
+        ),
     ];
     if let Some(review) = review_shorthand(activity) {
-        lines.push(format!("review: {review}"));
+        lines.push(format!("{} {review}", crate::style::label("review")));
     }
     lines.push(format!(
-        "status: {}",
-        color_activity_status(&activity.status)
+        "{} {}",
+        crate::style::label("status"),
+        crate::style::status_title(&activity.status)
     ));
     if let Some(label) = &activity.label {
-        lines.push(format!("label: {label}"));
+        lines.push(format!("{} {label}", crate::style::label("label")));
     }
-    lines.push(format!("updated: {}", activity.updated_at_unix));
+    lines.push(format!(
+        "{} {}",
+        crate::style::label("updated"),
+        activity.updated_at_unix
+    ));
     if let Some(error) = &activity.error {
-        lines.push(format!("error: {}", color_error(error)));
+        lines.push(format!(
+            "{} {}",
+            crate::style::label("error"),
+            crate::style::error(error)
+        ));
     }
     if let Some(output) = &activity.output {
-        lines.push("output:".into());
-        lines.push(format_activity_output(output));
+        lines.push(crate::style::label("output"));
+        lines.push(indent_block(&format_activity_output(output)));
     }
     if artifacts.is_empty() {
-        lines.push("artifacts: none".into());
+        lines.push(format!("{} none", crate::style::label("artifacts")));
     } else {
-        lines.push("artifacts:".into());
+        lines.push(crate::style::label("artifacts"));
         for artifact in artifacts {
-            lines.push(format!("== {} {:?} ==", artifact.id, artifact.kind));
-            lines.push(format_artifact_content(&artifact.content));
+            lines.push(format!(
+                "  {}  {:?}",
+                crate::style::label(artifact.id.to_string()),
+                artifact.kind
+            ));
+            lines.push(indent_block_by(
+                &format_artifact_content(&artifact.content),
+                "    ",
+            ));
         }
     }
     lines.join("\n")
@@ -148,35 +172,21 @@ fn review_shorthand(activity: &Activity) -> Option<&str> {
         .and_then(|label| label.strip_prefix("review on "))
 }
 
-fn color_activity_status(status: &ActivityStatus) -> String {
-    let style = match status {
-        ActivityStatus::Queued => anstyle::AnsiColor::Cyan.on_default(),
-        ActivityStatus::Running => anstyle::AnsiColor::Blue.on_default(),
-        ActivityStatus::Completed => anstyle::AnsiColor::Green.on_default(),
-        ActivityStatus::Error => anstyle::AnsiColor::Red.on_default(),
-        ActivityStatus::Cancelled => anstyle::AnsiColor::Yellow.on_default(),
-    };
-    colorize(format!("{status:?}"), style)
-}
-
-fn color_error(error: &str) -> String {
-    colorize(error, anstyle::AnsiColor::Red.on_default())
-}
-
-fn colorize(value: impl std::fmt::Display, style: anstyle::Style) -> String {
-    format!("{}{}{}", style.render(), value, style.render_reset())
-}
-
 fn format_review_activity(activity: &Activity) -> String {
     let mut output = format!(
-        "{:?} {} {} updated={}",
-        activity.status,
+        "{}  {}  {}  {} {}",
+        crate::style::status_lower(&activity.status),
         activity.label.as_deref().unwrap_or("review"),
-        activity.id,
+        crate::style::label(activity.id.to_string()),
+        crate::style::label("updated"),
         activity.updated_at_unix
     );
     if let Some(error) = &activity.error {
-        output.push_str(&format!(" error={error:?}"));
+        output.push_str(&format!(
+            "  {} {}",
+            crate::style::label("error"),
+            crate::style::error(error)
+        ));
     }
     output
 }
@@ -216,6 +226,18 @@ fn format_artifact_content(content: &ArtifactContent) -> String {
         }
         ArtifactContent::ChatResponse(response) => response.clone(),
     }
+}
+
+fn indent_block(value: &str) -> String {
+    indent_block_by(value, "  ")
+}
+
+fn indent_block_by(value: &str, prefix: &str) -> String {
+    value
+        .lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -285,7 +307,7 @@ mod tests {
                 &[completed_review.clone(), running_chat, running_review],
                 false
             ),
-            "Running review on acme/platform#42 activity-1 updated=1200"
+            "\u{1b}[34mrunning\u{1b}[0m  review on acme/platform#42  \u{1b}[2mactivity-1\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m 1200"
         );
         assert_eq!(
             format_reviews(&[completed_review], false),
@@ -314,7 +336,7 @@ mod tests {
 
         assert_eq!(
             format_reviews(&[completed_review, running_review], true),
-            "Running review on acme/platform#42 activity-1 updated=1200\nCompleted review on acme/platform#41 activity-2 updated=1000"
+            "\u{1b}[34mrunning\u{1b}[0m  review on acme/platform#42  \u{1b}[2mactivity-1\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m 1200\n\u{1b}[32mcompleted\u{1b}[0m  review on acme/platform#41  \u{1b}[2mactivity-2\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m 1000"
         );
     }
 
@@ -332,7 +354,7 @@ mod tests {
 
         assert_eq!(
             format_reviews(&[failed_review], true),
-            "Error review on acme/platform#42 activity-1 updated=1200 error=\"provider failed\""
+            "\u{1b}[31merror\u{1b}[0m  review on acme/platform#42  \u{1b}[2mactivity-1\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m 1200  \u{1b}[2merror\u{1b}[0m \u{1b}[31mprovider failed\u{1b}[0m"
         );
     }
 
@@ -397,7 +419,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "activity: activity-1\nkind: Review\nreview: acme/platform#42\nstatus: \u{1b}[31mError\u{1b}[0m\nlabel: review on acme/platform#42\nupdated: 1200\nerror: \u{1b}[31mprovider failed\u{1b}[0m\noutput:\nsrc/lib.rs:12 comment body\nartifacts:\n== artifact-1 ReviewSummary ==\nartifact summary"
+            "\u{1b}[2mactivity\u{1b}[0m activity-1\n\u{1b}[2mkind\u{1b}[0m Review\n\u{1b}[2mreview\u{1b}[0m acme/platform#42\n\u{1b}[2mstatus\u{1b}[0m \u{1b}[31mError\u{1b}[0m\n\u{1b}[2mlabel\u{1b}[0m review on acme/platform#42\n\u{1b}[2mupdated\u{1b}[0m 1200\n\u{1b}[2merror\u{1b}[0m \u{1b}[31mprovider failed\u{1b}[0m\n\u{1b}[2moutput\u{1b}[0m\n  src/lib.rs:12 comment body\n\u{1b}[2martifacts\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary\n    artifact summary"
         );
     }
 
@@ -413,7 +435,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[]),
-            "activity: activity-1\nkind: Review\nreview: stephanos/subvoc#1\nstatus: \u{1b}[32mCompleted\u{1b}[0m\nlabel: review on stephanos/subvoc#1\nupdated: 1200\nartifacts: none"
+            "\u{1b}[2mactivity\u{1b}[0m activity-1\n\u{1b}[2mkind\u{1b}[0m Review\n\u{1b}[2mreview\u{1b}[0m stephanos/subvoc#1\n\u{1b}[2mstatus\u{1b}[0m \u{1b}[32mCompleted\u{1b}[0m\n\u{1b}[2mlabel\u{1b}[0m review on stephanos/subvoc#1\n\u{1b}[2mupdated\u{1b}[0m 1200\n\u{1b}[2martifacts\u{1b}[0m none"
         );
     }
 

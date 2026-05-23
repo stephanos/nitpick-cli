@@ -192,7 +192,11 @@ pub fn format_review_list(
             {
                 continue;
             }
-            lines.push(format!("{} requested", request.display_reference()));
+            lines.push(format!(
+                "{}  {}",
+                crate::style::label("requested"),
+                request.display_reference()
+            ));
         }
     }
     for activity in activities {
@@ -234,19 +238,44 @@ fn format_review_activity(activity: &Activity) -> String {
         .as_deref()
         .and_then(|label| label.strip_prefix("review on "))
         .unwrap_or("review");
-    format!("{label} {:?} {}", activity.status, activity.id)
+    let mut line = format!(
+        "{}  {label}  {}",
+        crate::style::status_lower(&activity.status),
+        crate::style::label(activity.id.to_string())
+    );
+    if activity.updated_at_unix > 0 {
+        line.push_str(&format!(
+            "  {} {}",
+            crate::style::label("updated"),
+            activity.updated_at_unix
+        ));
+    }
+    if let Some(error) = &activity.error {
+        line.push_str(&format!(
+            "  {} {}",
+            crate::style::label("error"),
+            crate::style::error(error)
+        ));
+    }
+    line
 }
 
 fn format_review_started(activity: &Activity, subject: &str) -> String {
     format!(
-        "{}\ncheck status: nitpick review show {subject}\nlist active reviews: nitpick review list --status active",
-        crate::activity::format_activity(activity)
+        "review {}  {}\n  {}  nitpick review show {subject}\n  {}  nitpick review list --status active",
+        crate::style::status_lower(&activity.status),
+        crate::style::label(activity.id.to_string()),
+        crate::style::label("status"),
+        crate::style::label("active")
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ReviewCommand, format_review_requests, format_review_started, review_input};
+    use super::{
+        ReviewCommand, ReviewListStatus, format_review_list, format_review_requests,
+        format_review_started, review_input,
+    };
     use crate::{CliCommand, parse_command};
     use nitpick_agent_core::{Activity, ActivityStatus, ReviewRequest};
 
@@ -277,7 +306,7 @@ mod tests {
 
         assert_eq!(
             format_review_started(&activity, "acme/platform#42"),
-            "activity-7: Running\ncheck status: nitpick review show acme/platform#42\nlist active reviews: nitpick review list --status active"
+            "review \u{1b}[34mrunning\u{1b}[0m  \u{1b}[2mactivity-7\u{1b}[0m\n  \u{1b}[2mstatus\u{1b}[0m  nitpick review show acme/platform#42\n  \u{1b}[2mactive\u{1b}[0m  nitpick review list --status active"
         );
     }
 
@@ -460,6 +489,29 @@ mod tests {
         }];
 
         assert_eq!(format_review_requests(&requests), "github acme/platform#42");
+    }
+
+    #[test]
+    fn formats_review_list_as_table_like_rows() {
+        let requests = vec![ReviewRequest {
+            source: "github".into(),
+            repository: "acme/platform".into(),
+            number: Some(42),
+            id: "42".into(),
+            head_sha: "abc123".into(),
+        }];
+        let mut activity = Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-7"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        activity.status = ActivityStatus::Running;
+        activity.label = Some("review on acme/platform#43".into());
+        activity.updated_at_unix = 1_200;
+
+        assert_eq!(
+            format_review_list(&requests, &[activity], ReviewListStatus::Any),
+            "\u{1b}[2mrequested\u{1b}[0m  acme/platform#42\n\u{1b}[34mrunning\u{1b}[0m  acme/platform#43  \u{1b}[2mactivity-7\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m 1200"
+        );
     }
 
     #[test]

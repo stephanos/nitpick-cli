@@ -102,7 +102,8 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("status command");
-    assert!(status.contains("nitpick-agent-host: connected"));
+    assert!(status.contains("host"));
+    assert!(status.contains("connected"));
 
     let requests = run_cli_command(
         CliCommand::Review(ReviewCommand::List {
@@ -116,7 +117,8 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("review list requested command");
-    assert_eq!(requests, "stephanos/nitpick-agent#42 requested");
+    assert!(requests.contains("requested"));
+    assert!(requests.contains("stephanos/nitpick-agent#42"));
 
     daemon.poll_review_requests().expect("poll");
 
@@ -130,7 +132,8 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("activities command");
-    assert!(activities.contains("activity-1: Completed"));
+    assert!(activities.contains("activity-1"));
+    assert!(activities.contains("completed"));
 
     let reviews = run_cli_command(
         CliCommand::Review(ReviewCommand::List {
@@ -144,7 +147,9 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("reviews command");
-    assert!(reviews.contains("stephanos/nitpick-agent#42 Completed activity-"));
+    assert!(reviews.contains("completed"));
+    assert!(reviews.contains("stephanos/nitpick-agent#42"));
+    assert!(reviews.contains("activity-"));
 
     let logs = run_cli_command(
         CliCommand::Debug(DebugCommand::Logs {
@@ -158,7 +163,8 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("logs command");
-    assert!(logs.contains("activity: activity-2"));
+    assert!(logs.contains("activity"));
+    assert!(logs.contains("activity-2"));
     assert!(logs.contains("review complete"));
 
     let review_run = run_cli_command(
@@ -174,8 +180,10 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     )
     .expect("review run command");
     assert!(review_run.contains("activity-"));
-    assert!(review_run.contains("check status: nitpick review show stephanos/nitpick-agent#42"));
-    assert!(review_run.contains("list active reviews: nitpick review list --status active"));
+    assert!(review_run.contains("status"));
+    assert!(review_run.contains("nitpick review show stephanos/nitpick-agent#42"));
+    assert!(review_run.contains("active"));
+    assert!(review_run.contains("nitpick review list --status active"));
     let activity_id = activity_id_from_review_run(&review_run);
     let activity = wait_for_completed_activity(store.as_ref(), &activity_id);
     let artifacts = wait_for_synced_artifacts(store.as_ref(), &activity.id);
@@ -450,8 +458,10 @@ async fn review_run_uses_mcp_tools_for_local_smoke_comments() {
     .expect("review run command");
 
     assert!(review_run.contains("activity-"));
-    assert!(review_run.contains("check status: nitpick review show local-smoke"));
-    assert!(review_run.contains("list active reviews: nitpick review list --status active"));
+    assert!(review_run.contains("status"));
+    assert!(review_run.contains("nitpick review show local-smoke"));
+    assert!(review_run.contains("active"));
+    assert!(review_run.contains("nitpick review list --status active"));
     let activity = wait_for_completed_review(store.as_ref());
     let activities = store.list().expect("activities");
     assert_eq!(activities.len(), 1);
@@ -585,12 +595,12 @@ fn wait_for_completed_activity(
 }
 
 fn activity_id_from_review_run(output: &str) -> nitpick_agent_core::ActivityId {
-    output
-        .lines()
-        .next()
-        .and_then(|line| line.split_once(':'))
-        .map(|(id, _)| nitpick_agent_core::ActivityId::new(id))
-        .expect("review run activity id")
+    let start = output.find("activity-").expect("review run activity id");
+    let id = output[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .collect::<String>();
+    nitpick_agent_core::ActivityId::new(id)
 }
 
 fn wait_for_synced_artifacts(

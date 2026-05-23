@@ -53,7 +53,10 @@ pub fn status(context: CliRunContext) -> Result<String, CliError> {
     match client.status() {
         Ok(status) => Ok(format_host_status(&status)),
         Err(error) if error.is_unavailable() => Ok(format!(
-            "nitpick-agent-host: not connected\naddress: {}",
+            "{} {}\n  {} {}",
+            crate::style::label("host"),
+            crate::style::error("not connected"),
+            crate::style::label("address"),
             context.host_addr
         )),
         Err(error) => Err(error.into()),
@@ -69,14 +72,6 @@ pub fn format_host_status(status: &HostStatus) -> String {
 }
 
 pub(crate) fn format_host_status_at(status: &HostStatus, now_unix: u64) -> String {
-    let reviews_line = format!(
-        "open reviews: {}\nactive reviews: {} running, {} queued\nreviews completed: {}\nreviews errored: {}",
-        status.open_review_count,
-        status.running_review_count,
-        status.queued_review_count,
-        status.completed_review_count,
-        status.error_review_count,
-    );
     let review_source_line = if status.review_source_enabled {
         let poll_age = status
             .review_source_last_poll_unix
@@ -87,19 +82,54 @@ pub(crate) fn format_host_status_at(status: &HostStatus, now_unix: u64) -> Strin
             .as_deref()
             .unwrap_or("—");
         format!(
-            "review source: {} (last poll: {}, {})",
-            status.review_source_name, poll_age, summary
+            "{} {}  {} {}  {}",
+            crate::style::label("source"),
+            status.review_source_name,
+            crate::style::label("last poll"),
+            poll_age,
+            summary
         )
     } else {
-        format!("review source: {} (disabled)", status.review_source_name)
+        format!(
+            "{} {}  {}",
+            crate::style::label("source"),
+            status.review_source_name,
+            crate::style::label("disabled")
+        )
     };
     format!(
-        "nitpick-agent-host: connected\n{reviews_line}\nartifacts: {} ({} pending sync)\nagent: {} {}\n{review_source_line}",
-        status.artifact_count,
-        status.pending_sync_artifact_count,
+        "{} {}\n{} {}  {} {}  {} {}\n{} {}  {} {}\n{} {}  {} {}\n{} {} {}\n{review_source_line}",
+        crate::style::label("host"),
+        crate::style::success("connected"),
+        crate::style::label("reviews"),
+        format_count(status.open_review_count, false),
+        crate::style::label("running"),
+        format_count(status.running_review_count, status.running_review_count > 0),
+        crate::style::label("queued"),
+        format_count(status.queued_review_count, status.queued_review_count > 0),
+        crate::style::label("history"),
+        format_count(status.completed_review_count, false),
+        crate::style::label("errored"),
+        format_count(status.error_review_count, status.error_review_count > 0),
+        crate::style::label("artifacts"),
+        format_count(status.artifact_count, false),
+        crate::style::label("pending"),
+        format_count(
+            status.pending_sync_artifact_count,
+            status.pending_sync_artifact_count > 0
+        ),
+        crate::style::label("agent"),
         status.provider,
-        status.model.as_deref().unwrap_or("(default)"),
+        status.model.as_deref().unwrap_or("(default)")
     )
+}
+
+fn format_count(count: usize, highlight: bool) -> String {
+    if highlight {
+        crate::style::warn(count)
+    } else {
+        count.to_string()
+    }
 }
 
 pub(crate) fn format_poll_age(last_poll_unix: u64, now_unix: u64) -> String {
@@ -122,9 +152,9 @@ pub fn format_cleanup_checkouts(result: &CleanupCheckoutsResult) -> String {
         return "no checkouts cleaned up".into();
     }
     format!(
-        "cleaned up {} checkout(s)\n{}",
+        "cleaned up {} checkout(s)\n  {}",
         result.removed_count,
-        result.cleaned.join("\n")
+        result.cleaned.join("\n  ")
     )
 }
 
@@ -190,7 +220,7 @@ mod tests {
                 removed_count: 1,
                 cleaned: vec!["acme/platform#42".into()],
             }),
-            "cleaned up 1 checkout(s)\nacme/platform#42"
+            "cleaned up 1 checkout(s)\n  acme/platform#42"
         );
         assert_eq!(
             super::format_cleanup_checkouts(&CleanupCheckoutsResult {
@@ -227,7 +257,7 @@ mod tests {
 
         assert_eq!(
             format_host_status(&status),
-            "nitpick-agent-host: connected\nopen reviews: 4\nactive reviews: 2 running, 1 queued\nreviews completed: 3\nreviews errored: 0\nartifacts: 5 (1 pending sync)\nagent: claude sonnet\nreview source: github (disabled)"
+            "\u{1b}[2mhost\u{1b}[0m \u{1b}[32mconnected\u{1b}[0m\n\u{1b}[2mreviews\u{1b}[0m 4  \u{1b}[2mrunning\u{1b}[0m \u{1b}[33m2\u{1b}[0m  \u{1b}[2mqueued\u{1b}[0m \u{1b}[33m1\u{1b}[0m\n\u{1b}[2mhistory\u{1b}[0m 3  \u{1b}[2merrored\u{1b}[0m 0\n\u{1b}[2martifacts\u{1b}[0m 5  \u{1b}[2mpending\u{1b}[0m \u{1b}[33m1\u{1b}[0m\n\u{1b}[2magent\u{1b}[0m claude sonnet\n\u{1b}[2msource\u{1b}[0m github  \u{1b}[2mdisabled\u{1b}[0m"
         );
     }
 
@@ -257,7 +287,7 @@ mod tests {
 
         let output = super::format_host_status_at(&status, 1_000);
         assert!(
-            output.contains("review source: github (last poll: never"),
+            output.contains("\u{1b}[2msource\u{1b}[0m github  \u{1b}[2mlast poll\u{1b}[0m never"),
             "unexpected: {output}"
         );
     }

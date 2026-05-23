@@ -4,6 +4,7 @@ mod cli;
 mod context;
 mod debug;
 mod review;
+mod style;
 mod support;
 mod system;
 

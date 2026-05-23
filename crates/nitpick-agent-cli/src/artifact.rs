@@ -17,8 +17,10 @@ pub fn format_artifacts(artifacts: &[Artifact]) -> String {
         .iter()
         .map(|artifact| {
             format!(
-                "{}: {:?} {:?}",
-                artifact.id, artifact.kind, artifact.sync_state
+                "{}  {:?}  {:?}",
+                crate::style::label(artifact.id.to_string()),
+                artifact.kind,
+                artifact.sync_state
             )
         })
         .collect::<Vec<_>>()
@@ -27,8 +29,15 @@ pub fn format_artifacts(artifacts: &[Artifact]) -> String {
 
 pub fn format_artifact(artifact: &Artifact) -> String {
     format!(
-        "{}\nactivity: {}\nkind: {:?}\nsync: {:?}",
-        artifact.id, artifact.activity_id, artifact.kind, artifact.sync_state
+        "{} {}\n{} {}\n{} {:?}\n{} {:?}",
+        crate::style::label("artifact"),
+        artifact.id,
+        crate::style::label("activity"),
+        artifact.activity_id,
+        crate::style::label("kind"),
+        artifact.kind,
+        crate::style::label("sync"),
+        artifact.sync_state
     )
 }
 
