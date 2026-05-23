@@ -72,7 +72,7 @@ pub fn format_host_status(status: &HostStatus) -> String {
 }
 
 pub(crate) fn format_host_status_at(status: &HostStatus, now_unix: u64) -> String {
-    let review_source_row = if status.review_source_enabled {
+    let review_source_rows = if status.review_source_enabled {
         let poll_age = status
             .review_source_last_poll_unix
             .map(|t| format_poll_age(t, now_unix))
@@ -82,55 +82,105 @@ pub(crate) fn format_host_status_at(status: &HostStatus, now_unix: u64) -> Strin
             .as_deref()
             .unwrap_or("—");
         vec![
-            crate::style::label("source"),
-            status.review_source_name.clone(),
-            crate::style::label("last poll"),
-            poll_age,
-            summary.into(),
+            vec![
+                crate::style::label("name"),
+                status.review_source_name.clone(),
+            ],
+            vec![
+                crate::style::label("status"),
+                crate::style::success("enabled"),
+            ],
+            vec![crate::style::label("last poll"), poll_age],
+            vec![crate::style::label("summary"), summary.into()],
         ]
     } else {
         vec![
-            crate::style::label("source"),
-            status.review_source_name.clone(),
-            crate::style::label("disabled"),
+            vec![
+                crate::style::label("name"),
+                status.review_source_name.clone(),
+            ],
+            vec![
+                crate::style::label("status"),
+                crate::style::label("disabled"),
+            ],
         ]
     };
-    let mut rows = vec![
-        vec![
-            crate::style::label("host"),
-            crate::style::success("connected"),
-        ],
-        vec![
-            crate::style::label("reviews"),
-            format_count(status.open_review_count, false),
-            crate::style::label("running"),
-            format_count(status.running_review_count, status.running_review_count > 0),
-            crate::style::label("queued"),
-            format_count(status.queued_review_count, status.queued_review_count > 0),
-        ],
-        vec![
-            crate::style::label("history"),
-            format_count(status.completed_review_count, false),
-            crate::style::label("errored"),
-            format_count(status.error_review_count, status.error_review_count > 0),
-        ],
-        vec![
-            crate::style::label("artifacts"),
-            format_count(status.artifact_count, false),
-            crate::style::label("pending"),
-            format_count(
-                status.pending_sync_artifact_count,
-                status.pending_sync_artifact_count > 0,
-            ),
-        ],
-        vec![
-            crate::style::label("agent"),
-            status.provider.to_string(),
-            status.model.as_deref().unwrap_or("(default)").into(),
-        ],
-    ];
-    rows.push(review_source_row);
-    crate::style::table(rows)
+    [
+        format_status_section(
+            "Host",
+            vec![vec![
+                crate::style::label("status"),
+                crate::style::success("connected"),
+            ]],
+        ),
+        format_status_section(
+            "Reviews",
+            vec![
+                vec![
+                    crate::style::label("open"),
+                    format_count(status.open_review_count, false),
+                ],
+                vec![
+                    crate::style::label("running"),
+                    format_count(status.running_review_count, status.running_review_count > 0),
+                ],
+                vec![
+                    crate::style::label("queued"),
+                    format_count(status.queued_review_count, status.queued_review_count > 0),
+                ],
+            ],
+        ),
+        format_status_section(
+            "History",
+            vec![
+                vec![
+                    crate::style::label("completed"),
+                    format_count(status.completed_review_count, false),
+                ],
+                vec![
+                    crate::style::label("errored"),
+                    format_count(status.error_review_count, status.error_review_count > 0),
+                ],
+            ],
+        ),
+        format_status_section(
+            "Artifacts",
+            vec![
+                vec![
+                    crate::style::label("total"),
+                    format_count(status.artifact_count, false),
+                ],
+                vec![
+                    crate::style::label("pending"),
+                    format_count(
+                        status.pending_sync_artifact_count,
+                        status.pending_sync_artifact_count > 0,
+                    ),
+                ],
+            ],
+        ),
+        format_status_section(
+            "Agent",
+            vec![
+                vec![crate::style::label("provider"), status.provider.to_string()],
+                vec![
+                    crate::style::label("model"),
+                    status.model.as_deref().unwrap_or("(default)").into(),
+                ],
+            ],
+        ),
+        format_status_section("Review source", review_source_rows),
+    ]
+    .join("\n\n")
+}
+
+fn format_status_section(title: &str, rows: Vec<Vec<String>>) -> String {
+    let body = crate::style::table(rows)
+        .lines()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{title}\n{body}")
 }
 
 fn format_count(count: usize, highlight: bool) -> String {
@@ -266,7 +316,7 @@ mod tests {
 
         assert_eq!(
             format_host_status(&status),
-            "\u{1b}[2mhost\u{1b}[0m       \u{1b}[32mconnected\u{1b}[0m\n\u{1b}[2mreviews\u{1b}[0m    4          \u{1b}[2mrunning\u{1b}[0m   \u{1b}[33m2\u{1b}[0m  \u{1b}[2mqueued\u{1b}[0m  \u{1b}[33m1\u{1b}[0m\n\u{1b}[2mhistory\u{1b}[0m    3          \u{1b}[2merrored\u{1b}[0m   0\n\u{1b}[2martifacts\u{1b}[0m  5          \u{1b}[2mpending\u{1b}[0m   \u{1b}[33m1\u{1b}[0m\n\u{1b}[2magent\u{1b}[0m      claude     sonnet\n\u{1b}[2msource\u{1b}[0m     github     \u{1b}[2mdisabled\u{1b}[0m"
+            "Host\n  \u{1b}[2mstatus\u{1b}[0m  \u{1b}[32mconnected\u{1b}[0m\n\nReviews\n  \u{1b}[2mopen\u{1b}[0m     4\n  \u{1b}[2mrunning\u{1b}[0m  \u{1b}[33m2\u{1b}[0m\n  \u{1b}[2mqueued\u{1b}[0m   \u{1b}[33m1\u{1b}[0m\n\nHistory\n  \u{1b}[2mcompleted\u{1b}[0m  3\n  \u{1b}[2merrored\u{1b}[0m    0\n\nArtifacts\n  \u{1b}[2mtotal\u{1b}[0m    5\n  \u{1b}[2mpending\u{1b}[0m  \u{1b}[33m1\u{1b}[0m\n\nAgent\n  \u{1b}[2mprovider\u{1b}[0m  claude\n  \u{1b}[2mmodel\u{1b}[0m     sonnet\n\nReview source\n  \u{1b}[2mname\u{1b}[0m    github\n  \u{1b}[2mstatus\u{1b}[0m  \u{1b}[2mdisabled\u{1b}[0m"
         );
     }
 
@@ -296,7 +346,8 @@ mod tests {
 
         let output = super::format_host_status_at(&status, 1_000);
         assert!(
-            output.contains("\u{1b}[2msource\u{1b}[0m")
+            output.contains("Review source")
+                && output.contains("\u{1b}[2mname\u{1b}[0m")
                 && output.contains("github")
                 && output.contains("\u{1b}[2mlast poll\u{1b}[0m")
                 && output.contains("never"),

@@ -102,7 +102,8 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         data_dir.clone(),
     )
     .expect("status command");
-    assert!(status.contains("host"));
+    assert!(status.contains("Host"));
+    assert!(status.contains("Reviews"));
     assert!(status.contains("connected"));
 
     let requests = run_cli_command(
