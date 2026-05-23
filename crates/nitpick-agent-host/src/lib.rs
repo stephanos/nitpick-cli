@@ -574,11 +574,11 @@ impl HostDaemon {
             let target = target.parse::<PullRequestRef>().map_err(|error| {
                 AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
             })?;
-            GitHubCliSyncDestination::new(
+            GitHubCliReviewSyncDestination::new(
                 target,
                 self.config.github_command.as_deref().unwrap_or("gh"),
             )
-            .post_comment(NO_FINDINGS_REVIEW_COMMENT)?;
+            .create_pending_review_body(NO_FINDINGS_REVIEW_COMMENT)?;
         }
         Ok(())
     }

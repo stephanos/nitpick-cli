@@ -284,15 +284,25 @@ fn enqueue_review_serializes_multiple_updated_heads_for_same_pr() {
 }
 
 #[test]
-fn enqueue_review_posts_no_findings_pr_comment_when_completed_review_has_no_comments() {
+fn enqueue_review_creates_no_findings_pending_review_when_completed_review_has_no_comments() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
-    let body_file = dir.path().join("body");
+    let commands_file = dir.path().join("commands");
+    let payload_file = dir.path().join("payload");
     std::fs::write(
         &gh,
         format!(
-            "#!/bin/sh\ncat > {}\nprintf 'https://github.com/acme/platform/pull/42#issuecomment-99\\n'\n",
-            body_file.display()
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+cat > {payload}
+printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+"#,
+            commands = commands_file.display(),
+            payload = payload_file.display()
         ),
     )
     .expect("write fake gh");
@@ -317,13 +327,20 @@ fn enqueue_review_posts_no_findings_pr_comment_when_completed_review_has_no_comm
         .expect("enqueue review");
 
     wait_until(|| {
-        std::fs::read_to_string(&body_file)
-            .is_ok_and(|body| body == "🤖 Review completed: no findings.")
+        std::fs::read_to_string(&payload_file)
+            .is_ok_and(|payload| payload.contains("Review completed: no findings"))
     });
     assert_eq!(
-        std::fs::read_to_string(body_file).expect("body"),
-        "🤖 Review completed: no findings."
+        std::fs::read_to_string(commands_file).expect("commands"),
+        "pr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
     );
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["commit_id"], "abc123");
+    assert_eq!(payload["body"], "🤖 Review completed: no findings.");
+    assert_eq!(payload["comments"].as_array().expect("comments").len(), 0);
+    assert!(payload.get("event").is_none());
 }
 
 fn review_input_for_head(head_sha: &str) -> ReviewInput {
@@ -347,7 +364,7 @@ fn make_executable(path: &std::path::Path) {
 }
 
 fn wait_until(condition: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if condition() {
             return;

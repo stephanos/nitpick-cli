@@ -430,6 +430,66 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
 }
 
 #[test]
+fn github_cli_review_destination_posts_body_only_as_pending_review() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+cat > {payload}
+printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+"#,
+            commands = commands_file.display(),
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let outcome = destination
+        .create_pending_review_body("🤖 Review completed: no findings.")
+        .expect("sync outcome");
+
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "pr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["commit_id"], "abc123");
+    assert_eq!(payload["body"], "🤖 Review completed: no findings.");
+    assert_eq!(payload["comments"].as_array().expect("comments").len(), 0);
+    assert!(payload.get("event").is_none());
+    assert_eq!(
+        outcome.sync_state,
+        ArtifactSyncState::Pending {
+            destination: "github-review".into(),
+            remote_id: Some("99".into()),
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            )
+        }
+    );
+}
+
+#[test]
 fn github_cli_review_destination_batches_inline_comments_without_review_body() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");

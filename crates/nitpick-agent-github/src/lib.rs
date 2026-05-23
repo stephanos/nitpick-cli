@@ -88,6 +88,36 @@ impl GitHubCliReviewSyncDestination {
         sync_review_batch_with_github_cli(&self.command, &self.target, artifacts, self.name())
     }
 
+    pub fn create_pending_review_body(&self, body: &str) -> AgentResult<ArtifactSyncOutcome> {
+        let head_sha = pull_request_head_sha(
+            &self.command,
+            &self.target.owner,
+            &self.target.repo,
+            self.target.number,
+        )?;
+        let payload = serde_json::json!({
+            "commit_id": head_sha,
+            "body": body,
+            "comments": [],
+        });
+        sync_pending_review_with_github_cli(
+            &self.command,
+            &[
+                "api",
+                &format!(
+                    "repos/{}/{}/pulls/{}/reviews",
+                    self.target.owner, self.target.repo, self.target.number
+                ),
+                "--method",
+                "POST",
+                "--input",
+                "-",
+            ],
+            &payload.to_string(),
+            self.name(),
+        )
+    }
+
     pub fn fetch_review(&self, review_id: &str) -> AgentResult<GitHubReviewResponse> {
         github_review_from_cli(
             &self.command,
