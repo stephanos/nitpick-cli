@@ -27,6 +27,7 @@ pub use nitpick_agent_core::HostStatus;
 pub use review::{
     ReviewArgs, ReviewCommand, ReviewListStatus, format_review_requests, review_input,
 };
+pub use style::format_error_message;
 pub use system::{
     SystemArgs, SystemCommand, format_cleanup_checkouts, format_host_status, host_status_url,
     parse_host_status_json,

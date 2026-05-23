@@ -1,15 +1,15 @@
 use std::{env, process::ExitCode};
 
 use nitpick_agent_cli::{
-    CliRunContext, config_path_from_env, data_dir_from_env, host_addr_from_env, parse_invocation,
-    run_cli_command_with_options,
+    CliRunContext, config_path_from_env, data_dir_from_env, format_error_message,
+    host_addr_from_env, parse_invocation, run_cli_command_with_options,
 };
 
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("{message}");
+            eprintln!("{}", format_error_message(&message));
             ExitCode::from(2)
         }
     }
