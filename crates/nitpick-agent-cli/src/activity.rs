@@ -97,6 +97,16 @@ pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> Stri
         rows.push(vec![crate::style::label("label"), label.clone()]);
     }
     rows.push(vec![
+        crate::style::label("created"),
+        format_unix_iso_utc(activity.created_at_unix),
+    ]);
+    if let Some(started_at_unix) = activity.started_at_unix {
+        rows.push(vec![
+            crate::style::label("started"),
+            format_unix_iso_utc(started_at_unix),
+        ]);
+    }
+    rows.push(vec![
         crate::style::label("updated"),
         format_unix_iso_utc(activity.updated_at_unix),
     ]);
@@ -422,6 +432,8 @@ mod tests {
         activity.status = nitpick_agent_core::ActivityStatus::Error;
         activity.label = Some("review on acme/platform#42".into());
         activity.session.provider_session_id = Some("github:acme/platform#42".into());
+        activity.created_at_unix = 1_000;
+        activity.started_at_unix = Some(1_100);
         activity.updated_at_unix = 1_200;
         activity.error = Some("provider failed".into());
         activity.output = Some(nitpick_agent_core::ActivityOutput::Review(
@@ -442,7 +454,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nOutput\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body\n\nArtifacts\n  \u{1b}[2mid\u{1b}[0m          \u{1b}[2mkind\u{1b}[0m           \u{1b}[2mcontent\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary  artifact summary"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nOutput\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body\n\nArtifacts\n  \u{1b}[2mid\u{1b}[0m          \u{1b}[2mkind\u{1b}[0m           \u{1b}[2mcontent\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary  artifact summary"
         );
     }
 
@@ -454,11 +466,13 @@ mod tests {
         );
         activity.status = nitpick_agent_core::ActivityStatus::Completed;
         activity.label = Some("review on stephanos/subvoc#1".into());
+        activity.created_at_unix = 1_000;
+        activity.started_at_unix = Some(1_100);
         activity.updated_at_unix = 1_200;
 
         assert_eq!(
             super::format_activity_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nArtifacts\n  none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nArtifacts\n  none"
         );
     }
 

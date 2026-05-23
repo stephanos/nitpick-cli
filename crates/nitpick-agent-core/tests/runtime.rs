@@ -98,6 +98,10 @@ fn review_activity_runs_provider_and_persists_completion() {
     assert_eq!(provider.calls(), ["review"]);
     assert_eq!(activity.kind, ActivityKind::Review);
     assert_eq!(activity.status, ActivityStatus::Completed);
+    assert!(
+        activity.started_at_unix.is_some(),
+        "review should record when it started running"
+    );
     assert_eq!(
         activity.session.provider_session_id.as_deref(),
         Some("provider-review-session")
@@ -145,6 +149,10 @@ fn chat_activity_uses_the_same_activity_model() {
     assert_eq!(provider.calls(), ["chat"]);
     assert_eq!(activity.kind, ActivityKind::Chat);
     assert_eq!(activity.status, ActivityStatus::Completed);
+    assert!(
+        activity.started_at_unix.is_some(),
+        "chat should record when it started running"
+    );
     assert_eq!(
         activity.output,
         Some(ActivityOutput::Chat("answered what changed?".into()))
