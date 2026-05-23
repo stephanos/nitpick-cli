@@ -108,6 +108,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     let requests = run_cli_command(
         CliCommand::Review(ReviewCommand::List {
             status: ReviewListStatus::Requested,
+            limit: 20,
         }),
         &host_addr,
         repo_dir.clone(),
@@ -138,6 +139,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     let reviews = run_cli_command(
         CliCommand::Review(ReviewCommand::List {
             status: ReviewListStatus::History,
+            limit: 20,
         }),
         &host_addr,
         repo_dir.clone(),

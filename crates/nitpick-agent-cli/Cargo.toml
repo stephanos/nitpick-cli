@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 anstyle = "1.0.14"
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 nitpick-agent-client = { path = "../nitpick-agent-client" }
 nitpick-agent-core.workspace = true
@@ -16,6 +17,7 @@ nitpick-agent-github = { path = "../nitpick-agent-github" }
 nitpick-agent-host = { path = "../nitpick-agent-host" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tabled = { version = "0.20.0", features = ["ansi"] }
 thiserror = "2.0.18"
 
 [dev-dependencies]

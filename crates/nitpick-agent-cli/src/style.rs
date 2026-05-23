@@ -26,8 +26,73 @@ pub(crate) fn error(value: impl std::fmt::Display) -> String {
     colorize(value, anstyle::AnsiColor::Red.on_default())
 }
 
+pub fn format_error_message(message: &str) -> String {
+    message
+        .lines()
+        .map(|line| match line.strip_prefix("error:") {
+            Some(rest) => format!("{}{}", error("error:"), rest),
+            None => line.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(crate) fn warn(value: impl std::fmt::Display) -> String {
     colorize(value, anstyle::AnsiColor::Yellow.on_default())
+}
+
+pub(crate) fn table(rows: Vec<Vec<String>>) -> String {
+    use tabled::{
+        builder::Builder,
+        settings::{Padding, Style},
+    };
+
+    let column_count = rows.iter().map(Vec::len).max().unwrap_or_default();
+    let mut builder = Builder::with_capacity(rows.len(), column_count);
+    for mut row in rows {
+        row.resize(column_count, String::new());
+        builder.push_record(row);
+    }
+
+    builder
+        .build()
+        .with(Style::empty())
+        .with(Padding::new(0, 2, 0, 0))
+        .to_string()
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn formats_error_prefixes_red() {
+        assert_eq!(
+            super::format_error_message("error: missing argument\n\nUsage: nitpick review run"),
+            "\u{1b}[31merror:\u{1b}[0m missing argument\n\nUsage: nitpick review run"
+        );
+    }
+
+    #[test]
+    fn leaves_non_error_lines_unchanged() {
+        assert_eq!(
+            super::format_error_message("Usage: nitpick review run"),
+            "Usage: nitpick review run"
+        );
+    }
+
+    #[test]
+    fn aligns_table_columns_ignoring_ansi_escape_codes() {
+        assert_eq!(
+            super::table(vec![
+                vec![super::success("ok"), "short".into(), "1".into()],
+                vec![super::error("error"), "longer".into(), "2".into()],
+            ]),
+            "\u{1b}[32mok\u{1b}[0m     short   1\n\u{1b}[31merror\u{1b}[0m  longer  2"
+        );
+    }
 }
 
 pub(crate) fn colorize(value: impl std::fmt::Display, style: anstyle::Style) -> String {

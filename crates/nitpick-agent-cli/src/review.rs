@@ -8,11 +8,22 @@ use crate::{CliError, CliOptions, CliRunContext};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReviewCommand {
-    Run { subject: String },
-    Chat { target: String },
-    OpenEditor { target: String },
-    Show { target: String },
-    List { status: ReviewListStatus },
+    Run {
+        subject: String,
+    },
+    Chat {
+        target: String,
+    },
+    OpenEditor {
+        target: String,
+    },
+    Show {
+        target: String,
+    },
+    List {
+        status: ReviewListStatus,
+        limit: usize,
+    },
 }
 
 #[derive(Args)]
@@ -39,8 +50,12 @@ pub enum ReviewSubcommand {
     List {
         #[arg(long = "status", value_enum, default_value_t = ReviewListStatus::Inbox)]
         status: ReviewListStatus,
+        #[arg(long = "limit", default_value_t = DEFAULT_REVIEW_LIST_LIMIT)]
+        limit: usize,
     },
 }
+
+const DEFAULT_REVIEW_LIST_LIMIT: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ReviewListStatus {
@@ -58,7 +73,7 @@ impl From<ReviewSubcommand> for ReviewCommand {
             ReviewSubcommand::Chat { target } => Self::Chat { target },
             ReviewSubcommand::OpenEditor { target } => Self::OpenEditor { target },
             ReviewSubcommand::Show { target } => Self::Show { target },
-            ReviewSubcommand::List { status } => Self::List { status },
+            ReviewSubcommand::List { status, limit } => Self::List { status, limit },
         }
     }
 }
@@ -120,7 +135,7 @@ pub fn run(
             let artifacts = client.activity_artifacts(activity.id.as_str())?;
             Ok(crate::activity::format_activity_logs(activity, &artifacts))
         }
-        ReviewCommand::List { status } => {
+        ReviewCommand::List { status, limit } => {
             let requests = if matches!(
                 status,
                 ReviewListStatus::Inbox | ReviewListStatus::Requested | ReviewListStatus::Any
@@ -134,7 +149,7 @@ pub fn run(
             } else {
                 client.activities()?
             };
-            Ok(format_review_list(&requests, &activities, status))
+            Ok(format_review_list(&requests, &activities, status, limit))
         }
     }
 }
@@ -175,8 +190,9 @@ pub fn format_review_list(
     requests: &[ReviewRequest],
     activities: &[Activity],
     status: ReviewListStatus,
+    limit: usize,
 ) -> String {
-    let mut lines = Vec::new();
+    let mut rows = Vec::new();
     if matches!(
         status,
         ReviewListStatus::Inbox | ReviewListStatus::Requested | ReviewListStatus::Any
@@ -192,24 +208,36 @@ pub fn format_review_list(
             {
                 continue;
             }
-            lines.push(format!(
-                "{}  {}",
+            rows.push(vec![
                 crate::style::label("requested"),
-                request.display_reference()
-            ));
+                request.display_reference(),
+            ]);
         }
     }
-    for activity in activities {
+    let mut review_activities = activities
+        .iter()
+        .filter(|activity| {
+            activity.kind == ActivityKind::Review && review_status_matches(&activity.status, status)
+        })
+        .collect::<Vec<_>>();
+    review_activities.sort_by(|lhs, rhs| {
+        rhs.updated_at_unix
+            .cmp(&lhs.updated_at_unix)
+            .then_with(|| rhs.id.cmp(&lhs.id))
+    });
+    for activity in review_activities {
         if activity.kind != ActivityKind::Review || !review_status_matches(&activity.status, status)
         {
             continue;
         }
-        lines.push(format_review_activity(activity));
+        rows.push(review_activity_row(activity));
     }
-    if lines.is_empty() {
+    let limit = limit.max(1);
+    rows.truncate(limit);
+    if rows.is_empty() {
         return "no reviews".into();
     }
-    lines.join("\n")
+    crate::style::table(rows)
 }
 
 fn review_status_matches(status: &ActivityStatus, filter: ReviewListStatus) -> bool {
@@ -232,32 +260,32 @@ fn is_history_review_status(status: &ActivityStatus) -> bool {
     )
 }
 
-fn format_review_activity(activity: &Activity) -> String {
+fn review_activity_row(activity: &Activity) -> Vec<String> {
     let label = activity
         .label
         .as_deref()
         .and_then(|label| label.strip_prefix("review on "))
         .unwrap_or("review");
-    let mut line = format!(
-        "{}  {label}  {}",
+    let mut row = vec![
         crate::style::status_lower(&activity.status),
-        crate::style::label(activity.id.to_string())
-    );
+        label.into(),
+        crate::style::label(activity.id.to_string()),
+    ];
     if activity.updated_at_unix > 0 {
-        line.push_str(&format!(
-            "  {} {}",
-            crate::style::label("updated"),
-            activity.updated_at_unix
-        ));
+        row.push(crate::style::label("updated"));
+        row.push(format_unix_iso_utc(activity.updated_at_unix));
     }
     if let Some(error) = &activity.error {
-        line.push_str(&format!(
-            "  {} {}",
-            crate::style::label("error"),
-            crate::style::error(error)
-        ));
+        row.push(crate::style::label("error"));
+        row.push(crate::style::error(error));
     }
-    line
+    row
+}
+
+fn format_unix_iso_utc(timestamp: u64) -> String {
+    chrono::DateTime::from_timestamp(timestamp as i64, 0)
+        .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| timestamp.to_string())
 }
 
 fn format_review_started(activity: &Activity, subject: &str) -> String {
@@ -413,7 +441,8 @@ mod tests {
         assert_eq!(
             command,
             CliCommand::Review(ReviewCommand::List {
-                status: super::ReviewListStatus::Inbox
+                status: super::ReviewListStatus::Inbox,
+                limit: 20,
             })
         );
     }
@@ -431,7 +460,27 @@ mod tests {
         assert_eq!(
             command,
             CliCommand::Review(ReviewCommand::List {
-                status: super::ReviewListStatus::History
+                status: super::ReviewListStatus::History,
+                limit: 20,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_reviews_limit() {
+        let command = parse_command([
+            "review".to_owned(),
+            "list".to_owned(),
+            "--limit".to_owned(),
+            "5".to_owned(),
+        ])
+        .expect("command parses");
+
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::List {
+                status: super::ReviewListStatus::Inbox,
+                limit: 5,
             })
         );
     }
@@ -509,8 +558,31 @@ mod tests {
         activity.updated_at_unix = 1_200;
 
         assert_eq!(
-            format_review_list(&requests, &[activity], ReviewListStatus::Any),
-            "\u{1b}[2mrequested\u{1b}[0m  acme/platform#42\n\u{1b}[34mrunning\u{1b}[0m  acme/platform#43  \u{1b}[2mactivity-7\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m 1200"
+            format_review_list(&requests, &[activity], ReviewListStatus::Any, 20),
+            "\u{1b}[2mrequested\u{1b}[0m  acme/platform#42\n\u{1b}[34mrunning\u{1b}[0m    acme/platform#43  \u{1b}[2mactivity-7\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m  1970-01-01T00:20:00Z"
+        );
+    }
+
+    #[test]
+    fn review_list_sorts_activities_latest_first_and_applies_limit() {
+        let mut newer = Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-10"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        newer.status = ActivityStatus::Completed;
+        newer.label = Some("review on acme/platform#10".into());
+        newer.updated_at_unix = 2_000;
+        let mut older = Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        older.status = ActivityStatus::Completed;
+        older.label = Some("review on acme/platform#1".into());
+        older.updated_at_unix = 1_000;
+
+        assert_eq!(
+            format_review_list(&[], &[older, newer], ReviewListStatus::History, 1),
+            "\u{1b}[32mcompleted\u{1b}[0m  acme/platform#10  \u{1b}[2mactivity-10\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m  1970-01-01T00:33:20Z"
         );
     }
 
