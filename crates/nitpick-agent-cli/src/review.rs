@@ -211,6 +211,9 @@ pub fn format_review_list(
             rows.push(vec![
                 crate::style::label("requested"),
                 request.display_reference(),
+                String::new(),
+                String::new(),
+                String::new(),
             ]);
         }
     }
@@ -237,6 +240,7 @@ pub fn format_review_list(
     if rows.is_empty() {
         return "no reviews".into();
     }
+    rows.insert(0, review_list_header());
     crate::style::table(rows)
 }
 
@@ -260,26 +264,37 @@ fn is_history_review_status(status: &ActivityStatus) -> bool {
     )
 }
 
+fn review_list_header() -> Vec<String> {
+    vec![
+        crate::style::label("status"),
+        crate::style::label("review"),
+        crate::style::label("activity"),
+        crate::style::label("updated_at"),
+        crate::style::label("error"),
+    ]
+}
+
 fn review_activity_row(activity: &Activity) -> Vec<String> {
     let label = activity
         .label
         .as_deref()
         .and_then(|label| label.strip_prefix("review on "))
         .unwrap_or("review");
-    let mut row = vec![
+    vec![
         crate::style::status_lower(&activity.status),
         label.into(),
         crate::style::label(activity.id.to_string()),
-    ];
-    if activity.updated_at_unix > 0 {
-        row.push(crate::style::label("updated"));
-        row.push(format_unix_iso_utc(activity.updated_at_unix));
-    }
-    if let Some(error) = &activity.error {
-        row.push(crate::style::label("error"));
-        row.push(crate::style::error(error));
-    }
-    row
+        if activity.updated_at_unix > 0 {
+            format_unix_iso_utc(activity.updated_at_unix)
+        } else {
+            String::new()
+        },
+        activity
+            .error
+            .as_ref()
+            .map(|error| crate::style::error(error))
+            .unwrap_or_default(),
+    ]
 }
 
 fn format_unix_iso_utc(timestamp: u64) -> String {
@@ -559,7 +574,7 @@ mod tests {
 
         assert_eq!(
             format_review_list(&requests, &[activity], ReviewListStatus::Any, 20),
-            "\u{1b}[2mrequested\u{1b}[0m  acme/platform#42\n\u{1b}[34mrunning\u{1b}[0m    acme/platform#43  \u{1b}[2mactivity-7\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m  1970-01-01T00:20:00Z"
+            "\u{1b}[2mstatus\u{1b}[0m     \u{1b}[2mreview\u{1b}[0m            \u{1b}[2mactivity\u{1b}[0m    \u{1b}[2mupdated_at\u{1b}[0m            \u{1b}[2merror\u{1b}[0m\n\u{1b}[2mrequested\u{1b}[0m  acme/platform#42\n\u{1b}[34mrunning\u{1b}[0m    acme/platform#43  \u{1b}[2mactivity-7\u{1b}[0m  1970-01-01T00:20:00Z"
         );
     }
 
@@ -582,7 +597,7 @@ mod tests {
 
         assert_eq!(
             format_review_list(&[], &[older, newer], ReviewListStatus::History, 1),
-            "\u{1b}[32mcompleted\u{1b}[0m  acme/platform#10  \u{1b}[2mactivity-10\u{1b}[0m  \u{1b}[2mupdated\u{1b}[0m  1970-01-01T00:33:20Z"
+            "\u{1b}[2mstatus\u{1b}[0m     \u{1b}[2mreview\u{1b}[0m            \u{1b}[2mactivity\u{1b}[0m     \u{1b}[2mupdated_at\u{1b}[0m            \u{1b}[2merror\u{1b}[0m\n\u{1b}[32mcompleted\u{1b}[0m  acme/platform#10  \u{1b}[2mactivity-10\u{1b}[0m  1970-01-01T00:33:20Z"
         );
     }
 
