@@ -82,58 +82,45 @@ pub fn resolve_log_activity<'a>(
 }
 
 pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> String {
-    let mut lines = vec![
-        format!("{} {}", crate::style::label("activity"), activity.id),
-        format!(
-            "{} {}",
-            crate::style::label("kind"),
-            format!("{:?}", activity.kind)
-        ),
+    let mut rows = vec![
+        vec![crate::style::label("activity"), activity.id.to_string()],
+        vec![crate::style::label("kind"), format!("{:?}", activity.kind)],
     ];
     if let Some(review) = review_shorthand(activity) {
-        lines.push(format!("{} {review}", crate::style::label("review")));
+        rows.push(vec![crate::style::label("review"), review.into()]);
     }
-    lines.push(format!(
-        "{} {}",
+    rows.push(vec![
         crate::style::label("status"),
-        crate::style::status_title(&activity.status)
-    ));
+        crate::style::status_title(&activity.status),
+    ]);
     if let Some(label) = &activity.label {
-        lines.push(format!("{} {label}", crate::style::label("label")));
+        rows.push(vec![crate::style::label("label"), label.clone()]);
     }
-    lines.push(format!(
-        "{} {}",
+    rows.push(vec![
         crate::style::label("updated"),
-        activity.updated_at_unix
-    ));
+        format_unix_iso_utc(activity.updated_at_unix),
+    ]);
     if let Some(error) = &activity.error {
-        lines.push(format!(
-            "{} {}",
+        rows.push(vec![
             crate::style::label("error"),
-            crate::style::error(error)
-        ));
+            crate::style::error(error),
+        ]);
     }
-    if let Some(output) = &activity.output {
-        lines.push(crate::style::label("output"));
-        lines.push(indent_block(&format_activity_output(output)));
-    }
-    if artifacts.is_empty() {
-        lines.push(format!("{} none", crate::style::label("artifacts")));
+
+    let title = if activity.kind == ActivityKind::Review {
+        "Review"
     } else {
-        lines.push(crate::style::label("artifacts"));
-        for artifact in artifacts {
-            lines.push(format!(
-                "  {}  {:?}",
-                crate::style::label(artifact.id.to_string()),
-                artifact.kind
-            ));
-            lines.push(indent_block_by(
-                &format_artifact_content(&artifact.content),
-                "    ",
-            ));
-        }
+        "Activity"
+    };
+    let mut sections = vec![format_section(title, crate::style::table(rows))];
+    if let Some(output) = &activity.output {
+        sections.push(format_section("Output", format_activity_output(output)));
     }
-    lines.join("\n")
+    sections.push(format_section(
+        "Artifacts",
+        format_artifacts_table(artifacts),
+    ));
+    sections.join("\n\n")
 }
 
 pub fn daemon_log_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -207,15 +194,41 @@ fn format_activity_output(output: &ActivityOutput) -> String {
             if output.comments.is_empty() {
                 return "no review comments".into();
             }
-            output
-                .comments
-                .iter()
-                .map(|comment| format!("{}:{} {}", comment.path, comment.line, comment.body))
-                .collect::<Vec<_>>()
-                .join("\n")
+            let mut rows = vec![vec![
+                crate::style::label("path"),
+                crate::style::label("line"),
+                crate::style::label("comment"),
+            ]];
+            rows.extend(output.comments.iter().map(|comment| {
+                vec![
+                    comment.path.clone(),
+                    comment.line.to_string(),
+                    comment.body.clone(),
+                ]
+            }));
+            crate::style::table(rows)
         }
         ActivityOutput::Chat(output) => output.clone(),
     }
+}
+
+fn format_artifacts_table(artifacts: &[Artifact]) -> String {
+    if artifacts.is_empty() {
+        return "none".into();
+    }
+    let mut rows = vec![vec![
+        crate::style::label("id"),
+        crate::style::label("kind"),
+        crate::style::label("content"),
+    ]];
+    rows.extend(artifacts.iter().map(|artifact| {
+        vec![
+            crate::style::label(artifact.id.to_string()),
+            format!("{:?}", artifact.kind),
+            format_artifact_content(&artifact.content),
+        ]
+    }));
+    crate::style::table(rows)
 }
 
 fn format_artifact_content(content: &ArtifactContent) -> String {
@@ -230,6 +243,16 @@ fn format_artifact_content(content: &ArtifactContent) -> String {
 
 fn indent_block(value: &str) -> String {
     indent_block_by(value, "  ")
+}
+
+fn format_section(title: &str, body: String) -> String {
+    format!("{title}\n{}", indent_block(&body))
+}
+
+fn format_unix_iso_utc(timestamp: u64) -> String {
+    chrono::DateTime::from_timestamp(timestamp as i64, 0)
+        .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| timestamp.to_string())
 }
 
 fn indent_block_by(value: &str, prefix: &str) -> String {
@@ -419,7 +442,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "\u{1b}[2mactivity\u{1b}[0m activity-1\n\u{1b}[2mkind\u{1b}[0m Review\n\u{1b}[2mreview\u{1b}[0m acme/platform#42\n\u{1b}[2mstatus\u{1b}[0m \u{1b}[31mError\u{1b}[0m\n\u{1b}[2mlabel\u{1b}[0m review on acme/platform#42\n\u{1b}[2mupdated\u{1b}[0m 1200\n\u{1b}[2merror\u{1b}[0m \u{1b}[31mprovider failed\u{1b}[0m\n\u{1b}[2moutput\u{1b}[0m\n  src/lib.rs:12 comment body\n\u{1b}[2martifacts\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary\n    artifact summary"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nOutput\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body\n\nArtifacts\n  \u{1b}[2mid\u{1b}[0m          \u{1b}[2mkind\u{1b}[0m           \u{1b}[2mcontent\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary  artifact summary"
         );
     }
 
@@ -435,7 +458,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[]),
-            "\u{1b}[2mactivity\u{1b}[0m activity-1\n\u{1b}[2mkind\u{1b}[0m Review\n\u{1b}[2mreview\u{1b}[0m stephanos/subvoc#1\n\u{1b}[2mstatus\u{1b}[0m \u{1b}[32mCompleted\u{1b}[0m\n\u{1b}[2mlabel\u{1b}[0m review on stephanos/subvoc#1\n\u{1b}[2mupdated\u{1b}[0m 1200\n\u{1b}[2martifacts\u{1b}[0m none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nArtifacts\n  none"
         );
     }
 
