@@ -1,6 +1,6 @@
 use nitpick_agent_core::{
-    ActivityKind, ActivityStore, ArtifactContent, ArtifactKind, ArtifactStore, ArtifactSyncState,
-    FsActivityStore,
+    ActivityId, ActivityKind, ActivityStore, ArtifactContent, ArtifactKind, ArtifactStore,
+    ArtifactSyncState, FsActivityStore,
 };
 
 #[test]
@@ -133,4 +133,23 @@ fn filesystem_store_writes_schema_manifest() {
 
     let manifest = std::fs::read_to_string(dir.path().join("store.json")).expect("manifest");
     assert!(manifest.contains(r#""schema_version": 1"#));
+}
+
+#[test]
+fn filesystem_store_loads_activity_without_started_at() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let activity_dir = dir.path().join("activities");
+    std::fs::create_dir_all(&activity_dir).expect("activity dir");
+    std::fs::write(
+        activity_dir.join("activity-1.json"),
+        r#"{"id":"activity-1","kind":"Review","status":"Completed","session":{"provider":null,"provider_session_id":null,"status":"Completed","messages":[]},"output":null,"error":null,"label":"review on acme/platform#42","created_at_unix":1000,"updated_at_unix":1200}"#,
+    )
+    .expect("write legacy activity");
+
+    let store = FsActivityStore::new(dir.path()).expect("store");
+    let activity = store
+        .get(&ActivityId::new("activity-1"))
+        .expect("legacy activity");
+
+    assert_eq!(activity.started_at_unix, None);
 }

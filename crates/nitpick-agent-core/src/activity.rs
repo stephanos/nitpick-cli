@@ -34,6 +34,8 @@ pub struct Activity {
     pub label: Option<String>,
     #[serde(default = "unix_now")]
     pub created_at_unix: u64,
+    #[serde(default)]
+    pub started_at_unix: Option<u64>,
     #[serde(default = "unix_now")]
     pub updated_at_unix: u64,
 }
@@ -50,8 +52,14 @@ impl Activity {
             error: None,
             label: None,
             created_at_unix: now,
+            started_at_unix: None,
             updated_at_unix: now,
         }
+    }
+
+    pub fn mark_started(&mut self) {
+        self.started_at_unix.get_or_insert_with(unix_now);
+        self.touch();
     }
 
     pub fn touch(&mut self) {

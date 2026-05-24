@@ -42,7 +42,7 @@ impl AgentRuntime {
     pub fn mark_activity_running(&self, mut activity: Activity) -> AgentResult<Activity> {
         activity.status = ActivityStatus::Running;
         activity.session.status = SessionStatus::Running;
-        activity.touch();
+        activity.mark_started();
         self.store.save(&activity)?;
         Ok(activity)
     }
@@ -118,7 +118,7 @@ impl AgentRuntime {
         let mut activity = self.store.create(kind)?;
         activity.status = ActivityStatus::Running;
         activity.session.status = SessionStatus::Running;
-        activity.touch();
+        activity.mark_started();
         self.store.save(&activity)?;
         Ok(activity)
     }
