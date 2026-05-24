@@ -174,11 +174,11 @@ public struct MenuSnapshot: Equatable {
         let label = activity.label ?? fallbackLabel(activity)
         switch activity.status {
         case "Running":
-            return "Running \(label)"
+            return "🤖 Running \(label)"
         case "Queued":
-            return "Queued \(label)"
+            return "🤖 Queued \(label)"
         default:
-            return "\(activity.status) \(label)"
+            return "🤖 \(activity.status) \(label)"
         }
     }
 

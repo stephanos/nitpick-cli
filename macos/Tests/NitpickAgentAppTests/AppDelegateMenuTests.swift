@@ -71,7 +71,7 @@ final class AppDelegateMenuTests: XCTestCase {
         XCTAssertNil(menu.items.first { $0.title == "Reviews" })
         let lastDiscoveryIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == "last discovery: never" })
         XCTAssertFalse(menu.items[lastDiscoveryIndex + 1].isHidden)
-        XCTAssertEqual(menu.items[lastDiscoveryIndex + 1].title, "Running review on org/repo#1")
+        XCTAssertEqual(menu.items[lastDiscoveryIndex + 1].title, "🤖 Running review on org/repo#1")
         XCTAssertTrue(menu.items[lastDiscoveryIndex + 7].isSeparatorItem)
     }
 

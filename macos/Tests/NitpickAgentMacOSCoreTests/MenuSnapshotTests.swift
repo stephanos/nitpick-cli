@@ -243,8 +243,8 @@ final class MenuSnapshotTests: XCTestCase {
 
         XCTAssertEqual(snapshot.ongoingReviewEntries.count, 6)
         XCTAssertEqual(snapshot.ongoingReviewEntries[0].id, "activity-2")
-        XCTAssertEqual(snapshot.ongoingReviewEntries[0].title, "Running review on org/repo#2")
-        XCTAssertEqual(snapshot.ongoingReviewEntries[1].title, "Queued review on org/repo#6")
+        XCTAssertEqual(snapshot.ongoingReviewEntries[0].title, "🤖 Running review on org/repo#2")
+        XCTAssertEqual(snapshot.ongoingReviewEntries[1].title, "🤖 Queued review on org/repo#6")
         XCTAssertNil(snapshot.ongoingReviewEntries[5].id)
         XCTAssertEqual(snapshot.ongoingReviewEntries[5].title, "1 more queued...")
     }
