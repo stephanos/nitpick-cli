@@ -70,6 +70,40 @@ fn command_provider_runs_chat_command_and_stores_output() {
 }
 
 #[test]
+fn command_provider_times_out_chat_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let command = dir.path().join("provider");
+    fs::write(&command, "#!/bin/sh\ncat >/dev/null\nexec sleep 10\n").expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(CommandAgentProvider::new(
+        AgentProviderKind::Claude,
+        Some("test-model".into()),
+        &command,
+    ));
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+
+    let started = Instant::now();
+    let activity = runtime
+        .start_chat(ChatInput {
+            repo_dir: dir.path().to_path_buf(),
+            prompt: "hello".into(),
+            provider_timeout_ms: Some(50),
+            ..ChatInput::default()
+        })
+        .expect("chat activity saved");
+
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(
+        activity.error.as_deref(),
+        Some("claude provider command timed out after 50ms")
+    );
+    let run_log = provider_log(&activity.session, "provider.run").expect("provider run log");
+    assert!(run_log.contains("timed_out: true"));
+}
+
+#[test]
 fn codex_command_provider_runs_chat_with_exec() {
     let dir = tempfile::tempdir().expect("temp dir");
     let command = dir.path().join("provider");
@@ -289,6 +323,56 @@ fn command_provider_persists_run_diagnostic_for_quiet_review() {
     assert!(run_log.contains("status: exit status: 0"));
     assert!(run_log.contains("stdout: empty"));
     assert!(run_log.contains("stderr: empty"));
+}
+
+#[test]
+fn command_provider_persists_run_diagnostic_while_command_is_running() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let command = dir.path().join("provider");
+    fs::write(
+        &command,
+        "#!/bin/sh\ncat >/dev/null\nsleep 1\nprintf command-response\n",
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(CommandAgentProvider::new(
+        AgentProviderKind::Claude,
+        Some("test-model".into()),
+        &command,
+    ));
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+    let input = ChatInput {
+        repo_dir: dir.path().to_path_buf(),
+        prompt: "hello".into(),
+        provider_timeout_ms: Some(5_000),
+        ..ChatInput::default()
+    };
+    let activity = runtime.create_chat_activity().expect("activity");
+    let activity_id = activity.id.clone();
+    let runtime_thread = std::thread::spawn(move || runtime.run_chat(activity, input));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let persisted = store.get(&activity_id).expect("persisted activity");
+        if let Some(run_log) = provider_log(&persisted.session, "provider.run") {
+            assert!(run_log.contains("provider claude command running"));
+            assert!(run_log.contains("timeout: 5s"));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "provider run diagnostic was not persisted before command exit"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let activity = runtime_thread
+        .join()
+        .expect("runtime thread")
+        .expect("chat");
+    assert_eq!(activity.error, None);
 }
 
 #[test]

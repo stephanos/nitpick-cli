@@ -70,6 +70,10 @@ pub trait ProviderRunSink: Send + Sync {
 
     fn append_stderr(&self, bytes: &[u8]) -> AgentResult<()>;
 
+    fn set_run_diagnostic(&self, _content: &str) -> AgentResult<()> {
+        Ok(())
+    }
+
     fn flush(&self) -> AgentResult<()> {
         Ok(())
     }

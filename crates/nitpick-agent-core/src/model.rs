@@ -71,6 +71,8 @@ pub struct ChatInput {
     pub context: String,
     #[serde(default)]
     pub disable_sandbox: bool,
+    #[serde(default)]
+    pub provider_timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

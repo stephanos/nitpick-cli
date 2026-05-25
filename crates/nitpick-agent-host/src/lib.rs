@@ -854,6 +854,7 @@ impl HostDaemon {
                     prompt: "Hi. Reply with exactly: OK".into(),
                     context: "Nitpick provider diagnostic.".into(),
                     disable_sandbox: input.disable_sandbox,
+                    provider_timeout_ms: Some(PROVIDER_DIAGNOSTIC_TIMEOUT_MS),
                 },
             );
         });
@@ -945,6 +946,7 @@ impl ReviewSourcePollResult {
 pub type GitHubReviewPollResult = ReviewSourcePollResult;
 
 const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+const PROVIDER_DIAGNOSTIC_TIMEOUT_MS: u64 = 30_000;
 pub const CONFIG_TEMPLATE: &str = include_str!("../../../examples/config.toml");
 pub const REVIEW_PROMPT_TEMPLATE: &str = include_str!("../../../examples/review-prompt.md");
 const DEFAULT_REVIEW_PROMPT_FILENAME: &str = "review-prompt.md";

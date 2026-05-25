@@ -162,6 +162,7 @@ impl ActivityProviderRunSink {
 struct ActivityProviderRunSinkState {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    run_diagnostic: Option<String>,
     last_save: Option<Instant>,
     dirty: bool,
 }
@@ -173,6 +174,16 @@ impl ProviderRunSink for ActivityProviderRunSink {
 
     fn append_stderr(&self, bytes: &[u8]) -> AgentResult<()> {
         self.append_provider_log(ProviderRunStream::Stderr, bytes)
+    }
+
+    fn set_run_diagnostic(&self, content: &str) -> AgentResult<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| crate::AgentError::io("provider run sink lock", "poisoned"))?;
+        state.run_diagnostic = Some(content.into());
+        state.dirty = true;
+        self.save_provider_logs(&mut state)
     }
 
     fn flush(&self) -> AgentResult<()> {
@@ -230,6 +241,13 @@ impl ActivityProviderRunSink {
                 &mut activity.session,
                 "provider.stderr",
                 &provider_log::bounded_provider_log(&state.stderr),
+            );
+        }
+        if let Some(run_diagnostic) = &state.run_diagnostic {
+            provider_log::upsert_provider_log(
+                &mut activity.session,
+                "provider.run",
+                run_diagnostic,
             );
         }
         activity.touch();

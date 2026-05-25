@@ -13,6 +13,7 @@ pub struct ProviderCommandOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub duration_ms: u128,
+    pub timed_out: bool,
 }
 
 pub struct ProviderCommandRunner<'a> {
@@ -33,6 +34,7 @@ impl<'a> ProviderCommandRunner<'a> {
         mut command: Command,
         prompt: &str,
         run_sink: &dyn ProviderRunSink,
+        timeout: Option<Duration>,
     ) -> AgentResult<ProviderCommandOutput> {
         let started = Instant::now();
         let mut child = command
@@ -67,7 +69,7 @@ impl<'a> ProviderCommandRunner<'a> {
             .write_all(prompt.as_bytes())
             .map_err(|error| AgentError::provider(format!("write provider prompt: {error}")))?;
 
-        let mut output = collect_provider_output(child, stream_rx, run_sink)?;
+        let mut output = collect_provider_output(child, stream_rx, run_sink, timeout)?;
         join_provider_stream_reader(stdout_reader)?;
         join_provider_stream_reader(stderr_reader)?;
         output.duration_ms = started.elapsed().as_millis();
@@ -123,9 +125,12 @@ fn collect_provider_output(
     mut child: std::process::Child,
     rx: Receiver<AgentResult<ProviderStreamChunk>>,
     run_sink: &dyn ProviderRunSink,
+    timeout: Option<Duration>,
 ) -> AgentResult<ProviderCommandOutput> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let mut timed_out = false;
     let status = loop {
         while let Ok(chunk) = rx.try_recv() {
             append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, run_sink)?;
@@ -136,7 +141,20 @@ fn collect_provider_output(
         {
             break status;
         }
-        match rx.recv_timeout(Duration::from_millis(50)) {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            timed_out = true;
+            child.kill().map_err(|error| {
+                AgentError::provider(format!("kill timed out provider command: {error}"))
+            })?;
+            break child.wait().map_err(|error| {
+                AgentError::provider(format!("wait for timed out provider command: {error}"))
+            })?;
+        }
+        let wait = deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::from_millis(50))
+            .min(Duration::from_millis(50));
+        match rx.recv_timeout(wait) {
             Ok(chunk) => append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, run_sink)?,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
@@ -154,6 +172,7 @@ fn collect_provider_output(
         stdout,
         stderr,
         duration_ms: 0,
+        timed_out,
     })
 }
 

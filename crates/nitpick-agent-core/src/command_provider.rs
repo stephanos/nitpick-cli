@@ -142,6 +142,7 @@ impl CommandAgentProvider {
         current_dir: Option<&Path>,
         review_output_path: Option<&Path>,
         sandbox: &CommandSandboxConfig,
+        timeout: Option<std::time::Duration>,
     ) -> AgentResult<String> {
         let sandbox_log_tag = sandbox.enabled.then(new_sandbox_log_tag);
         let mut command =
@@ -158,9 +159,16 @@ impl CommandAgentProvider {
             sandbox = sandbox.enabled,
             "running provider command"
         );
+        run_sink.set_run_diagnostic(&provider_run_start_diagnostic(
+            &self.kind,
+            self.model.as_deref(),
+            &self.command,
+            sandbox.enabled,
+            timeout,
+        ))?;
         let command_display = self.command.display().to_string();
         let output = ProviderCommandRunner::new(self.kind.as_str(), &command_display)
-            .run(command, prompt, run_sink)?;
+            .run(command, prompt, run_sink, timeout)?;
         tracing::debug!(
             provider = %self.kind,
             command = %self.command.display(),
@@ -169,17 +177,29 @@ impl CommandAgentProvider {
             "provider command finished"
         );
         record_provider_logs(session, &output.stdout, &output.stderr);
-        record_provider_run_diagnostic(
-            session,
+        let run_diagnostic = provider_run_diagnostic(
             &self.kind,
             self.model.as_deref(),
             &self.command,
             sandbox.enabled,
+            timeout,
             output.status,
             output.duration_ms,
+            output.timed_out,
             &output.stdout,
             &output.stderr,
         );
+        run_sink.set_run_diagnostic(&run_diagnostic)?;
+        record_provider_run_diagnostic(session, &run_diagnostic);
+        if output.timed_out {
+            return Err(AgentError::provider(format!(
+                "{} provider command timed out after {}",
+                self.kind,
+                timeout
+                    .map(format_timeout_duration)
+                    .unwrap_or_else(|| "unknown duration".into())
+            )));
+        }
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             let sandbox_violations = if sandbox.enabled {
@@ -387,30 +407,38 @@ fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]
     provider_log::push_provider_log(session, "provider.stderr", stderr);
 }
 
-fn record_provider_run_diagnostic(
-    session: &mut AgentSession,
+fn record_provider_run_diagnostic(session: &mut AgentSession, content: &str) {
+    provider_log::upsert_provider_log(session, "provider.run", content);
+}
+
+fn provider_run_start_diagnostic(
     provider: &AgentProviderKind,
     model: Option<&str>,
     command: &Path,
     sandbox_enabled: bool,
-    status: std::process::ExitStatus,
-    duration_ms: u128,
-    stdout: &[u8],
-    stderr: &[u8],
-) {
-    session.messages.push(AgentMessage {
-        role: "provider.run".into(),
-        content: provider_run_diagnostic(
-            provider,
-            model,
-            command,
-            sandbox_enabled,
-            status,
-            duration_ms,
-            stdout,
-            stderr,
+    timeout: Option<std::time::Duration>,
+) -> String {
+    [
+        format!("provider {provider} command running"),
+        format!("model: {}", model.unwrap_or("(default)")),
+        format!("command: {}", command.display()),
+        format!(
+            "sandbox: {}",
+            if sandbox_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
         ),
-    });
+        format!(
+            "timeout: {}",
+            timeout
+                .map(format_timeout_duration)
+                .unwrap_or_else(|| "none".into())
+        ),
+        "status: running".into(),
+    ]
+    .join("\n")
 }
 
 fn provider_run_diagnostic(
@@ -418,8 +446,10 @@ fn provider_run_diagnostic(
     model: Option<&str>,
     command: &Path,
     sandbox_enabled: bool,
+    timeout: Option<std::time::Duration>,
     status: std::process::ExitStatus,
     duration_ms: u128,
+    timed_out: bool,
     stdout: &[u8],
     stderr: &[u8],
 ) -> String {
@@ -435,8 +465,15 @@ fn provider_run_diagnostic(
                 "disabled"
             }
         ),
+        format!(
+            "timeout: {}",
+            timeout
+                .map(format_timeout_duration)
+                .unwrap_or_else(|| "none".into())
+        ),
         format!("status: {status}"),
         format!("duration_ms: {duration_ms}"),
+        format!("timed_out: {timed_out}"),
         format!("stdout: {}", provider_stream_state(stdout)),
         format!("stderr: {}", provider_stream_state(stderr)),
     ]
@@ -448,6 +485,14 @@ fn provider_stream_state(bytes: &[u8]) -> &'static str {
         "empty"
     } else {
         "captured"
+    }
+}
+
+fn format_timeout_duration(timeout: std::time::Duration) -> String {
+    if timeout.as_millis() < 1_000 {
+        format!("{}ms", timeout.as_millis())
+    } else {
+        format!("{}s", timeout.as_secs())
     }
 }
 
@@ -576,6 +621,7 @@ impl AgentProvider for CommandAgentProvider {
                     Some(&repo_dir),
                     None,
                     &sandbox,
+                    None,
                 )?;
                 Ok(ReviewOutput {
                     comments: Vec::new(),
@@ -608,6 +654,7 @@ impl AgentProvider for CommandAgentProvider {
                     Some(&repo_dir),
                     Some(&output_path),
                     &sandbox,
+                    None,
                 )?;
                 validate_review_output_file_for_diff(&repo_dir, &output_path, &input.diff)
             }
@@ -637,6 +684,9 @@ impl AgentProvider for CommandAgentProvider {
             repo_dir.as_deref(),
             None,
             &sandbox,
+            input
+                .provider_timeout_ms
+                .map(std::time::Duration::from_millis),
         )
     }
 
