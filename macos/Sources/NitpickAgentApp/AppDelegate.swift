@@ -4,6 +4,7 @@ import Sparkle
 
 private let agentErrorLogLineLimit = 20
 private let agentErrorLogCharacterLimit = 12_000
+private let agentErrorDetailsViewSize = NSSize(width: 640, height: 320)
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -337,10 +338,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let alert = NSAlert()
         alert.messageText = "Agent error"
-        alert.informativeText = currentStatusDetails
+        alert.informativeText = "Review the details below."
+        alert.accessoryView = makeScrollableDetailsView(currentStatusDetails)
         alert.addButton(withTitle: "OK")
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    private func makeScrollableDetailsView(_ details: String) -> NSScrollView {
+        let textView = NSTextView(frame: NSRect(origin: .zero, size: agentErrorDetailsViewSize))
+        textView.string = details
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.containerSize = NSSize(
+            width: agentErrorDetailsViewSize.width,
+            height: .greatestFiniteMagnitude
+        )
+        textView.textContainer?.widthTracksTextView = true
+
+        let scrollView = NSScrollView(frame: NSRect(origin: .zero, size: agentErrorDetailsViewSize))
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .bezelBorder
+        scrollView.documentView = textView
+        return scrollView
     }
 
     @objc private func showActivityDetails(_ sender: NSMenuItem) {
