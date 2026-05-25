@@ -144,7 +144,7 @@ mod tests {
     fn parses_no_sandbox_after_nested_review_command() {
         let invocation = parse_invocation([
             "review".to_owned(),
-            "run".to_owned(),
+            "start".to_owned(),
             "--no-sandbox".to_owned(),
             "https://github.com/temporalio/temporal/pull/10384".to_owned(),
         ])
@@ -153,7 +153,7 @@ mod tests {
         assert!(invocation.options.disable_sandbox);
         assert_eq!(
             invocation.command,
-            CliCommand::Review(crate::ReviewCommand::Run {
+            CliCommand::Review(crate::ReviewCommand::Start {
                 subject: "https://github.com/temporalio/temporal/pull/10384".into(),
             })
         );

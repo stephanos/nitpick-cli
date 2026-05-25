@@ -170,8 +170,8 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     assert!(logs.contains("activity-2"));
     assert!(logs.contains("review complete"));
 
-    let review_run = run_cli_command(
-        CliCommand::Review(ReviewCommand::Run {
+    let review_start = run_cli_command(
+        CliCommand::Review(ReviewCommand::Start {
             subject: "stephanos/nitpick-agent#42".into(),
         }),
         &host_addr,
@@ -181,13 +181,13 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
         config_path.clone(),
         data_dir.clone(),
     )
-    .expect("review run command");
-    assert!(review_run.contains("activity-"));
-    assert!(review_run.contains("status"));
-    assert!(review_run.contains("nitpick review show stephanos/nitpick-agent#42"));
-    assert!(review_run.contains("active"));
-    assert!(review_run.contains("nitpick review list --status active"));
-    let activity_id = activity_id_from_review_run(&review_run);
+    .expect("review start command");
+    assert!(review_start.contains("activity-"));
+    assert!(review_start.contains("status"));
+    assert!(review_start.contains("nitpick review show stephanos/nitpick-agent#42"));
+    assert!(review_start.contains("active"));
+    assert!(review_start.contains("nitpick review list --status active"));
+    let activity_id = activity_id_from_review_start(&review_start);
     let activity = wait_for_completed_activity(store.as_ref(), &activity_id);
     let artifacts = wait_for_synced_artifacts(store.as_ref(), &activity.id);
     assert!(matches!(
@@ -403,7 +403,7 @@ async fn review_chat_resumes_with_activity_provider() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn review_run_uses_mcp_tools_for_local_smoke_comments() {
+async fn review_start_uses_mcp_tools_for_local_smoke_comments() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path().join("repo");
     fs::create_dir(&repo_dir).expect("repo dir");
@@ -447,8 +447,8 @@ async fn review_run_uses_mcp_tools_for_local_smoke_comments() {
     );
     let host_addr = serve_host(daemon).await;
 
-    let review_run = run_cli_command(
-        CliCommand::Review(ReviewCommand::Run {
+    let review_start = run_cli_command(
+        CliCommand::Review(ReviewCommand::Start {
             subject: "local-smoke".into(),
         }),
         &host_addr,
@@ -458,13 +458,13 @@ async fn review_run_uses_mcp_tools_for_local_smoke_comments() {
         temp.path().join("config.toml"),
         temp.path().join("data"),
     )
-    .expect("review run command");
+    .expect("review start command");
 
-    assert!(review_run.contains("activity-"));
-    assert!(review_run.contains("status"));
-    assert!(review_run.contains("nitpick review show local-smoke"));
-    assert!(review_run.contains("active"));
-    assert!(review_run.contains("nitpick review list --status active"));
+    assert!(review_start.contains("activity-"));
+    assert!(review_start.contains("status"));
+    assert!(review_start.contains("nitpick review show local-smoke"));
+    assert!(review_start.contains("active"));
+    assert!(review_start.contains("nitpick review list --status active"));
     let activity = wait_for_completed_review(store.as_ref());
     let activities = store.list().expect("activities");
     assert_eq!(activities.len(), 1);
@@ -595,8 +595,8 @@ fn wait_for_completed_activity(
     }
 }
 
-fn activity_id_from_review_run(output: &str) -> nitpick_agent_core::ActivityId {
-    let start = output.find("activity-").expect("review run activity id");
+fn activity_id_from_review_start(output: &str) -> nitpick_agent_core::ActivityId {
+    let start = output.find("activity-").expect("review start activity id");
     let id = output[start..]
         .chars()
         .take_while(|character| character.is_ascii_alphanumeric() || *character == '-')

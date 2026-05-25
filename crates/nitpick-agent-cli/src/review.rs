@@ -8,7 +8,7 @@ use crate::{CliError, CliOptions, CliRunContext};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReviewCommand {
-    Run {
+    Start {
         subject: String,
     },
     Chat {
@@ -35,7 +35,7 @@ pub struct ReviewArgs {
 #[derive(Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum ReviewSubcommand {
-    Run {
+    Start {
         subject: String,
     },
     Chat {
@@ -69,7 +69,7 @@ pub enum ReviewListStatus {
 impl From<ReviewSubcommand> for ReviewCommand {
     fn from(command: ReviewSubcommand) -> Self {
         match command {
-            ReviewSubcommand::Run { subject } => Self::Run { subject },
+            ReviewSubcommand::Start { subject } => Self::Start { subject },
             ReviewSubcommand::Chat { target } => Self::Chat { target },
             ReviewSubcommand::OpenEditor { target } => Self::OpenEditor { target },
             ReviewSubcommand::Show { target } => Self::Show { target },
@@ -85,7 +85,7 @@ pub fn run(
 ) -> Result<String, CliError> {
     let client = HostClient::new(&context.host_addr);
     match command {
-        ReviewCommand::Run { subject } => {
+        ReviewCommand::Start { subject } => {
             let mut input = review_input(subject.clone(), context.repo_dir, context.diff);
             input.disable_sandbox = options.disable_sandbox;
             let activity = client.review(&input)?;
@@ -349,24 +349,24 @@ mod tests {
     use nitpick_agent_core::{Activity, ActivityStatus, ReviewMode, ReviewRequest};
 
     #[test]
-    fn parses_review_run_command() {
+    fn parses_review_start_command() {
         let command = parse_command([
             "review".to_owned(),
-            "run".to_owned(),
+            "start".to_owned(),
             "acme/platform#42".to_owned(),
         ])
         .expect("command parses");
 
         assert_eq!(
             command,
-            CliCommand::Review(ReviewCommand::Run {
+            CliCommand::Review(ReviewCommand::Start {
                 subject: "acme/platform#42".into(),
             })
         );
     }
 
     #[test]
-    fn formats_review_run_status_instructions() {
+    fn formats_review_start_status_instructions() {
         let mut activity = Activity::new(
             nitpick_agent_core::ActivityId::new("activity-7"),
             nitpick_agent_core::ActivityKind::Review,
@@ -380,11 +380,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_review_run_without_subject() {
+    fn rejects_review_start_without_subject() {
         let error =
-            parse_command(["review".to_owned(), "run".to_owned()]).expect_err("command fails");
+            parse_command(["review".to_owned(), "start".to_owned()]).expect_err("command fails");
 
-        assert!(error.contains("Usage: nitpick review run <SUBJECT>"));
+        assert!(error.contains("Usage: nitpick review start <SUBJECT>"));
+    }
+
+    #[test]
+    fn rejects_review_run_command() {
+        let error = parse_command([
+            "review".to_owned(),
+            "run".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect_err("command fails");
+
+        assert!(error.contains("unrecognized subcommand 'run'"));
     }
 
     #[test]

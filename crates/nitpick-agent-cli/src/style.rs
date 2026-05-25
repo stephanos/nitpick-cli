@@ -74,16 +74,16 @@ mod tests {
     #[test]
     fn formats_error_prefixes_red() {
         assert_eq!(
-            super::format_error_message("error: missing argument\n\nUsage: nitpick review run"),
-            "\u{1b}[31merror:\u{1b}[0m missing argument\n\nUsage: nitpick review run"
+            super::format_error_message("error: missing argument\n\nUsage: nitpick review start"),
+            "\u{1b}[31merror:\u{1b}[0m missing argument\n\nUsage: nitpick review start"
         );
     }
 
     #[test]
     fn leaves_non_error_lines_unchanged() {
         assert_eq!(
-            super::format_error_message("Usage: nitpick review run"),
-            "Usage: nitpick review run"
+            super::format_error_message("Usage: nitpick review start"),
+            "Usage: nitpick review start"
         );
     }
 

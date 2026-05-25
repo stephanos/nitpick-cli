@@ -47,7 +47,7 @@ replaced by the nested forms below.
 
 ```bash
 nitpick system status
-nitpick review run acme/platform#42
+nitpick review start acme/platform#42
 nitpick activity inspect acme/platform#42
 nitpick review requests
 nitpick review requests --new
@@ -106,7 +106,7 @@ mode = "none"
 For one-off CLI runs, pass `--no-sandbox` before the command:
 
 ```bash
-nitpick --no-sandbox review run acme/platform#42
+nitpick --no-sandbox review start acme/platform#42
 nitpick --no-sandbox chat start acme/platform#42
 nitpick --no-sandbox activity resume acme/platform#42
 ```
