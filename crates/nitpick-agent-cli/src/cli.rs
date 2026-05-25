@@ -34,7 +34,11 @@ pub enum CommandGroup {
 #[derive(Parser)]
 #[command(name = "nitpick", version)]
 struct Cli {
-    #[arg(long = "no-sandbox", help = "Run provider command without sandboxing")]
+    #[arg(
+        long = "no-sandbox",
+        global = true,
+        help = "Run provider command without sandboxing"
+    )]
     no_sandbox: bool,
     #[command(subcommand)]
     command: Option<RootCommand>,
@@ -132,6 +136,25 @@ mod tests {
             invocation.command,
             CliCommand::Review(crate::ReviewCommand::Chat {
                 target: "acme/platform#42".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_no_sandbox_after_nested_review_command() {
+        let invocation = parse_invocation([
+            "review".to_owned(),
+            "run".to_owned(),
+            "--no-sandbox".to_owned(),
+            "https://github.com/temporalio/temporal/pull/10384".to_owned(),
+        ])
+        .expect("invocation");
+
+        assert!(invocation.options.disable_sandbox);
+        assert_eq!(
+            invocation.command,
+            CliCommand::Review(crate::ReviewCommand::Run {
+                subject: "https://github.com/temporalio/temporal/pull/10384".into(),
             })
         );
     }

@@ -2,7 +2,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -139,7 +139,9 @@ impl CommandAgentProvider {
         review_output_path: Option<&Path>,
         sandbox: &CommandSandboxConfig,
     ) -> AgentResult<String> {
-        let mut command = self.command_for_with_sandbox(current_dir, args, sandbox)?;
+        let sandbox_log_tag = sandbox.enabled.then(new_sandbox_log_tag);
+        let mut command =
+            self.command_for_with_sandbox(current_dir, args, sandbox, sandbox_log_tag.as_deref())?;
         if let Some(current_dir) = current_dir {
             command.current_dir(current_dir);
         }
@@ -186,8 +188,21 @@ impl CommandAgentProvider {
         record_provider_logs(session, &output.stdout, &output.stderr);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let sandbox_violations = if sandbox.enabled {
+                sandbox_log_tag
+                    .as_deref()
+                    .map(recent_sandbox_violations)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             if sandbox.enabled {
-                record_provider_sandbox_diagnostic(session, output.status, &stderr);
+                record_provider_sandbox_diagnostic(
+                    session,
+                    output.status,
+                    &stderr,
+                    &sandbox_violations,
+                );
             }
             return Err(AgentError::provider(format!(
                 "{} provider command failed with status {}{}{}",
@@ -206,7 +221,7 @@ impl CommandAgentProvider {
     }
 
     fn command_for(&self, repo_dir: Option<&Path>, args: &[String]) -> AgentResult<Command> {
-        self.command_for_with_sandbox(repo_dir, args, &self.sandbox)
+        self.command_for_with_sandbox(repo_dir, args, &self.sandbox, None)
     }
 
     fn command_for_with_sandbox(
@@ -214,6 +229,7 @@ impl CommandAgentProvider {
         repo_dir: Option<&Path>,
         args: &[String],
         sandbox: &CommandSandboxConfig,
+        sandbox_log_tag: Option<&str>,
     ) -> AgentResult<Command> {
         if !sandbox.enabled {
             let mut command = Command::new(self.resolved_command()?);
@@ -228,9 +244,12 @@ impl CommandAgentProvider {
             })?;
             let provider_command = self.resolved_command()?;
             let mut command = Command::new("sandbox-exec");
-            command
-                .arg("-p")
-                .arg(macos_sandbox_profile(repo_dir, &provider_command, sandbox)?);
+            command.arg("-p").arg(macos_sandbox_profile(
+                repo_dir,
+                &provider_command,
+                sandbox,
+                sandbox_log_tag,
+            )?);
             command.arg(&provider_command);
             command.args(args);
             Ok(command)
@@ -369,10 +388,11 @@ fn record_provider_sandbox_diagnostic(
     session: &mut AgentSession,
     status: std::process::ExitStatus,
     stderr: &str,
+    violations: &[String],
 ) {
     session.messages.push(AgentMessage {
         role: "provider.sandbox".into(),
-        content: sandbox_diagnostic(status, stderr),
+        content: sandbox_diagnostic(status, stderr, violations),
     });
 }
 
@@ -399,18 +419,22 @@ fn bounded_provider_log(bytes: &[u8]) -> String {
 
 fn sandbox_failure_hint(sandbox_enabled: bool) -> String {
     if sandbox_enabled {
-        "; sandbox was enabled, retry with --no-sandbox to confirm whether this is a sandbox denial"
+        "; sandbox was enabled, retry with --no-sandbox to determine whether the sandbox is involved"
             .into()
     } else {
         String::new()
     }
 }
 
-fn sandbox_diagnostic(status: std::process::ExitStatus, stderr: &str) -> String {
+fn sandbox_diagnostic(
+    status: std::process::ExitStatus,
+    stderr: &str,
+    violations: &[String],
+) -> String {
     let mut lines = vec![
-        format!("sandboxed provider command failed with status {status}"),
-        "retry with --no-sandbox to confirm whether the macOS sandbox is blocking the provider"
-            .into(),
+        "sandbox was enabled for this provider run".into(),
+        format!("provider exited with status {status}"),
+        "retry with --no-sandbox to determine whether the sandbox is involved".into(),
     ];
     if stderr.trim().is_empty() {
         lines.push("provider stderr was empty".into());
@@ -418,7 +442,49 @@ fn sandbox_diagnostic(status: std::process::ExitStatus, stderr: &str) -> String 
         lines.push("provider stderr:".into());
         lines.push(stderr.trim().into());
     }
+    if violations.is_empty() {
+        lines.push("no matching macOS sandbox violations were found in recent system logs".into());
+    } else {
+        lines.push("matching macOS sandbox violations:".into());
+        lines.extend(violations.iter().cloned());
+    }
     lines.join("\n")
+}
+
+fn new_sandbox_log_tag() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("NITPICK_SANDBOX_{nanos}")
+}
+
+#[cfg(target_os = "macos")]
+fn recent_sandbox_violations(log_tag: &str) -> Vec<String> {
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let predicate = format!(r#"eventMessage CONTAINS "{log_tag}""#);
+    let output = Command::new("/usr/bin/log")
+        .args(["show", "--last", "2m", "--style", "compact", "--predicate"])
+        .arg(predicate)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    bounded_provider_log(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(20)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn recent_sandbox_violations(_log_tag: &str) -> Vec<String> {
+    Vec::new()
 }
 
 impl AgentProvider for CommandAgentProvider {
@@ -715,6 +781,7 @@ fn macos_sandbox_profile(
     repo_dir: &Path,
     provider_command: &Path,
     sandbox: &CommandSandboxConfig,
+    log_tag: Option<&str>,
 ) -> AgentResult<String> {
     let repo_dir = repo_dir
         .canonicalize()
@@ -722,7 +789,7 @@ fn macos_sandbox_profile(
     let command = provider_command
         .canonicalize()
         .unwrap_or_else(|_| provider_command.to_path_buf());
-    Ok(SandboxProfileBuilder::new()
+    let builder = SandboxProfileBuilder::new()
         .allow_processes()
         .allow_mach_lookup()
         .allow_network()
@@ -735,8 +802,11 @@ fn macos_sandbox_profile(
         .allow_reads(&provider_runtime_read_paths())
         .allow_read_writes(&provider_runtime_read_write_paths())
         .allow_literal_reads(&sandbox.extra_read_paths)
-        .allow_read_writes(&sandbox.extra_read_write_paths)
-        .render())
+        .allow_read_writes(&sandbox.extra_read_write_paths);
+    Ok(match log_tag {
+        Some(log_tag) => builder.render_with_deny_message(log_tag),
+        None => builder.render(),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -798,8 +868,12 @@ mod tests {
 
         assert!(sandbox_failure_hint(true).contains("--no-sandbox"));
         assert_eq!(sandbox_failure_hint(false), "");
-        assert!(sandbox_diagnostic(status, "").contains("provider stderr was empty"));
-        assert!(sandbox_diagnostic(status, "").contains("--no-sandbox"));
+        assert!(sandbox_diagnostic(status, "", &[]).contains("provider stderr was empty"));
+        assert!(sandbox_diagnostic(status, "", &[]).contains("--no-sandbox"));
+        assert!(
+            sandbox_diagnostic(status, "", &["Sandbox: deny file-read-data".into()])
+                .contains("matching macOS sandbox violations")
+        );
     }
 
     #[test]
@@ -833,7 +907,7 @@ mod tests {
             });
 
         let profile =
-            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox).expect("profile");
+            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox, None).expect("profile");
 
         assert!(profile.contains(&format!(
             r#"(literal "{}")"#,
@@ -859,7 +933,8 @@ mod tests {
         let sandbox = CommandSandboxConfig::macos_seatbelt();
 
         let profile =
-            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox).expect("profile");
+            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox, Some("NITPICK_TEST"))
+                .expect("profile");
 
         let home = std::env::var("HOME").expect("home");
         assert!(profile.contains(&format!(
@@ -879,6 +954,12 @@ mod tests {
             std::env::temp_dir().canonicalize().expect("temp dir").display()
         )));
         assert!(profile.contains(r#"(allow mach-lookup)"#));
+        assert!(profile.contains(r#"(deny default (with message "NITPICK_TEST"))"#));
+        assert!(profile.contains(r#"(allow process-exec)"#));
+        assert!(profile.contains(r#"(allow ipc-posix-sem)"#));
+        assert!(profile.contains(r#"(allow pseudo-tty)"#));
+        assert!(profile.contains(r#"(global-name "com.apple.trustd.agent")"#));
+        assert!(profile.contains(r#"(literal "/dev/tty")"#));
         assert!(profile.contains(r#"(literal "/dev/urandom")"#));
         assert!(profile.contains(r#"(subpath "/private/etc")"#));
         assert!(profile.contains(r#"(subpath "/opt/homebrew")"#));
