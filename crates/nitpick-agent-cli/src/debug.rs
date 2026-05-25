@@ -1,7 +1,10 @@
 use clap::{Args, Subcommand};
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{Activity, ActivityOutput, ActivityStatus, ProviderDiagnosticInput};
-use std::time::{Duration, Instant};
+use std::{
+    io::{self, Write},
+    time::{Duration, Instant},
+};
 
 use crate::{CliError, CliOptions, CliRunContext};
 
@@ -98,12 +101,18 @@ pub fn run(
                 .map(str::parse)
                 .transpose()
                 .map_err(CliError::from)?;
+            print_provider_diagnostic_start(
+                provider.as_ref(),
+                model.as_deref(),
+                options.disable_sandbox,
+            )?;
             let activity = client.provider_diagnostic(&ProviderDiagnosticInput {
                 repo_dir: context.repo_dir,
                 provider,
                 model,
                 disable_sandbox: options.disable_sandbox,
             })?;
+            print_provider_diagnostic_activity(&activity)?;
             let activity = wait_for_provider_diagnostic(&client, activity)?;
             Ok(format_provider_diagnostic(
                 &activity,
@@ -111,6 +120,76 @@ pub fn run(
             ))
         }
     }
+}
+
+fn print_provider_diagnostic_start(
+    provider: Option<&nitpick_agent_core::AgentProviderKind>,
+    model: Option<&str>,
+    sandbox_disabled: bool,
+) -> Result<(), CliError> {
+    let rows = vec![
+        vec![
+            crate::style::label("provider"),
+            provider
+                .map(|provider| provider.as_str())
+                .unwrap_or("configured")
+                .into(),
+        ],
+        vec![
+            crate::style::label("model"),
+            model.unwrap_or("configured").into(),
+        ],
+        vec![
+            crate::style::label("sandbox"),
+            if sandbox_disabled {
+                "disabled"
+            } else {
+                "configured"
+            }
+            .into(),
+        ],
+        vec![
+            crate::style::label("prompt"),
+            "Hi. Reply with exactly: OK".into(),
+        ],
+        vec![
+            crate::style::label("checks"),
+            "provider command, prompt delivery, sandbox, stdout/stderr capture".into(),
+        ],
+    ];
+    println!(
+        "{}",
+        crate::activity::format_section("Starting provider diagnostic", crate::style::table(rows))
+    );
+    io::stdout()
+        .flush()
+        .map_err(|error| CliError::from(format!("flush diagnostic progress: {error}")))
+}
+
+fn print_provider_diagnostic_activity(activity: &Activity) -> Result<(), CliError> {
+    println!();
+    println!(
+        "{}",
+        crate::activity::format_section(
+            "Diagnostic activity",
+            crate::style::table(vec![
+                vec![crate::style::label("activity"), activity.id.to_string()],
+                vec![
+                    crate::style::label("status"),
+                    crate::style::status_title(&activity.status)
+                ],
+                vec![
+                    crate::style::label("logs"),
+                    format!("nitpick debug logs {}", activity.id),
+                ],
+            ]),
+        )
+    );
+    println!();
+    println!("Waiting for provider result...");
+    io::stdout()
+        .flush()
+        .map_err(|error| CliError::from(format!("flush diagnostic progress: {error}")))
 }
 
 fn wait_for_provider_diagnostic(
