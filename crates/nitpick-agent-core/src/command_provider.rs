@@ -832,14 +832,7 @@ fn provider_runtime_read_paths() -> Vec<PathBuf> {
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        paths.extend([
-            home.join(".config").join("claude"),
-            home.join(".local").join("share").join("claude"),
-            home.join("Library")
-                .join("Application Support")
-                .join("Claude"),
-            home.join("Library").join("Keychains"),
-        ]);
+        paths.extend([home.join("Library").join("Keychains")]);
     }
     paths
 }
@@ -851,6 +844,11 @@ fn provider_runtime_read_write_paths() -> Vec<PathBuf> {
         paths.extend([
             home.join(".claude"),
             home.join(".cache"),
+            home.join(".config").join("claude"),
+            home.join(".local").join("share").join("claude"),
+            home.join("Library")
+                .join("Application Support")
+                .join("Claude"),
             home.join(".npm"),
             home.join("Library").join("Caches").join("Claude"),
         ]);
@@ -967,7 +965,7 @@ mod tests {
 
         let home = std::env::var("HOME").expect("home");
         assert!(profile.contains(&format!(
-            r#"(allow file-read* (subpath "{home}/.local/share/claude"))"#
+            r#"(allow file-read* file-write* (subpath "{home}/.local/share/claude"))"#
         )));
         assert!(profile.contains(&format!(
             r#"(allow file-read* (subpath "{home}/Library/Keychains"))"#
@@ -977,6 +975,9 @@ mod tests {
         )));
         assert!(profile.contains(&format!(
             r#"(allow file-read* file-write* (subpath "{home}/.cache"))"#
+        )));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* file-write* (subpath "{home}/.config/claude"))"#
         )));
         assert!(profile.contains(&format!(
             r#"(subpath "{}")"#,
