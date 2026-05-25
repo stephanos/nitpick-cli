@@ -124,9 +124,28 @@ impl DiffChangeset {
     }
 }
 
+pub fn first_changed_file_for_diff(diff: &str) -> AgentResult<Option<String>> {
+    let mut patch = PatchSet::new();
+    patch
+        .parse(diff)
+        .map_err(|error| AgentError::invalid_input(format!("invalid review diff: {error}")))?;
+
+    Ok(patch.into_iter().find_map(|file| {
+        normalized_target_path(&file.target_file)
+            .or_else(|| normalized_source_path(&file.source_file))
+    }))
+}
+
 fn normalized_target_path(path: &str) -> Option<String> {
     if path == "/dev/null" {
         return None;
     }
     Some(path.strip_prefix("b/").unwrap_or(path).to_owned())
+}
+
+fn normalized_source_path(path: &str) -> Option<String> {
+    if path == "/dev/null" {
+        return None;
+    }
+    Some(path.strip_prefix("a/").unwrap_or(path).to_owned())
 }

@@ -36,7 +36,7 @@ pub use repo_path::RepoPath;
 pub use review_output::{
     REVIEW_OUTPUT_RELATIVE_PATH, validate_review_output_file, validate_review_output_file_for_diff,
 };
-pub use review_session::ReviewCommentValidator;
+pub use review_session::{ReviewCommentValidator, first_changed_file_for_diff};
 pub use review_source::{
     FsProcessedReviewStore, MemoryProcessedReviewStore, ProcessedReview, ProcessedReviewStore,
     ReviewSource,

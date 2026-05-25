@@ -284,7 +284,8 @@ fn enqueue_review_serializes_multiple_updated_heads_for_same_pr() {
 }
 
 #[test]
-fn enqueue_review_creates_no_findings_pending_review_when_completed_review_has_no_comments() {
+fn enqueue_review_creates_no_findings_file_level_draft_comment_when_completed_review_has_no_comments()
+ {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     let commands_file = dir.path().join("commands");
@@ -338,8 +339,16 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         serde_json::from_str(&std::fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
     assert_eq!(payload["commit_id"], "abc123");
-    assert_eq!(payload["body"], "🤖 Review completed: no findings.");
-    assert_eq!(payload["comments"].as_array().expect("comments").len(), 0);
+    assert!(payload.get("body").is_none());
+    assert_eq!(payload["comments"].as_array().expect("comments").len(), 1);
+    assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
+    assert_eq!(payload["comments"][0]["subject_type"], "file");
+    assert_eq!(
+        payload["comments"][0]["body"],
+        "🤖 Review completed: no findings."
+    );
+    assert!(payload["comments"][0].get("line").is_none());
+    assert!(payload["comments"][0].get("side").is_none());
     assert!(payload.get("event").is_none());
 }
 
@@ -351,6 +360,7 @@ fn review_input_for_head(head_sha: &str) -> ReviewInput {
             ..nitpick_agent_core::ReviewSubject::default()
         },
         head_sha: head_sha.into(),
+        diff: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -0,0 +1 @@\n+pub fn example() {}\n".into(),
         ..ReviewInput::default()
     }
 }

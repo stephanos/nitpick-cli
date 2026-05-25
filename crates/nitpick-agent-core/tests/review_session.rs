@@ -1,6 +1,6 @@
 use std::fs;
 
-use nitpick_agent_core::ReviewCommentValidator;
+use nitpick_agent_core::{ReviewCommentValidator, first_changed_file_for_diff};
 
 #[test]
 fn review_comment_validator_accepts_added_line_comment() {
@@ -22,6 +22,27 @@ fn review_comment_validator_accepts_added_line_comment() {
     assert_eq!(comment.path, "src.rs");
     assert_eq!(comment.line, 1);
     assert_eq!(comment.body, "added line note");
+}
+
+#[test]
+fn first_changed_file_for_diff_returns_first_target_file() {
+    let path = first_changed_file_for_diff(
+        "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -0,0 +1 @@\n+pub fn lib() {}\n\
+diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -0,0 +1 @@\n+fn main() {}\n",
+    )
+    .expect("valid diff");
+
+    assert_eq!(path.as_deref(), Some("src/lib.rs"));
+}
+
+#[test]
+fn first_changed_file_for_diff_uses_source_file_for_deleted_file() {
+    let path = first_changed_file_for_diff(
+        "diff --git a/src/old.rs b/src/old.rs\n--- a/src/old.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-fn old() {}\n",
+    )
+    .expect("valid diff");
+
+    assert_eq!(path.as_deref(), Some("src/old.rs"));
 }
 
 #[test]

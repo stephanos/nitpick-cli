@@ -10,9 +10,9 @@ use std::{
 
 use fs_err as fs;
 use nitpick_agent_core::{
-    AgentError, AgentResult, Artifact, ArtifactContent, ArtifactSyncDestination,
-    ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput, ReviewRequest,
-    ReviewSource, ReviewSubject, checkout_root_from_env_values, parse_json_bytes,
+    ActivityId, AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactKind,
+    ArtifactSyncDestination, ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput,
+    ReviewRequest, ReviewSource, ReviewSubject, checkout_root_from_env_values, parse_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 
@@ -88,34 +88,29 @@ impl GitHubCliReviewSyncDestination {
         sync_review_batch_with_github_cli(&self.command, &self.target, artifacts, self.name())
     }
 
-    pub fn create_pending_review_body(&self, body: &str) -> AgentResult<ArtifactSyncOutcome> {
-        let head_sha = pull_request_head_sha(
+    pub fn create_pending_file_comment(
+        &self,
+        path: &str,
+        body: &str,
+    ) -> AgentResult<ArtifactSyncOutcome> {
+        let outcomes = sync_review_batch_with_github_cli(
             &self.command,
-            &self.target.owner,
-            &self.target.repo,
-            self.target.number,
-        )?;
-        let payload = serde_json::json!({
-            "commit_id": head_sha,
-            "body": body,
-            "comments": [],
-        });
-        sync_pending_review_with_github_cli(
-            &self.command,
-            &[
-                "api",
-                &format!(
-                    "repos/{}/{}/pulls/{}/reviews",
-                    self.target.owner, self.target.repo, self.target.number
-                ),
-                "--method",
-                "POST",
-                "--input",
-                "-",
-            ],
-            &payload.to_string(),
+            &self.target,
+            &[Artifact::local(
+                ArtifactId::new("no-findings"),
+                ActivityId::new("no-findings"),
+                ArtifactKind::ReviewComment,
+                ArtifactContent::ReviewComment(ReviewComment {
+                    path: path.into(),
+                    line: 0,
+                    body: body.into(),
+                }),
+            )],
             self.name(),
-        )
+        )?;
+        outcomes.into_iter().next().ok_or_else(|| {
+            AgentError::invalid_input("github-review sync returned no outcome for file comment")
+        })
     }
 
     pub fn fetch_review(&self, review_id: &str) -> AgentResult<GitHubReviewResponse> {
@@ -1116,12 +1111,7 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
                 let payload = serde_json::json!({
                     "commit_id": head_sha,
                     "event": "COMMENT",
-                    "comments": [{
-                        "path": comment.path,
-                        "line": comment.line,
-                        "side": "RIGHT",
-                        "body": robot_prefixed_body(&comment.body),
-                    }],
+                    "comments": [review_comment_payload(comment.clone())],
                 });
                 sync_with_github_cli(
                     &self.command,
@@ -1250,12 +1240,20 @@ struct GitHubUserResponse {
 }
 
 fn review_comment_payload(comment: ReviewComment) -> serde_json::Value {
-    serde_json::json!({
-        "path": comment.path,
-        "line": comment.line,
-        "side": "RIGHT",
-        "body": robot_prefixed_body(&comment.body),
-    })
+    if comment.line == 0 {
+        serde_json::json!({
+            "path": comment.path,
+            "subject_type": "file",
+            "body": robot_prefixed_body(&comment.body),
+        })
+    } else {
+        serde_json::json!({
+            "path": comment.path,
+            "line": comment.line,
+            "side": "RIGHT",
+            "body": robot_prefixed_body(&comment.body),
+        })
+    }
 }
 
 fn sync_with_github_cli(

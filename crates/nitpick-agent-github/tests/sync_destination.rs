@@ -430,7 +430,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
 }
 
 #[test]
-fn github_cli_review_destination_posts_body_only_as_pending_review() {
+fn github_cli_review_destination_posts_no_findings_as_file_level_draft_comment() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     let commands_file = dir.path().join("commands");
@@ -463,7 +463,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     );
 
     let outcome = destination
-        .create_pending_review_body("🤖 Review completed: no findings.")
+        .create_pending_file_comment("src/lib.rs", "🤖 Review completed: no findings.")
         .expect("sync outcome");
 
     assert_eq!(
@@ -474,8 +474,16 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
     assert_eq!(payload["commit_id"], "abc123");
-    assert_eq!(payload["body"], "🤖 Review completed: no findings.");
-    assert_eq!(payload["comments"].as_array().expect("comments").len(), 0);
+    assert!(payload.get("body").is_none());
+    assert_eq!(payload["comments"].as_array().expect("comments").len(), 1);
+    assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
+    assert_eq!(payload["comments"][0]["subject_type"], "file");
+    assert_eq!(
+        payload["comments"][0]["body"],
+        "🤖 Review completed: no findings."
+    );
+    assert!(payload["comments"][0].get("line").is_none());
+    assert!(payload["comments"][0].get("side").is_none());
     assert!(payload.get("event").is_none());
     assert_eq!(
         outcome.sync_state,

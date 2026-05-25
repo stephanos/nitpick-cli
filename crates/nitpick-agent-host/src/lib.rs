@@ -18,7 +18,7 @@ use nitpick_agent_core::{
     ArtifactId, ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult,
     Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus, MemoryProcessedReviewStore,
     ProcessedReviewStore, ReviewInput, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig,
-    SessionStatus, SystemClock,
+    SessionStatus, SystemClock, first_changed_file_for_diff,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -568,9 +568,17 @@ impl HostDaemon {
         Ok(Some(updated))
     }
 
-    fn sync_completed_github_review(&self, activity: &Activity, target: &str) -> AgentResult<()> {
+    fn sync_completed_github_review(
+        &self,
+        activity: &Activity,
+        target: &str,
+        input: &ReviewInput,
+    ) -> AgentResult<()> {
         self.sync_activity_artifacts(&activity.id, "github-review", Some(target))?;
         if self.completed_review_has_no_comments(activity)? {
+            let Some(path) = first_changed_file_for_diff(&input.diff)? else {
+                return Ok(());
+            };
             let target = target.parse::<PullRequestRef>().map_err(|error| {
                 AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
             })?;
@@ -578,7 +586,7 @@ impl HostDaemon {
                 target,
                 self.config.github_command.as_deref().unwrap_or("gh"),
             )
-            .create_pending_review_body(NO_FINDINGS_REVIEW_COMMENT)?;
+            .create_pending_file_comment(&path, NO_FINDINGS_REVIEW_COMMENT)?;
         }
         Ok(())
     }
@@ -1008,12 +1016,12 @@ impl HostDaemon {
             self.wait_for_prior_reviews_on_same_pr(&activity)?;
             self.review_slots.wait_and_acquire()?;
         }
-        let result = self.runtime().run_review(activity, input);
+        let result = self.runtime().run_review(activity, input.clone());
         self.review_slots.release()?;
         if let Ok(activity) = &result
             && activity.status == ActivityStatus::Completed
             && let Some(target) = github_sync_target.as_deref()
-            && let Err(error) = self.sync_completed_github_review(activity, target)
+            && let Err(error) = self.sync_completed_github_review(activity, target, &input)
         {
             tracing::warn!(
                 activity_id = %activity.id,
