@@ -103,12 +103,13 @@ pub fn run(
                 .map_err(CliError::from)?;
             let config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
                 .map_err(CliError::from)?;
-            print_provider_diagnostic_start(
+            let display = ProviderDiagnosticDisplay::new(
                 &config,
                 provider.as_ref(),
                 model.as_deref(),
                 options.disable_sandbox,
-            )?;
+            );
+            print_provider_diagnostic_start(&display)?;
             let activity = client.provider_diagnostic(&ProviderDiagnosticInput {
                 repo_dir: context.repo_dir,
                 provider,
@@ -117,36 +118,52 @@ pub fn run(
             })?;
             print_provider_diagnostic_activity(&activity)?;
             let activity = wait_for_provider_diagnostic(&client, activity)?;
-            Ok(format_provider_diagnostic(
-                &activity,
-                options.disable_sandbox,
-            ))
+            Ok(format_provider_diagnostic(&activity, &display))
         }
     }
 }
 
-fn print_provider_diagnostic_start(
-    config: &nitpick_agent_host::AgentConfig,
-    provider: Option<&nitpick_agent_core::AgentProviderKind>,
-    model: Option<&str>,
-    sandbox_disabled: bool,
-) -> Result<(), CliError> {
-    let provider = provider.unwrap_or(&config.provider);
-    let command = config
-        .command
-        .as_deref()
-        .unwrap_or_else(|| provider.as_str());
-    let model = model.or(config.model.as_deref()).unwrap_or("(default)");
-    let sandbox = if sandbox_disabled {
-        "none (--no-sandbox)"
-    } else {
-        config.sandbox.mode.as_str()
-    };
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProviderDiagnosticDisplay {
+    provider: String,
+    command: String,
+    model: String,
+    sandbox: String,
+}
+
+impl ProviderDiagnosticDisplay {
+    fn new(
+        config: &nitpick_agent_host::AgentConfig,
+        provider: Option<&nitpick_agent_core::AgentProviderKind>,
+        model: Option<&str>,
+        sandbox_disabled: bool,
+    ) -> Self {
+        let provider = provider.unwrap_or(&config.provider);
+        let command = config
+            .command
+            .as_deref()
+            .unwrap_or_else(|| provider.as_str());
+        let model = model.or(config.model.as_deref()).unwrap_or("(default)");
+        let sandbox = if sandbox_disabled {
+            "none (--no-sandbox)"
+        } else {
+            config.sandbox.mode.as_str()
+        };
+        Self {
+            provider: provider.as_str().into(),
+            command: command.into(),
+            model: model.into(),
+            sandbox: sandbox.into(),
+        }
+    }
+}
+
+fn print_provider_diagnostic_start(display: &ProviderDiagnosticDisplay) -> Result<(), CliError> {
     let rows = vec![
-        vec![crate::style::label("provider"), provider.as_str().into()],
-        vec![crate::style::label("command"), command.into()],
-        vec![crate::style::label("model"), model.into()],
-        vec![crate::style::label("sandbox"), sandbox.into()],
+        vec![crate::style::label("provider"), display.provider.clone()],
+        vec![crate::style::label("command"), display.command.clone()],
+        vec![crate::style::label("model"), display.model.clone()],
+        vec![crate::style::label("sandbox"), display.sandbox.clone()],
         vec![
             crate::style::label("prompt"),
             "Hi. Reply with exactly: OK".into(),
@@ -207,29 +224,35 @@ fn wait_for_provider_diagnostic(
     Ok(activity)
 }
 
-fn format_provider_diagnostic(activity: &Activity, sandbox_disabled: bool) -> String {
+fn format_provider_diagnostic(activity: &Activity, display: &ProviderDiagnosticDisplay) -> String {
     let provider = activity
         .session
         .provider
         .as_ref()
         .map(|provider| provider.as_str())
-        .unwrap_or("(unknown)");
+        .unwrap_or(display.provider.as_str());
+    let title = if matches!(
+        activity.status,
+        ActivityStatus::Queued | ActivityStatus::Running
+    ) {
+        "Diagnostic still running"
+    } else {
+        "Diagnostic"
+    };
     let rows = vec![
         vec![crate::style::label("activity"), activity.id.to_string()],
         vec![crate::style::label("provider"), provider.into()],
         vec![
+            crate::style::label("command"),
+            provider_run_field(activity, "command").unwrap_or_else(|| display.command.clone()),
+        ],
+        vec![
             crate::style::label("model"),
-            provider_run_field(activity, "model").unwrap_or_else(|| "(unknown)".into()),
+            provider_run_field(activity, "model").unwrap_or_else(|| display.model.clone()),
         ],
         vec![
             crate::style::label("sandbox"),
-            provider_run_field(activity, "sandbox").unwrap_or_else(|| {
-                if sandbox_disabled {
-                    "disabled".into()
-                } else {
-                    "configured".into()
-                }
-            }),
+            provider_run_field(activity, "sandbox").unwrap_or_else(|| display.sandbox.clone()),
         ],
         vec![
             crate::style::label("status"),
@@ -237,9 +260,22 @@ fn format_provider_diagnostic(activity: &Activity, sandbox_disabled: bool) -> St
         ],
     ];
     let mut sections = vec![crate::activity::format_section(
-        "Diagnostic",
+        title,
         crate::style::table(rows),
     )];
+    if matches!(
+        activity.status,
+        ActivityStatus::Queued | ActivityStatus::Running
+    ) {
+        sections.push(crate::activity::format_section(
+            "Status",
+            format!(
+                "provider diagnostic is still running after {}s\ncheck logs: nitpick debug logs {}",
+                PROVIDER_DIAGNOSTIC_WAIT.as_secs(),
+                activity.id
+            ),
+        ));
+    }
     if let Some(error) = &activity.error {
         sections.push(crate::activity::format_section(
             "Error",
@@ -351,6 +387,26 @@ mod tests {
                 provider: Some("codex".into()),
                 model: Some("gpt-5.3-codex".into()),
             })
+        );
+    }
+
+    #[test]
+    fn formats_running_provider_diagnostic_with_expected_values() {
+        let mut activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-24"),
+            nitpick_agent_core::ActivityKind::Chat,
+        );
+        activity.status = nitpick_agent_core::ActivityStatus::Running;
+        let display = super::ProviderDiagnosticDisplay {
+            provider: "claude".into(),
+            command: "/opt/homebrew/bin/claude".into(),
+            model: "claude-opus-4-6".into(),
+            sandbox: "macos-seatbelt".into(),
+        };
+
+        assert_eq!(
+            super::format_provider_diagnostic(&activity, &display),
+            "Diagnostic still running\n  \u{1b}[2mactivity\u{1b}[0m  activity-24\n  \u{1b}[2mprovider\u{1b}[0m  claude\n  \u{1b}[2mcommand\u{1b}[0m   /opt/homebrew/bin/claude\n  \u{1b}[2mmodel\u{1b}[0m     claude-opus-4-6\n  \u{1b}[2msandbox\u{1b}[0m   macos-seatbelt\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[34mRunning\u{1b}[0m\n\nStatus\n  provider diagnostic is still running after 60s\n  check logs: nitpick debug logs activity-24\n\nLogs\n  nitpick debug logs activity-24"
         );
     }
 }
