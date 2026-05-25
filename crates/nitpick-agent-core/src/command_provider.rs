@@ -169,6 +169,16 @@ impl CommandAgentProvider {
             "provider command finished"
         );
         record_provider_logs(session, &output.stdout, &output.stderr);
+        record_provider_run_diagnostic(
+            session,
+            &self.kind,
+            &self.command,
+            sandbox.enabled,
+            output.status,
+            output.duration_ms,
+            &output.stdout,
+            &output.stderr,
+        );
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             let sandbox_violations = if sandbox.enabled {
@@ -374,6 +384,66 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
 fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]) {
     provider_log::push_provider_log(session, "provider.stdout", stdout);
     provider_log::push_provider_log(session, "provider.stderr", stderr);
+}
+
+fn record_provider_run_diagnostic(
+    session: &mut AgentSession,
+    provider: &AgentProviderKind,
+    command: &Path,
+    sandbox_enabled: bool,
+    status: std::process::ExitStatus,
+    duration_ms: u128,
+    stdout: &[u8],
+    stderr: &[u8],
+) {
+    session.messages.push(AgentMessage {
+        role: "provider.run".into(),
+        content: provider_run_diagnostic(
+            provider,
+            command,
+            sandbox_enabled,
+            status,
+            duration_ms,
+            stdout,
+            stderr,
+        ),
+    });
+}
+
+fn provider_run_diagnostic(
+    provider: &AgentProviderKind,
+    command: &Path,
+    sandbox_enabled: bool,
+    status: std::process::ExitStatus,
+    duration_ms: u128,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> String {
+    [
+        format!("provider {provider} command completed"),
+        format!("command: {}", command.display()),
+        format!(
+            "sandbox: {}",
+            if sandbox_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ),
+        format!("status: {status}"),
+        format!("duration_ms: {duration_ms}"),
+        format!("stdout: {}", provider_stream_state(stdout)),
+        format!("stderr: {}", provider_stream_state(stderr)),
+    ]
+    .join("\n")
+}
+
+fn provider_stream_state(bytes: &[u8]) -> &'static str {
+    if bytes.is_empty() {
+        "empty"
+    } else {
+        "captured"
+    }
 }
 
 fn record_provider_sandbox_diagnostic(

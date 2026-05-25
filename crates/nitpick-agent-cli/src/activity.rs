@@ -144,8 +144,11 @@ fn format_activity_logs_with_options(
     if let Some(output) = &activity.output {
         sections.push(format_section("Output", format_activity_output(output)));
     }
-    if include_provider_logs && let Some(provider_logs) = format_provider_logs(activity) {
-        sections.push(format_section("Provider logs", provider_logs));
+    if include_provider_logs {
+        sections.push(format_section(
+            "Provider logs",
+            format_provider_logs(activity),
+        ));
     }
     sections.push(format_section(
         "Artifacts",
@@ -154,7 +157,7 @@ fn format_activity_logs_with_options(
     sections.join("\n\n")
 }
 
-fn format_provider_logs(activity: &Activity) -> Option<String> {
+fn format_provider_logs(activity: &Activity) -> String {
     let logs = activity
         .session
         .messages
@@ -163,6 +166,7 @@ fn format_provider_logs(activity: &Activity) -> Option<String> {
             message.role == "provider.stdout"
                 || message.role == "provider.stderr"
                 || message.role == "provider.sandbox"
+                || message.role == "provider.run"
         })
         .map(|message| {
             format!(
@@ -172,7 +176,11 @@ fn format_provider_logs(activity: &Activity) -> Option<String> {
             )
         })
         .collect::<Vec<_>>();
-    (!logs.is_empty()).then(|| logs.join("\n"))
+    if logs.is_empty() {
+        "no provider logs captured".into()
+    } else {
+        logs.join("\n")
+    }
 }
 
 pub fn daemon_log_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -548,11 +556,31 @@ mod tests {
                 role: "provider.sandbox".into(),
                 content: "retry with --no-sandbox".into(),
             },
+            nitpick_agent_core::AgentMessage {
+                role: "provider.run".into(),
+                content: "provider claude command completed".into(),
+            },
         ];
 
         assert_eq!(
             super::format_activity_debug_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n\nArtifacts\n  none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n  \u{1b}[2mrun\u{1b}[0m\n    provider claude command completed\n\nArtifacts\n  none"
+        );
+    }
+
+    #[test]
+    fn debug_logs_explain_missing_provider_output() {
+        let mut activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        activity.status = nitpick_agent_core::ActivityStatus::Completed;
+        activity.created_at_unix = 1_000;
+        activity.updated_at_unix = 1_200;
+
+        assert_eq!(
+            super::format_activity_debug_logs(&activity, &[]),
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  no provider logs captured\n\nArtifacts\n  none"
         );
     }
 

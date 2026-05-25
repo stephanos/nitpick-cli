@@ -41,6 +41,6 @@ pub fn bounded_provider_log(bytes: &[u8]) -> String {
 pub fn is_provider_log_role(role: &str) -> bool {
     matches!(
         role,
-        "provider.stdout" | "provider.stderr" | "provider.sandbox"
+        "provider.stdout" | "provider.stderr" | "provider.sandbox" | "provider.run"
     )
 }

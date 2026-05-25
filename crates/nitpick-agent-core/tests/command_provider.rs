@@ -46,11 +46,27 @@ fn command_provider_runs_chat_command_and_stores_output() {
         activity.output.unwrap().chat_text(),
         Some("command-response")
     );
-    assert_eq!(activity.session.messages.len(), 2);
+    assert_eq!(activity.session.messages.len(), 3);
     assert_eq!(activity.session.messages[0].role, "provider.stdout");
     assert_eq!(activity.session.messages[0].content, "command-response");
     assert_eq!(activity.session.messages[1].role, "provider.stderr");
     assert_eq!(activity.session.messages[1].content, "provider-warning");
+    assert_eq!(activity.session.messages[2].role, "provider.run");
+    assert!(
+        activity.session.messages[2]
+            .content
+            .contains("provider claude command completed")
+    );
+    assert!(
+        activity.session.messages[2]
+            .content
+            .contains("stdout: captured")
+    );
+    assert!(
+        activity.session.messages[2]
+            .content
+            .contains("stderr: captured")
+    );
 }
 
 #[test]
@@ -227,6 +243,52 @@ fn command_provider_reads_review_output_from_validated_json_file() {
     let output = activity_output.review_output().expect("review output");
     assert_eq!(output.comments.len(), 1);
     assert_eq!(output.comments[0].path, "src.rs");
+}
+
+#[test]
+fn command_provider_persists_run_diagnostic_for_quiet_review() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    fs::write(repo_dir.join("src.rs"), "fn main() {}\n").expect("repo file");
+    let command = dir.path().join("provider");
+    fs::write(
+        &command,
+        "#!/bin/sh\ncat >/dev/null\nmkdir -p .nitpick\nprintf '{\"comments\":[]}' > .nitpick/review-output.json\n",
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(
+        CommandAgentProvider::new(
+            AgentProviderKind::Claude,
+            Some("test-model".into()),
+            &command,
+        )
+        .with_sandbox(CommandSandboxConfig::unsandboxed()),
+    );
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+
+    let activity = runtime
+        .start_review(ReviewInput {
+            repo_dir,
+            diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                ..ReviewSubject::default()
+            },
+            ..ReviewInput::default()
+        })
+        .expect("review runs");
+
+    let run_log = provider_log(&activity.session, "provider.run").expect("provider run log");
+    assert!(run_log.contains("provider claude command completed"));
+    assert!(run_log.contains("sandbox: disabled"));
+    assert!(run_log.contains("status: exit status: 0"));
+    assert!(run_log.contains("stdout: empty"));
+    assert!(run_log.contains("stderr: empty"));
 }
 
 #[test]
