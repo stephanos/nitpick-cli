@@ -376,6 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = activity.label ?? activity.kind
         alert.informativeText = activityDetailText(activity)
+        if let providerLogDetails = activityProviderLogDetails(activity) {
+            alert.accessoryView = makeScrollableDetailsView(providerLogDetails)
+        }
         alert.alertStyle = activity.status == "Error" ? .warning : .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
@@ -392,6 +395,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lines.append(error)
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func activityProviderLogDetails(_ activity: ActivitySnapshot) -> String? {
+        let logs: [String] = activity.session?.messages
+            .filter { message in
+                message.role == "provider.stdout" || message.role == "provider.stderr"
+            }
+            .map { message in
+                let label = message.role.replacingOccurrences(of: "provider.", with: "")
+                return "\(label)\n\(indentLogBlock(message.content))"
+            } ?? []
+        guard !logs.isEmpty else {
+            return nil
+        }
+        return logs.joined(separator: "\n")
+    }
+
+    private func indentLogBlock(_ value: String) -> String {
+        value
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "  \($0)" }
+            .joined(separator: "\n")
     }
 
     private func agentErrorStatusIssue() -> MenuStatusIssue {
@@ -569,6 +594,14 @@ extension AppDelegate {
 
     func statusDetailsForTesting() -> String? {
         currentStatusDetails
+    }
+
+    func activityDetailTextForTesting(_ activity: ActivitySnapshot) -> String {
+        activityDetailText(activity)
+    }
+
+    func activityProviderLogDetailsForTesting(_ activity: ActivitySnapshot) -> String? {
+        activityProviderLogDetails(activity)
     }
 }
 #endif

@@ -188,4 +188,40 @@ final class AppDelegateMenuTests: XCTestCase {
         XCTAssertEqual(item.representedObject as? String, "activity-1")
         XCTAssertEqual(NSStringFromSelector(item.action!), "showActivityDetails:")
     }
+
+    @MainActor
+    func testActivityProviderLogsAreFormattedForScrollableDetails() throws {
+        let appDelegate = AppDelegate()
+        let activity = ActivitySnapshot(
+            id: "activity-13",
+            kind: "Review",
+            status: "Completed",
+            label: "review on temporalio/temporal#10384",
+            session: ActivitySessionSnapshot(
+                provider: "claude",
+                providerSessionID: "provider-session",
+                messages: [
+                    ActivityMessageSnapshot(
+                        role: "provider.stdout",
+                        content: "review progress\nno findings"
+                    ),
+                    ActivityMessageSnapshot(
+                        role: "provider.stderr",
+                        content: "warning"
+                    ),
+                ]
+            ),
+            createdAtUnix: 1_000,
+            updatedAtUnix: 1_017
+        )
+
+        XCTAssertEqual(
+            appDelegate.activityDetailTextForTesting(activity),
+            "id: activity-13\nkind: Review\nstatus: Completed"
+        )
+        XCTAssertEqual(
+            appDelegate.activityProviderLogDetailsForTesting(activity),
+            "stdout\n  review progress\n  no findings\nstderr\n  warning"
+        )
+    }
 }

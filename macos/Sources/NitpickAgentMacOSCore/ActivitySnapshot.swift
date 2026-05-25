@@ -6,6 +6,7 @@ public struct ActivitySnapshot: Decodable, Equatable {
     public var status: String
     public var label: String?
     public var error: String?
+    public var session: ActivitySessionSnapshot?
     public var createdAtUnix: UInt64
     public var updatedAtUnix: UInt64
 
@@ -15,6 +16,7 @@ public struct ActivitySnapshot: Decodable, Equatable {
         status: String,
         label: String?,
         error: String? = nil,
+        session: ActivitySessionSnapshot? = nil,
         createdAtUnix: UInt64,
         updatedAtUnix: UInt64
     ) {
@@ -23,6 +25,7 @@ public struct ActivitySnapshot: Decodable, Equatable {
         self.status = status
         self.label = label
         self.error = error
+        self.session = session
         self.createdAtUnix = createdAtUnix
         self.updatedAtUnix = updatedAtUnix
     }
@@ -33,8 +36,41 @@ public struct ActivitySnapshot: Decodable, Equatable {
         case status
         case label
         case error
+        case session
         case createdAtUnix = "created_at_unix"
         case updatedAtUnix = "updated_at_unix"
+    }
+}
+
+public struct ActivitySessionSnapshot: Decodable, Equatable {
+    public var provider: String?
+    public var providerSessionID: String?
+    public var messages: [ActivityMessageSnapshot]
+
+    public init(
+        provider: String? = nil,
+        providerSessionID: String? = nil,
+        messages: [ActivityMessageSnapshot] = []
+    ) {
+        self.provider = provider
+        self.providerSessionID = providerSessionID
+        self.messages = messages
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case providerSessionID = "provider_session_id"
+        case messages
+    }
+}
+
+public struct ActivityMessageSnapshot: Decodable, Equatable {
+    public var role: String
+    public var content: String
+
+    public init(role: String, content: String) {
+        self.role = role
+        self.content = content
     }
 }
 
