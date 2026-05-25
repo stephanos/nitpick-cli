@@ -6,8 +6,9 @@ use axum::{
     routing::{get, post},
 };
 use nitpick_agent_core::{
-    Activity, ActivityId, AgentError, AgentResult, Artifact, ArtifactId, ArtifactSyncState,
-    ChatInput, CleanupCheckoutsResult, HostStatus, ReviewInput, ReviewRequest,
+    Activity, ActivityId, ActivityKind, ActivityStatus, AgentError, AgentResult, Artifact,
+    ArtifactId, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, HostStatus, ReviewInput,
+    ReviewRequest,
 };
 use nitpick_agent_github::DiscoveredPullRequest;
 use serde::Deserialize;
@@ -40,8 +41,28 @@ async fn status(State(daemon): State<HostDaemon>) -> Result<Json<HostStatus>, Ap
     Ok(Json(daemon.status()?))
 }
 
-async fn activities(State(daemon): State<HostDaemon>) -> Result<Json<Vec<Activity>>, ApiError> {
-    Ok(Json(daemon.list_activities()?))
+async fn activities(
+    State(daemon): State<HostDaemon>,
+    Query(query): Query<ActivitiesQuery>,
+) -> Result<Json<Vec<Activity>>, ApiError> {
+    let mut activities = daemon.list_activities()?;
+    if let Some(kind) = query.kind.as_deref() {
+        let kind = parse_activity_kind(kind)?;
+        activities.retain(|activity| activity.kind == kind);
+    }
+    if let Some(status) = query.status.as_deref() {
+        let status = ActivityStatusFilter::parse(status)?;
+        activities.retain(|activity| status.matches(&activity.status));
+    }
+    activities.sort_by(|lhs, rhs| {
+        rhs.updated_at_unix
+            .cmp(&lhs.updated_at_unix)
+            .then_with(|| rhs.id.cmp(&lhs.id))
+    });
+    if let Some(limit) = query.limit {
+        activities.truncate(limit.max(1));
+    }
+    Ok(Json(activities))
 }
 
 async fn activity(
@@ -113,6 +134,62 @@ async fn review_requests(
 #[derive(Deserialize)]
 struct ReviewRequestsQuery {
     filter: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ActivitiesQuery {
+    kind: Option<String>,
+    status: Option<String>,
+    limit: Option<usize>,
+}
+
+fn parse_activity_kind(kind: &str) -> AgentResult<ActivityKind> {
+    match kind {
+        "review" => Ok(ActivityKind::Review),
+        "chat" => Ok(ActivityKind::Chat),
+        "maintenance" => Ok(ActivityKind::Maintenance),
+        "discovery" => Ok(ActivityKind::Discovery),
+        _ => Err(AgentError::invalid_input(format!(
+            "unknown activity kind `{kind}`"
+        ))),
+    }
+}
+
+enum ActivityStatusFilter {
+    Active,
+    History,
+    Any,
+    Exact(ActivityStatus),
+}
+
+impl ActivityStatusFilter {
+    fn parse(status: &str) -> AgentResult<Self> {
+        match status {
+            "active" => Ok(Self::Active),
+            "history" => Ok(Self::History),
+            "any" => Ok(Self::Any),
+            "queued" => Ok(Self::Exact(ActivityStatus::Queued)),
+            "running" => Ok(Self::Exact(ActivityStatus::Running)),
+            "completed" => Ok(Self::Exact(ActivityStatus::Completed)),
+            "error" => Ok(Self::Exact(ActivityStatus::Error)),
+            "cancelled" => Ok(Self::Exact(ActivityStatus::Cancelled)),
+            _ => Err(AgentError::invalid_input(format!(
+                "unknown activity status `{status}`"
+            ))),
+        }
+    }
+
+    fn matches(&self, status: &ActivityStatus) -> bool {
+        match self {
+            Self::Active => matches!(status, ActivityStatus::Queued | ActivityStatus::Running),
+            Self::History => matches!(
+                status,
+                ActivityStatus::Completed | ActivityStatus::Error | ActivityStatus::Cancelled
+            ),
+            Self::Any => true,
+            Self::Exact(expected) => status == expected,
+        }
+    }
 }
 
 #[derive(Deserialize)]

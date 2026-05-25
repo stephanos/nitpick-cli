@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use nitpick_agent_core::{
     ActivityKind, ActivityStore, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
-    ChatInput, HostStatus, MemoryActivityStore, ReviewInput, ReviewOutput, ReviewRequest,
-    ReviewSource,
+    ChatInput, HostStatus, MemoryActivityStore, ReviewInput, ReviewMode, ReviewOutput,
+    ReviewRequest, ReviewSource,
 };
 use nitpick_agent_host::{
     AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon,
@@ -23,6 +23,8 @@ fn default_config_uses_claude_without_model_pin() {
         std::path::PathBuf::from("review-prompt.md")
     );
     assert_eq!(config.review_extra_prompt_path, None);
+    assert_eq!(config.review_self_extra_prompt_path, None);
+    assert_eq!(config.review_requested_extra_prompt_path, None);
 }
 
 #[test]
@@ -166,6 +168,8 @@ command = "/opt/bin/gh"
     );
     assert_eq!(config.max_concurrent_reviews, 5);
     assert_eq!(config.review_extra_prompt_path, None);
+    assert_eq!(config.review_self_extra_prompt_path, None);
+    assert_eq!(config.review_requested_extra_prompt_path, None);
 }
 
 #[test]
@@ -211,6 +215,60 @@ extra_prompt_path = "{}"
     let config = AgentConfig::load(&config_path).expect("config loads");
 
     assert_eq!(config.review_extra_prompt_path, Some(extra_prompt_path));
+}
+
+#[test]
+fn load_accepts_absolute_review_mode_extra_prompt_paths() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let self_prompt_path = dir.path().join("self.md");
+    let requested_prompt_path = dir.path().join("requested.md");
+    std::fs::write(&self_prompt_path, "Self-review focus.").expect("write self prompt");
+    std::fs::write(&requested_prompt_path, "Requested-review focus.")
+        .expect("write requested prompt");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[reviews]
+self_review_extra_prompt_path = "{}"
+requested_review_extra_prompt_path = "{}"
+"#,
+            self_prompt_path.display(),
+            requested_prompt_path.display()
+        ),
+    )
+    .expect("write config");
+
+    let config = AgentConfig::load(&config_path).expect("config loads");
+
+    assert_eq!(config.review_self_extra_prompt_path, Some(self_prompt_path));
+    assert_eq!(
+        config.review_requested_extra_prompt_path,
+        Some(requested_prompt_path)
+    );
+}
+
+#[test]
+fn load_rejects_relative_review_mode_extra_prompt_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[reviews]
+self_review_extra_prompt_path = "self.md"
+"#,
+    )
+    .expect("write config");
+
+    let error = AgentConfig::load(&config_path).expect_err("config fails");
+
+    assert!(
+        error
+            .to_string()
+            .contains("self-review extra prompt path must be absolute")
+    );
 }
 
 #[test]
@@ -281,6 +339,45 @@ fn configured_review_extra_prompt_file_is_appended_to_review_prompt() {
     assert!(prompt.contains("Base review prompt."));
     assert!(prompt.contains("Configured extra review prompt:"));
     assert!(prompt.contains("Prefer correctness over style."));
+}
+
+#[test]
+fn configured_review_mode_extra_prompt_file_is_appended_for_matching_mode() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let prompt_path = dir.path().join("review.md");
+    let self_prompt_path = dir.path().join("self.md");
+    let requested_prompt_path = dir.path().join("requested.md");
+    std::fs::write(&prompt_path, "Base review prompt.").expect("write prompt");
+    std::fs::write(&self_prompt_path, "Self-review focus.").expect("write self prompt");
+    std::fs::write(&requested_prompt_path, "Requested-review focus.")
+        .expect("write requested prompt");
+    let provider = Arc::new(RecordingReviewProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        Arc::new(MemoryActivityStore::default()),
+        AgentConfig {
+            review_prompt_path: prompt_path,
+            review_self_extra_prompt_path: Some(self_prompt_path),
+            review_requested_extra_prompt_path: Some(requested_prompt_path),
+            ..AgentConfig::default()
+        },
+        Arc::new(nitpick_agent_core::MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(EmptyReviewSource),
+        Arc::new(nitpick_agent_core::SystemClock),
+    );
+
+    daemon
+        .start_review(ReviewInput {
+            review_mode: ReviewMode::SelfReview,
+            ..ReviewInput::default()
+        })
+        .expect("review");
+
+    let prompt = provider.review_prompt();
+    assert!(prompt.contains("Review mode: self-review."));
+    assert!(prompt.contains("Configured self-review extra prompt:"));
+    assert!(prompt.contains("Self-review focus."));
+    assert!(!prompt.contains("Requested-review focus."));
 }
 
 #[test]

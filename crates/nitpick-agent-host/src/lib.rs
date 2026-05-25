@@ -17,8 +17,8 @@ use nitpick_agent_core::{
     AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
     ArtifactId, ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult,
     Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus, MemoryProcessedReviewStore,
-    ProcessedReviewStore, ReviewInput, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig,
-    SessionStatus, SystemClock, first_changed_file_for_diff,
+    ProcessedReviewStore, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource,
+    ReviewToolConfig, SessionStatus, SystemClock, first_changed_file_for_diff,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -1157,6 +1157,8 @@ pub struct AgentConfig {
     pub max_concurrent_reviews: usize,
     pub review_prompt_path: PathBuf,
     pub review_extra_prompt_path: Option<PathBuf>,
+    pub review_self_extra_prompt_path: Option<PathBuf>,
+    pub review_requested_extra_prompt_path: Option<PathBuf>,
     pub sandbox: AgentSandboxConfig,
     pub github_discovery: GitHubDiscoveryConfig,
 }
@@ -1172,6 +1174,8 @@ impl Default for AgentConfig {
             max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
             review_prompt_path: PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME),
             review_extra_prompt_path: None,
+            review_self_extra_prompt_path: None,
+            review_requested_extra_prompt_path: None,
             sandbox: AgentSandboxConfig::default(),
             github_discovery: GitHubDiscoveryConfig::default(),
         }
@@ -1211,16 +1215,18 @@ impl AgentConfig {
             .unwrap_or(DEFAULT_MAX_CONCURRENT_REVIEWS)
             .max(1);
         let review_prompt_path = review_prompt_path(config_dir);
-        let review_extra_prompt_path =
-            review_extra_prompt_path(reviews.extra_prompt_path.as_deref())?;
-        if let Some(path) = &review_extra_prompt_path
-            && !path.is_file()
-        {
-            return Err(AgentError::config(format!(
-                "review extra prompt path is not a file: {}",
-                path.display()
-            )));
-        }
+        let review_extra_prompt_path = parse_review_extra_prompt_path(
+            "review extra prompt",
+            reviews.extra_prompt_path.as_deref(),
+        )?;
+        let review_self_extra_prompt_path = parse_review_extra_prompt_path(
+            "self-review extra prompt",
+            reviews.self_review_extra_prompt_path.as_deref(),
+        )?;
+        let review_requested_extra_prompt_path = parse_review_extra_prompt_path(
+            "requested-review extra prompt",
+            reviews.requested_review_extra_prompt_path.as_deref(),
+        )?;
         let sandbox = AgentSandboxConfig::from_mode(agent.sandbox)?;
 
         Ok(Self {
@@ -1232,6 +1238,8 @@ impl AgentConfig {
             max_concurrent_reviews,
             review_prompt_path,
             review_extra_prompt_path,
+            review_self_extra_prompt_path,
+            review_requested_extra_prompt_path,
             sandbox,
             github_discovery,
         })
@@ -1417,21 +1425,53 @@ impl AgentConfig {
             }
         };
         if let Some(path) = &self.review_extra_prompt_path {
-            let instructions = fs::read_to_string(path).map_err(|error| {
-                AgentError::config(format!(
-                    "failed to read review extra prompt {}: {error}",
-                    path.display()
-                ))
-            })?;
-            let instructions = instructions.trim();
-            if !instructions.is_empty() {
-                prompt.push_str("\n\nConfigured extra review prompt:\n");
-                prompt.push_str(instructions);
-            }
+            append_prompt_file(&mut prompt, "Configured extra review prompt", path)?;
+        }
+        prompt.push_str("\n\n");
+        prompt.push_str(review_mode_prompt(&input.review_mode));
+        let mode_prompt_path = match input.review_mode {
+            ReviewMode::Requested => &self.review_requested_extra_prompt_path,
+            ReviewMode::SelfReview => &self.review_self_extra_prompt_path,
+        };
+        if let Some(path) = mode_prompt_path {
+            let label = match input.review_mode {
+                ReviewMode::Requested => "Configured requested-review extra prompt",
+                ReviewMode::SelfReview => "Configured self-review extra prompt",
+            };
+            append_prompt_file(&mut prompt, label, path)?;
         }
         input.review_prompt = prompt;
         Ok(input)
     }
+}
+
+fn review_mode_prompt(mode: &ReviewMode) -> &'static str {
+    match mode {
+        ReviewMode::Requested => {
+            "Review mode: requested review.\nTreat this as feedback to another author. Prioritize correctness, maintainability, and actionable comments. Keep comments respectful and concise."
+        }
+        ReviewMode::SelfReview => {
+            "Review mode: self-review.\nTreat this as a pre-submit pass by the author. Be direct about likely test failures, missing updates, accidental changes, and local-only assumptions."
+        }
+    }
+}
+
+fn append_prompt_file(prompt: &mut String, label: &str, path: &Path) -> AgentResult<()> {
+    let instructions = fs::read_to_string(path).map_err(|error| {
+        AgentError::config(format!(
+            "failed to read {} {}: {error}",
+            label.to_lowercase(),
+            path.display()
+        ))
+    })?;
+    let instructions = instructions.trim();
+    if !instructions.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(label);
+        prompt.push_str(":\n");
+        prompt.push_str(instructions);
+    }
+    Ok(())
 }
 
 fn default_review_prompt_path(config_path: &Path) -> PathBuf {
@@ -1465,7 +1505,10 @@ fn review_prompt_path(config_dir: Option<&Path>) -> PathBuf {
     resolve_config_path(PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME), config_dir)
 }
 
-fn review_extra_prompt_path(raw_path: Option<&str>) -> AgentResult<Option<PathBuf>> {
+fn parse_review_extra_prompt_path(
+    label: &str,
+    raw_path: Option<&str>,
+) -> AgentResult<Option<PathBuf>> {
     let path = raw_path
         .map(str::trim)
         .filter(|path| !path.is_empty())
@@ -1474,7 +1517,15 @@ fn review_extra_prompt_path(raw_path: Option<&str>) -> AgentResult<Option<PathBu
         && !path.is_absolute()
     {
         return Err(AgentError::config(format!(
-            "review extra prompt path must be absolute: {}",
+            "{label} path must be absolute: {}",
+            path.display()
+        )));
+    }
+    if let Some(path) = &path
+        && !path.is_file()
+    {
+        return Err(AgentError::config(format!(
+            "{label} path is not a file: {}",
             path.display()
         )));
     }
@@ -1536,6 +1587,8 @@ struct RawAgentConfig {
 struct RawReviewsConfig {
     max_concurrent: Option<usize>,
     extra_prompt_path: Option<String>,
+    self_review_extra_prompt_path: Option<String>,
+    requested_review_extra_prompt_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

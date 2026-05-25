@@ -89,6 +89,44 @@ async fn activity_artifacts_endpoint_returns_local_artifacts() {
 }
 
 #[tokio::test]
+async fn activities_endpoint_filters_review_history_and_applies_limit() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut older = store.create(ActivityKind::Review).expect("older");
+    older.status = ActivityStatus::Completed;
+    older.updated_at_unix = 1_000;
+    store.save(&older).expect("save older");
+    let mut newer = store.create(ActivityKind::Review).expect("newer");
+    newer.status = ActivityStatus::Error;
+    newer.updated_at_unix = 2_000;
+    store.save(&newer).expect("save newer");
+    let mut active = store.create(ActivityKind::Review).expect("active");
+    active.status = ActivityStatus::Running;
+    active.updated_at_unix = 3_000;
+    store.save(&active).expect("save active");
+    let mut chat = store.create(ActivityKind::Chat).expect("chat");
+    chat.status = ActivityStatus::Completed;
+    chat.updated_at_unix = 4_000;
+    store.save(&chat).expect("save chat");
+    let app = api_router(HostDaemon::new(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/activities?kind=review&status=history&limit=1")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let activities = body.as_array().expect("activities");
+    assert_eq!(activities.len(), 1);
+    assert_eq!(activities[0]["id"], newer.id.to_string());
+}
+
+#[tokio::test]
 async fn missing_activity_returns_not_found() {
     let app = api_router(HostDaemon::new(Arc::new(MemoryActivityStore::default())));
 

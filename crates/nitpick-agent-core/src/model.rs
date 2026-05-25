@@ -7,6 +7,8 @@ pub struct ReviewInput {
     pub repo_dir: PathBuf,
     #[serde(default)]
     pub review_prompt: String,
+    #[serde(default)]
+    pub review_mode: ReviewMode,
     pub instructions: String,
     pub subject: ReviewSubject,
     #[serde(default)]
@@ -14,6 +16,15 @@ pub struct ReviewInput {
     pub diff: String,
     #[serde(default)]
     pub disable_sandbox: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewMode {
+    #[default]
+    Requested,
+    #[serde(rename = "self")]
+    SelfReview,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use clap::{Args, Subcommand, ValueEnum};
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityStatus, ReviewInput, ReviewRequest, ReviewSubject,
+    Activity, ActivityKind, ActivityStatus, ReviewInput, ReviewMode, ReviewRequest, ReviewSubject,
 };
 
 use crate::{CliError, CliOptions, CliRunContext};
@@ -147,7 +147,11 @@ pub fn run(
             let activities = if matches!(status, ReviewListStatus::Requested) {
                 Vec::new()
             } else {
-                client.activities()?
+                client.filtered_activities(
+                    Some("review"),
+                    Some(review_activity_status_filter(status)),
+                    Some(review_activity_query_limit(status, limit)),
+                )?
             };
             Ok(format_review_list(&requests, &activities, status, limit))
         }
@@ -180,6 +184,7 @@ pub fn review_input(subject: String, repo_dir: std::path::PathBuf, diff: String)
     };
     ReviewInput {
         repo_dir,
+        review_mode: ReviewMode::SelfReview,
         subject: review_subject,
         diff,
         ..ReviewInput::default()
@@ -253,6 +258,25 @@ fn review_status_matches(status: &ActivityStatus, filter: ReviewListStatus) -> b
     }
 }
 
+fn review_activity_status_filter(status: ReviewListStatus) -> &'static str {
+    match status {
+        ReviewListStatus::Inbox | ReviewListStatus::Active => "active",
+        ReviewListStatus::Requested => "any",
+        ReviewListStatus::History => "history",
+        ReviewListStatus::Any => "any",
+    }
+}
+
+fn review_activity_query_limit(status: ReviewListStatus, limit: usize) -> usize {
+    match status {
+        ReviewListStatus::Inbox => 1_000,
+        ReviewListStatus::Requested => 1,
+        ReviewListStatus::Active | ReviewListStatus::History | ReviewListStatus::Any => {
+            limit.max(1)
+        }
+    }
+}
+
 fn is_active_review_status(status: &ActivityStatus) -> bool {
     matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
 }
@@ -320,7 +344,7 @@ mod tests {
         format_review_started, review_input,
     };
     use crate::{CliCommand, parse_command};
-    use nitpick_agent_core::{Activity, ActivityStatus, ReviewRequest};
+    use nitpick_agent_core::{Activity, ActivityStatus, ReviewMode, ReviewRequest};
 
     #[test]
     fn parses_review_run_command() {
@@ -613,5 +637,6 @@ mod tests {
         assert_eq!(input.subject.number, Some(42));
         assert_eq!(input.repo_dir, std::path::PathBuf::from("/tmp/repo"));
         assert_eq!(input.diff, "diff --git");
+        assert_eq!(input.review_mode, ReviewMode::SelfReview);
     }
 }

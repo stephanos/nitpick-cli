@@ -12,7 +12,8 @@ use fs_err as fs;
 use nitpick_agent_core::{
     ActivityId, AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactKind,
     ArtifactSyncDestination, ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput,
-    ReviewRequest, ReviewSource, ReviewSubject, checkout_root_from_env_values, parse_json_bytes,
+    ReviewMode, ReviewRequest, ReviewSource, ReviewSubject, checkout_root_from_env_values,
+    parse_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 
@@ -513,6 +514,7 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
         let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
         Ok(ReviewInput {
             repo_dir,
+            review_mode: ReviewMode::Requested,
             instructions: format!(
                 "Review GitHub pull request {repository}#{}.\n\nURL: {}\nState: {}\nHead SHA: {}\nHead ref: {}.",
                 pull_request.number,

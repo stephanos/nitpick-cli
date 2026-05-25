@@ -13,6 +13,10 @@ sandbox = "macos-seatbelt"
 max_concurrent = 3
 # Optional absolute path to a file with user guidance appended to every review prompt.
 extra_prompt_path = ""
+# Optional absolute path to guidance appended only to local self-review prompts.
+self_review_extra_prompt_path = ""
+# Optional absolute path to guidance appended only to requested-review prompts.
+requested_review_extra_prompt_path = ""
 
 [github]
 command = "gh"

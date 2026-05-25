@@ -29,7 +29,7 @@ pub use error::{AgentError, AgentResult};
 pub use host::{CleanupCheckoutsResult, HostStatus};
 pub use json::{parse_json_bytes, parse_json_str, read_json, read_json_dir, write_json_atomic};
 pub use model::{
-    ChatInput, ReviewComment, ReviewInput, ReviewOutput, ReviewRequest, ReviewSubject,
+    ChatInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSubject,
 };
 pub use provider::{AgentProvider, ReviewToolConfig};
 pub use repo_path::RepoPath;

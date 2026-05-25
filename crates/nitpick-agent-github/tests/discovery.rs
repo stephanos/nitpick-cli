@@ -1,6 +1,6 @@
 use std::{fs, os::unix::fs::PermissionsExt};
 
-use nitpick_agent_core::{ProcessedReviewStore, ReviewRequest, ReviewSource};
+use nitpick_agent_core::{ProcessedReviewStore, ReviewMode, ReviewRequest, ReviewSource};
 use nitpick_agent_github::{
     DiscoveredPullRequest, FsProcessedReviewStore, GitHubCliDiscovery, PullRequestState,
 };
@@ -239,6 +239,7 @@ exit 0
     assert!(input.instructions.contains("abc123"));
     assert!(input.instructions.contains("feature/watcher"));
     assert!(input.instructions.contains("open"));
+    assert_eq!(input.review_mode, ReviewMode::Requested);
     assert_eq!(
         fs::read_to_string(log).expect("command log"),
         format!(

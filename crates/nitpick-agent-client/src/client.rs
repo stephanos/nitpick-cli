@@ -10,6 +10,8 @@ use crate::{
     transport::{ArtifactSyncInput, request_host},
 };
 
+const HOST_CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[derive(Clone, Debug)]
 pub struct HostClient {
     addr: String,
@@ -20,7 +22,7 @@ impl HostClient {
     pub fn new(addr: impl Into<String>) -> Self {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(2)))
+            .timeout_global(Some(HOST_CLIENT_TIMEOUT))
             .build();
         Self {
             addr: addr.into(),
@@ -39,6 +41,29 @@ impl HostClient {
 
     pub fn activities(&self) -> HostClientResult<Vec<Activity>> {
         self.get_json("/activities")
+    }
+
+    pub fn filtered_activities(
+        &self,
+        kind: Option<&str>,
+        status: Option<&str>,
+        limit: Option<usize>,
+    ) -> HostClientResult<Vec<Activity>> {
+        let mut query = Vec::new();
+        if let Some(kind) = kind {
+            query.push(format!("kind={kind}"));
+        }
+        if let Some(status) = status {
+            query.push(format!("status={status}"));
+        }
+        if let Some(limit) = limit {
+            query.push(format!("limit={limit}"));
+        }
+        if query.is_empty() {
+            self.activities()
+        } else {
+            self.get_json(&format!("/activities?{}", query.join("&")))
+        }
     }
 
     pub fn activity_artifacts(&self, activity_id: &str) -> HostClientResult<Vec<Artifact>> {
