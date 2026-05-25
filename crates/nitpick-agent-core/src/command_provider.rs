@@ -6,10 +6,12 @@ use std::{
 };
 
 use crate::{
-    AgentError, AgentProvider, AgentProviderKind, AgentResult, AgentSession, ChatInput,
-    REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
+    AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
+    ChatInput, REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
     validate_review_output_file_for_diff,
 };
+
+const MAX_PROVIDER_LOG_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSandboxConfig {
@@ -130,6 +132,7 @@ impl CommandAgentProvider {
 
     fn run_prompt_in_dir_with_sandbox(
         &self,
+        session: &mut AgentSession,
         prompt: &str,
         args: &[String],
         current_dir: Option<&Path>,
@@ -180,6 +183,7 @@ impl CommandAgentProvider {
             duration_ms = started.elapsed().as_millis(),
             "provider command finished"
         );
+        record_provider_logs(session, &output.stdout, &output.stderr);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             return Err(AgentError::provider(format!(
@@ -352,6 +356,32 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
         })
 }
 
+fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]) {
+    push_provider_log(session, "provider.stdout", stdout);
+    push_provider_log(session, "provider.stderr", stderr);
+}
+
+fn push_provider_log(session: &mut AgentSession, role: &str, bytes: &[u8]) {
+    let content = bounded_provider_log(bytes);
+    if content.is_empty() {
+        return;
+    }
+    session.messages.push(AgentMessage {
+        role: role.into(),
+        content,
+    });
+}
+
+fn bounded_provider_log(bytes: &[u8]) -> String {
+    let truncated = bytes.len() > MAX_PROVIDER_LOG_BYTES;
+    let start = bytes.len().saturating_sub(MAX_PROVIDER_LOG_BYTES);
+    let mut value = String::from_utf8_lossy(&bytes[start..]).trim().to_owned();
+    if truncated {
+        value = format!("[truncated to last {MAX_PROVIDER_LOG_BYTES} bytes]\n{value}");
+    }
+    value
+}
+
 impl AgentProvider for CommandAgentProvider {
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
     fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
@@ -381,6 +411,7 @@ impl AgentProvider for CommandAgentProvider {
         let prompt = review_prompt(self.model.as_deref(), input, REVIEW_OUTPUT_RELATIVE_PATH);
         let args = self.review_args(session);
         self.run_prompt_in_dir_with_sandbox(
+            session,
             &prompt,
             &args,
             Some(&repo_dir),
@@ -412,7 +443,14 @@ impl AgentProvider for CommandAgentProvider {
         let prompt = review_tool_prompt(self.model.as_deref(), input, &tools.instructions);
         let args = self.review_tool_args(session, tools);
         let sandbox = sandbox.with_review_tool_paths(tools);
-        self.run_prompt_in_dir_with_sandbox(&prompt, &args, Some(&repo_dir), None, &sandbox)?;
+        self.run_prompt_in_dir_with_sandbox(
+            session,
+            &prompt,
+            &args,
+            Some(&repo_dir),
+            None,
+            &sandbox,
+        )?;
         Ok(ReviewOutput {
             comments: Vec::new(),
         })
@@ -425,6 +463,7 @@ impl AgentProvider for CommandAgentProvider {
         let repo_dir = self.sandbox_repo_dir(&input.repo_dir, &sandbox)?;
         let args = self.prompt_args();
         self.run_prompt_in_dir_with_sandbox(
+            session,
             &chat_prompt(self.model.as_deref(), input),
             &args,
             repo_dir.as_deref(),

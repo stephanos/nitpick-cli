@@ -54,7 +54,9 @@ pub fn run(
             let activity = crate::activity::resolve_log_activity(&activities, &target)
                 .map_err(CliError::from)?;
             let artifacts = client.activity_artifacts(activity.id.as_str())?;
-            Ok(crate::activity::format_activity_logs(activity, &artifacts))
+            Ok(crate::activity::format_activity_debug_logs(
+                activity, &artifacts,
+            ))
         }
         DebugCommand::Artifacts { activity_id } => Ok(crate::artifact::format_artifacts(
             &client.activity_artifacts(&activity_id)?,

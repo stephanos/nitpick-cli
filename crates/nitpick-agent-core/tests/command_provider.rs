@@ -12,7 +12,7 @@ fn command_provider_runs_chat_command_and_stores_output() {
     let command = dir.path().join("provider");
     fs::write(
         &command,
-        "#!/bin/sh\ncat >/dev/null\nprintf command-response\n",
+        "#!/bin/sh\ncat >/dev/null\nprintf provider-warning >&2\nprintf command-response\n",
     )
     .expect("write command");
     let mut permissions = fs::metadata(&command).expect("metadata").permissions();
@@ -40,6 +40,11 @@ fn command_provider_runs_chat_command_and_stores_output() {
         activity.output.unwrap().chat_text(),
         Some("command-response")
     );
+    assert_eq!(activity.session.messages.len(), 2);
+    assert_eq!(activity.session.messages[0].role, "provider.stdout");
+    assert_eq!(activity.session.messages[0].content, "command-response");
+    assert_eq!(activity.session.messages[1].role, "provider.stderr");
+    assert_eq!(activity.session.messages[1].content, "provider-warning");
 }
 
 #[test]

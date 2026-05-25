@@ -13,8 +13,8 @@ use nitpick_agent_core::AgentError;
 
 pub use activity::{
     daemon_log_path, ensure_resumable_activity, format_activities, format_activity,
-    format_activity_logs, format_daemon_log, format_reviews, parse_activities_json,
-    parse_activity_json, resolve_log_activity,
+    format_activity_debug_logs, format_activity_logs, format_daemon_log, format_reviews,
+    parse_activities_json, parse_activity_json, resolve_log_activity,
 };
 pub use artifact::{format_artifact, format_artifacts, parse_artifact_json, parse_artifacts_json};
 pub use cli::{

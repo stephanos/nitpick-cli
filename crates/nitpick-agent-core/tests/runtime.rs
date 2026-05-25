@@ -33,6 +33,14 @@ impl AgentProvider for RecordingProvider {
             .expect("session lock")
             .push(session.provider_session_id.clone());
         session.provider_session_id = Some("provider-review-session".into());
+        session.messages.push(nitpick_agent_core::AgentMessage {
+            role: "provider.stdout".into(),
+            content: "review progress\n".into(),
+        });
+        session.messages.push(nitpick_agent_core::AgentMessage {
+            role: "provider.stderr".into(),
+            content: "review warning\n".into(),
+        });
 
         Ok(ReviewOutput {
             comments: vec![ReviewComment {
@@ -106,6 +114,7 @@ fn review_activity_runs_provider_and_persists_completion() {
         activity.session.provider_session_id.as_deref(),
         Some("provider-review-session")
     );
+    assert_eq!(activity.session.messages.len(), 2);
     assert!(matches!(
         activity.output,
         Some(ActivityOutput::Review(ReviewOutput { ref comments }))
