@@ -172,6 +172,7 @@ impl CommandAgentProvider {
         record_provider_run_diagnostic(
             session,
             &self.kind,
+            self.model.as_deref(),
             &self.command,
             sandbox.enabled,
             output.status,
@@ -389,6 +390,7 @@ fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]
 fn record_provider_run_diagnostic(
     session: &mut AgentSession,
     provider: &AgentProviderKind,
+    model: Option<&str>,
     command: &Path,
     sandbox_enabled: bool,
     status: std::process::ExitStatus,
@@ -400,6 +402,7 @@ fn record_provider_run_diagnostic(
         role: "provider.run".into(),
         content: provider_run_diagnostic(
             provider,
+            model,
             command,
             sandbox_enabled,
             status,
@@ -412,6 +415,7 @@ fn record_provider_run_diagnostic(
 
 fn provider_run_diagnostic(
     provider: &AgentProviderKind,
+    model: Option<&str>,
     command: &Path,
     sandbox_enabled: bool,
     status: std::process::ExitStatus,
@@ -421,6 +425,7 @@ fn provider_run_diagnostic(
 ) -> String {
     [
         format!("provider {provider} command completed"),
+        format!("model: {}", model.unwrap_or("(default)")),
         format!("command: {}", command.display()),
         format!(
             "sandbox: {}",

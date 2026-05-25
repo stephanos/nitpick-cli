@@ -324,7 +324,8 @@ fn indent_block(value: &str) -> String {
     indent_block_by(value, "  ")
 }
 
-fn format_section(title: &str, body: String) -> String {
+pub(crate) fn format_section(title: &str, body: impl Into<String>) -> String {
+    let body = body.into();
     format!("{title}\n{}", indent_block(&body))
 }
 

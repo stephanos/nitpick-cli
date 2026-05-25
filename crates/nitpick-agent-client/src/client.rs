@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use nitpick_agent_core::{
     Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult,
-    ReviewInput, ReviewRequest, parse_json_str,
+    ProviderDiagnosticInput, ReviewInput, ReviewRequest, parse_json_str,
 };
 
 use crate::{
@@ -129,6 +129,13 @@ impl HostClient {
 
     pub fn chat(&self, input: &ChatInput) -> HostClientResult<Activity> {
         self.post_json("/chats", input)
+    }
+
+    pub fn provider_diagnostic(
+        &self,
+        input: &ProviderDiagnosticInput,
+    ) -> HostClientResult<Activity> {
+        self.post_json("/debug/provider", input)
     }
 
     pub fn cleanup_checkouts(&self) -> HostClientResult<CleanupCheckoutsResult> {

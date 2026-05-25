@@ -14,7 +14,7 @@ use nitpick_agent_core::{
     ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput,
 };
 use nitpick_agent_host::{
-    HostDaemon, api_router,
+    AgentConfig, HostDaemon, api_router,
     review_mcp::{AddReviewCommentInput, ReviewMcpTools, load_review_mcp_session_state},
 };
 use nitpick_agent_integration_tests::support::{
@@ -365,7 +365,13 @@ async fn review_chat_fails_fast_for_active_review() {
     store.save(&activity).expect("save activity");
     let daemon = HostDaemon::with_dependencies(
         store,
-        github_auto_review_config(),
+        AgentConfig {
+            command: Some(fake_claude.display().to_string()),
+            sandbox: nitpick_agent_host::AgentSandboxConfig {
+                mode: "none".into(),
+            },
+            ..github_auto_review_config()
+        },
         processed,
         Arc::new(RecordingProvider::default()),
         Arc::new(StubDiscovery::new(vec![])),
@@ -393,6 +399,74 @@ async fn review_chat_fails_fast_for_active_review() {
         "cannot open review chat for activity-1 while the review is Running; the provider session is locked by the active review"
     );
     assert!(!provider_log.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_provider_runs_diagnostic_and_persists_logs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_claude = temp.path().join("claude");
+    let prompt_log = temp.path().join("prompt.log");
+    fs::write(
+        &fake_claude,
+        format!("#!/bin/sh\ncat > '{}'\nprintf OK\n", prompt_log.display()),
+    )
+    .expect("fake claude");
+    make_executable(&fake_claude);
+    let config_path = temp.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n",
+            fake_claude.display(),
+        ),
+    )
+    .expect("config");
+    let data_dir = temp.path().join("data");
+    let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
+    let processed = Arc::new(
+        FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
+    );
+    let daemon = HostDaemon::with_dependencies(
+        store,
+        AgentConfig {
+            command: Some(fake_claude.display().to_string()),
+            sandbox: nitpick_agent_host::AgentSandboxConfig {
+                mode: "none".into(),
+            },
+            ..github_auto_review_config()
+        },
+        processed,
+        Arc::new(RecordingProvider::default()),
+        Arc::new(StubDiscovery::new(vec![])),
+        Arc::new(ManualClock::new(1_000)),
+    );
+    let host_addr = serve_host(daemon).await;
+
+    let output = run_cli_command(
+        CliCommand::Debug(DebugCommand::Provider {
+            provider: Some("claude".into()),
+            model: Some("test-model".into()),
+        }),
+        &host_addr,
+        temp.path().to_path_buf(),
+        String::new(),
+        String::new(),
+        config_path,
+        data_dir,
+    )
+    .expect("provider diagnostic");
+
+    assert!(output.contains("Diagnostic"));
+    assert!(output.contains("activity"));
+    assert!(output.contains("activity-1"));
+    assert!(output.contains("provider"));
+    assert!(output.contains("claude"));
+    assert!(output.contains("Output"));
+    assert!(output.contains("OK"));
+    assert!(output.contains("nitpick debug logs activity-1"));
+    let prompt = fs::read_to_string(prompt_log).expect("prompt");
+    assert!(prompt.contains("model: test-model"));
+    assert!(prompt.contains("prompt:\nHi. Reply with exactly: OK"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

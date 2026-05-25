@@ -8,7 +8,7 @@ use axum::{
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, AgentError, AgentResult, Artifact,
     ArtifactId, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, HostStatus,
-    LocalStateResetResult, ReviewInput, ReviewRequest,
+    LocalStateResetResult, ProviderDiagnosticInput, ReviewInput, ReviewRequest,
 };
 use nitpick_agent_github::DiscoveredPullRequest;
 use serde::Deserialize;
@@ -33,6 +33,7 @@ pub fn api_router(daemon: HostDaemon) -> Router {
         .route("/artifacts/{id}/sync", post(artifact_sync))
         .route("/maintenance/cleanup-checkouts", post(cleanup_checkouts))
         .route("/system/reset", post(reset_local_state))
+        .route("/debug/provider", post(provider_diagnostic))
         .route("/reviews", post(review))
         .route("/chats", post(chat))
         .with_state(daemon)
@@ -285,6 +286,13 @@ async fn chat(
     Json(input): Json<ChatInput>,
 ) -> Result<Json<Activity>, ApiError> {
     Ok(Json(daemon.enqueue_chat(input)?))
+}
+
+async fn provider_diagnostic(
+    State(daemon): State<HostDaemon>,
+    Json(input): Json<ProviderDiagnosticInput>,
+) -> Result<Json<Activity>, ApiError> {
+    Ok(Json(daemon.run_provider_diagnostic(input)?))
 }
 
 struct ApiError(AgentError);

@@ -72,3 +72,12 @@ pub struct ChatInput {
     #[serde(default)]
     pub disable_sandbox: bool,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderDiagnosticInput {
+    pub repo_dir: PathBuf,
+    pub provider: Option<crate::AgentProviderKind>,
+    pub model: Option<String>,
+    #[serde(default)]
+    pub disable_sandbox: bool,
+}

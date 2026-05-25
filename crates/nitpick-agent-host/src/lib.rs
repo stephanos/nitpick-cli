@@ -17,9 +17,9 @@ use nitpick_agent_core::{
     AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
     ArtifactId, ArtifactKind, ArtifactSyncDestination, ArtifactSyncState, ChatInput,
     CleanupCheckoutsResult, Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus,
-    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore, ProviderReviewContext,
-    ProviderRunContext, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource,
-    SessionStatus, SystemClock, default_data_dir,
+    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore,
+    ProviderDiagnosticInput, ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewMode,
+    ReviewOutput, ReviewRequest, ReviewSource, SessionStatus, SystemClock, default_data_dir,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -823,6 +823,34 @@ impl HostDaemon {
             let _ = runtime.run_chat(activity, input);
         });
         Ok(queued)
+    }
+
+    pub fn run_provider_diagnostic(&self, input: ProviderDiagnosticInput) -> AgentResult<Activity> {
+        let mut config = self.config.clone();
+        if let Some(provider) = input.provider {
+            config.provider = provider;
+        }
+        if input.model.is_some() {
+            config.model = input.model;
+        }
+        if input.disable_sandbox {
+            config.sandbox = AgentSandboxConfig {
+                mode: "none".into(),
+            };
+        }
+        let runtime = AgentRuntime::new(Arc::new(config.command_provider()), self.store.clone());
+        let mut activity = runtime.create_chat_activity()?;
+        activity.label = Some("provider diagnostic".into());
+        self.store.save(&activity)?;
+        runtime.run_chat(
+            activity,
+            ChatInput {
+                repo_dir: input.repo_dir,
+                prompt: "Hi. Reply with exactly: OK".into(),
+                context: "Nitpick provider diagnostic.".into(),
+                disable_sandbox: input.disable_sandbox,
+            },
+        )
     }
 
     fn runtime(&self) -> AgentRuntime {
