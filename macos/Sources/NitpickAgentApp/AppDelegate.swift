@@ -227,23 +227,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusIssue: latestStatusIssue,
             activities: latestActivities
         )
-        configureAgentErrorMenuItem(snapshot)
-        configureLastDiscoveryRefreshMenuItem(snapshot)
-        updateOngoingReviewItems(snapshot.ongoingReviewEntries)
-        updateActivityItems(snapshot.recentActivityEntries)
+        let presentation = MenuPresentation(snapshot: snapshot)
+        configureAgentErrorMenuItem(
+            presentation.status.agentErrorItem,
+            statusDetails: presentation.status.details
+        )
+        configureLastDiscoveryRefreshMenuItem(presentation.lastDiscoveryRefresh)
+        updateOngoingReviewItems(presentation.ongoingReviews)
+        updateActivityItems(presentation.recentActivities)
         updateOpenAtLoginItems()
-        openReviewsMenuItem?.title = snapshot.openReviewsSummary
-        statusItem?.button?.toolTip = snapshot.statusTitle
+        openReviewsMenuItem?.title = presentation.status.openReviewsTitle
+        statusItem?.button?.toolTip = presentation.status.title
     }
 
-    private func configureAgentErrorMenuItem(_ snapshot: MenuSnapshot) {
-        currentStatusDetails = snapshot.statusDetails
-        agentErrorMenuItem?.isHidden = snapshot.statusDetails == nil
-        agentErrorMenuItem?.title = snapshot.statusIssue?.title ?? ""
-        agentErrorMenuItem?.isEnabled = snapshot.statusDetails != nil
-        agentErrorMenuItem?.target = snapshot.statusDetails == nil ? nil : self
-        agentErrorMenuItem?.action = snapshot.statusDetails == nil ? nil : #selector(showStatusDetails(_:))
-        agentErrorMenuItem?.image = snapshot.statusDetails == nil
+    private func configureAgentErrorMenuItem(_ item: ActivityMenuEntry, statusDetails: String?) {
+        currentStatusDetails = statusDetails
+        agentErrorMenuItem?.isHidden = item.isHidden
+        agentErrorMenuItem?.title = item.title
+        agentErrorMenuItem?.isEnabled = item.isEnabled
+        agentErrorMenuItem?.target = item.isEnabled ? self : nil
+        agentErrorMenuItem?.action = item.isEnabled ? #selector(showStatusDetails(_:)) : nil
+        agentErrorMenuItem?.image = item.isHidden
             ? nil
             : NSImage(
                 systemSymbolName: "exclamationmark.triangle.fill",
@@ -251,23 +255,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
     }
 
-    private func configureLastDiscoveryRefreshMenuItem(_ snapshot: MenuSnapshot) {
-        guard let title = snapshot.lastDiscoveryRefreshTitle else {
-            lastDiscoveryRefreshMenuItem?.isHidden = true
-            lastDiscoveryRefreshMenuItem?.title = ""
-            return
-        }
-        lastDiscoveryRefreshMenuItem?.isHidden = false
-        lastDiscoveryRefreshMenuItem?.title = title
-        lastDiscoveryRefreshMenuItem?.isEnabled = false
+    private func configureLastDiscoveryRefreshMenuItem(_ item: ActivityMenuEntry) {
+        lastDiscoveryRefreshMenuItem?.isHidden = item.isHidden
+        lastDiscoveryRefreshMenuItem?.title = item.title
+        lastDiscoveryRefreshMenuItem?.isEnabled = item.isEnabled
     }
 
-    private func updateActivityItems(_ entries: [ActivityMenuEntry]) {
-        let hasEntries = !entries.isEmpty
-        activityHeaderMenuItem?.isHidden = !hasEntries
-        activitySeparatorMenuItem?.isHidden = !hasEntries
+    private func updateActivityItems(_ section: MenuActivitySectionPresentation) {
+        activityHeaderMenuItem?.isHidden = section.isHidden
+        activitySeparatorMenuItem?.isHidden = section.isHidden
         let font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        updateMenuItems(activityMenuItems, entries: entries, font: font)
+        updateMenuItems(activityMenuItems, entries: section.items, font: font)
     }
 
     private func updateOngoingReviewItems(_ entries: [ActivityMenuEntry]) {
@@ -292,16 +290,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             let entry = entries[index]
-            item.isHidden = false
+            item.isHidden = entry.isHidden
             item.title = entry.title
             item.attributedTitle = NSAttributedString(
                 string: entry.title,
                 attributes: [.font: font]
             )
             item.representedObject = entry.id
-            item.target = entry.id == nil ? nil : self
-            item.action = entry.id == nil ? nil : #selector(showActivityDetails(_:))
-            item.isEnabled = entry.id != nil
+            item.target = entry.isEnabled ? self : nil
+            item.action = entry.isEnabled ? #selector(showActivityDetails(_:)) : nil
+            item.isEnabled = entry.isEnabled
         }
     }
 
@@ -533,11 +531,15 @@ extension AppDelegate {
     }
 
     func applyMenuSnapshotForTesting(_ snapshot: MenuSnapshot) {
-        configureAgentErrorMenuItem(snapshot)
-        configureLastDiscoveryRefreshMenuItem(snapshot)
-        updateOngoingReviewItems(snapshot.ongoingReviewEntries)
-        updateActivityItems(snapshot.recentActivityEntries)
-        openReviewsMenuItem?.title = snapshot.openReviewsSummary
+        let presentation = MenuPresentation(snapshot: snapshot)
+        configureAgentErrorMenuItem(
+            presentation.status.agentErrorItem,
+            statusDetails: presentation.status.details
+        )
+        configureLastDiscoveryRefreshMenuItem(presentation.lastDiscoveryRefresh)
+        updateOngoingReviewItems(presentation.ongoingReviews)
+        updateActivityItems(presentation.recentActivities)
+        openReviewsMenuItem?.title = presentation.status.openReviewsTitle
     }
 
     func setStatusForTesting(hostStatus: HostStatus?) {

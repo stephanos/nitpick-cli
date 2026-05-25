@@ -39,12 +39,16 @@ public struct ActivitySnapshot: Decodable, Equatable {
 }
 
 public struct ActivityMenuEntry: Equatable {
-    public var id: String?
-    public var title: String
+    public let id: String?
+    public let title: String
+    public let isEnabled: Bool
+    public let isHidden: Bool
 
-    public init(id: String?, title: String) {
+    public init(id: String?, title: String, isEnabled: Bool? = nil, isHidden: Bool = false) {
         self.id = id
         self.title = title
+        self.isEnabled = isEnabled ?? (id != nil)
+        self.isHidden = isHidden
     }
 }
 

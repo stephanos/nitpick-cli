@@ -885,19 +885,47 @@ fn pull_request_has_nitpick_review(
         ],
         "GitHub PR reviews response",
     )?;
-    Ok(reviews.into_iter().any(|review| {
-        review.commit_id == head_sha && review.body.is_some_and(|body| has_nitpick_marker(&body))
+    let mut current_head_review_ids = HashSet::new();
+    for review in reviews {
+        if review.commit_id != head_sha {
+            continue;
+        }
+        if review.body.is_some_and(|body| has_nitpick_marker(&body)) {
+            return Ok(true);
+        }
+        if let Some(id) = review.id {
+            current_head_review_ids.insert(id.to_string());
+        }
+    }
+    if current_head_review_ids.is_empty() {
+        return Ok(false);
+    }
+    let comments = github_review_comments_from_cli(
+        command,
+        &[&format!("repos/{owner}/{repo}/pulls/{number}/comments")],
+    )?;
+    Ok(comments.into_iter().any(|comment| {
+        comment
+            .review_id
+            .as_ref()
+            .is_some_and(|review_id| current_head_review_ids.contains(review_id))
+            && has_nitpick_review_comment_marker(&comment.body)
     }))
 }
 
 #[derive(Deserialize)]
 struct PullRequestReviewResponse {
+    id: Option<u64>,
     commit_id: String,
     body: Option<String>,
 }
 
 fn has_nitpick_marker(body: &str) -> bool {
     body.contains("<!-- nitpick-agent:") || body.contains("<!-- nitpick:")
+}
+
+fn has_nitpick_review_comment_marker(body: &str) -> bool {
+    has_nitpick_marker(body) || body == NO_FINDINGS_REVIEW_COMMENT
 }
 
 impl ArtifactSyncDestination for GitHubCliSyncDestination {

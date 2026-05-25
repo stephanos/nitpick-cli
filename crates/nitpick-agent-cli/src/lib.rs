@@ -18,7 +18,7 @@ pub use activity::{
 };
 pub use artifact::{format_artifact, format_artifacts, parse_artifact_json, parse_artifacts_json};
 pub use cli::{
-    CliInvocation, CliOptions, CommandGroup as CliCommand, help_text, parse_command,
+    CliInvocation, CliOptions, CommandGroup as CliCommand, Confirmation, help_text, parse_command,
     parse_invocation,
 };
 pub use context::{CliRunContext, config_path_from_env, data_dir_from_env, host_addr_from_env};

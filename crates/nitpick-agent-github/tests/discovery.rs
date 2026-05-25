@@ -292,6 +292,94 @@ printf '%s\n' '[{{"commit_id":"abc123","body":"<!-- nitpick-agent:artifact-1 -->
 }
 
 #[test]
+fn github_cli_discovery_detects_existing_nitpick_review_comment_for_current_head() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let args_file = dir.path().join("args");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {}
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '%s\n' '[{{"id":99,"commit_id":"abc123","body":null}}]'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then
+  printf '%s\n' '[{{"id":10,"pull_request_review_id":99,"body":"🤖 Review completed: no findings."}}]'
+  exit 0
+fi
+exit 1
+"#,
+            args_file.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let request = ReviewRequest {
+        source: "github".into(),
+        repository: "acme/platform".into(),
+        number: Some(42),
+        id: "42".into(),
+        head_sha: "abc123".into(),
+    };
+
+    let already_reviewed = GitHubCliDiscovery::new(&gh)
+        .already_reviewed(&request)
+        .expect("already reviewed");
+
+    assert!(already_reviewed);
+    assert_eq!(
+        fs::read_to_string(args_file).expect("args"),
+        "api repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/comments\n"
+    );
+}
+
+#[test]
+fn github_cli_discovery_ignores_unrelated_robot_prefixed_review_comment_for_current_head() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let args_file = dir.path().join("args");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {}
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '%s\n' '[{{"id":99,"commit_id":"abc123","body":null}}]'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then
+  printf '%s\n' '[{{"id":10,"pull_request_review_id":99,"body":"🤖 unrelated bot"}}]'
+  exit 0
+fi
+exit 1
+"#,
+            args_file.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let request = ReviewRequest {
+        source: "github".into(),
+        repository: "acme/platform".into(),
+        number: Some(42),
+        id: "42".into(),
+        head_sha: "abc123".into(),
+    };
+
+    let already_reviewed = GitHubCliDiscovery::new(&gh)
+        .already_reviewed(&request)
+        .expect("already reviewed");
+
+    assert!(!already_reviewed);
+    assert_eq!(
+        fs::read_to_string(args_file).expect("args"),
+        "api repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/comments\n"
+    );
+}
+
+#[test]
 fn github_cli_discovery_ignores_nitpick_review_for_old_head() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");

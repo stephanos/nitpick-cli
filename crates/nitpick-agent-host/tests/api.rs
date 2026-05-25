@@ -665,14 +665,14 @@ printf '{"id":100,"html_url":"https://github.com/acme/platform/pull/42#pullreque
 }
 
 #[tokio::test]
-async fn activity_artifact_sync_endpoint_restores_local_only_when_pending_review_is_missing() {
+async fn activity_artifact_sync_endpoint_propagates_ambiguous_pending_review_404() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     fs::write(
         &gh,
         r#"#!/bin/sh
 if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
-  printf 'not found' >&2
+  printf 'HTTP 404: Not Found' >&2
   exit 1
 fi
 exit 1
@@ -724,10 +724,16 @@ exit 1
         .await
         .expect("response");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
         store.get_artifact(&summary.id).expect("summary").sync_state,
-        ArtifactSyncState::LocalOnly
+        ArtifactSyncState::Pending {
+            destination: "github-review".into(),
+            remote_id: Some("99".into()),
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            )
+        }
     );
 }
 

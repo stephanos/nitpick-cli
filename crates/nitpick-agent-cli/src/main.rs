@@ -1,8 +1,13 @@
-use std::{env, process::ExitCode};
+use std::{
+    env,
+    io::{self, IsTerminal, Write},
+    process::ExitCode,
+};
 
 use nitpick_agent_cli::{
-    CliRunContext, config_path_from_env, data_dir_from_env, format_error_message,
-    host_addr_from_env, parse_invocation, run_cli_command_with_options,
+    CliCommand, CliOptions, CliRunContext, Confirmation, SystemCommand, config_path_from_env,
+    data_dir_from_env, format_error_message, host_addr_from_env, parse_invocation,
+    run_cli_command_with_options,
 };
 
 fn main() -> ExitCode {
@@ -23,8 +28,10 @@ fn run() -> Result<(), String> {
     let context = git_output(&repo_dir, &["status", "--short"]).unwrap_or_default();
     let config_path = config_path_from_env(env::var_os("NITPICK_AGENT_CONFIG"));
     let data_dir = data_dir_from_env(env::var_os("NITPICK_AGENT_DATA_DIR"));
+    let command = invocation.command;
+    let options = options_for_command(&command, invocation.options)?;
     let output = run_cli_command_with_options(
-        invocation.command,
+        command,
         CliRunContext {
             host_addr: addr,
             repo_dir,
@@ -33,12 +40,43 @@ fn run() -> Result<(), String> {
             config_path,
             data_dir,
         },
-        invocation.options,
+        options,
     )?;
     if !output.is_empty() {
         println!("{output}");
     }
     Ok(())
+}
+
+fn options_for_command(
+    command: &CliCommand,
+    mut options: CliOptions,
+) -> Result<CliOptions, String> {
+    if matches!(command, CliCommand::System(SystemCommand::Reset { .. })) {
+        options.reset_confirmation = prompt_reset_confirmation()?;
+    }
+    Ok(options)
+}
+
+fn prompt_reset_confirmation() -> Result<Option<Confirmation>, String> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Ok(None);
+    }
+
+    print!("Reset local Nitpick state? [Y/n] ");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("write confirmation prompt: {error}"))?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| format!("read confirmation: {error}"))?;
+    let answer = input.trim();
+    if answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes") {
+        return Ok(Some(Confirmation::Yes));
+    }
+    Ok(Some(Confirmation::No))
 }
 
 fn current_dir() -> Result<std::path::PathBuf, String> {

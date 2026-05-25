@@ -15,10 +15,11 @@ use fs_err as fs;
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentError,
     AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
-    ArtifactId, ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult,
-    Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus, LocalStateResetResult,
-    MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput, ReviewMode, ReviewOutput,
-    ReviewRequest, ReviewSource, ReviewToolConfig, SessionStatus, SystemClock, default_data_dir,
+    ArtifactId, ArtifactKind, ArtifactSyncDestination, ArtifactSyncState, ChatInput,
+    CleanupCheckoutsResult, Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus,
+    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput,
+    ReviewMode, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig, SessionStatus,
+    SystemClock, default_data_dir,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -656,8 +657,19 @@ impl HostDaemon {
     ) -> AgentResult<()> {
         self.sync_activity_artifacts(&activity.id, "github-review", Some(target))?;
         if self.completed_review_has_no_comments(activity)? {
-            self.github_review_workflow_sync(target)?
-                .create_no_findings_draft_file_comment(&input.diff)?;
+            let sync = self.github_review_workflow_sync(target)?;
+            let Some(comment) = sync.no_findings_draft_file_comment(&input.diff)? else {
+                return Ok(());
+            };
+            let artifact = self.store.create_artifact(
+                activity.id.clone(),
+                ArtifactKind::ReviewComment,
+                ArtifactContent::ReviewComment(comment),
+            )?;
+            self.store.save_artifacts(std::slice::from_ref(&artifact))?;
+            let (artifact_id, sync_state) = sync.sync_no_findings_draft_file_comment(&artifact)?;
+            self.store
+                .update_artifact_sync_state(&artifact_id, sync_state)?;
         }
         Ok(())
     }
@@ -690,10 +702,10 @@ impl HostDaemon {
             return Ok(None);
         };
         let mut updated = Vec::with_capacity(artifacts.len());
-        for (artifact_id, next_state) in updates {
+        for (artifact_id, sync_state) in updates {
             updated.push(
                 self.store
-                    .update_artifact_sync_state(&artifact_id, next_state)?,
+                    .update_artifact_sync_state(&artifact_id, sync_state)?,
             );
         }
         Ok(Some(updated))

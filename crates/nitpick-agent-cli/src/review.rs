@@ -107,7 +107,7 @@ pub fn run(
                 config.provider = provider;
             }
             let checkout =
-                crate::support::require_cached_checkout(&target, &config, &context.data_dir)
+                crate::support::ensure_cached_checkout(&target, &config, &context.data_dir)
                     .map_err(CliError::from)?;
             config
                 .command_provider()

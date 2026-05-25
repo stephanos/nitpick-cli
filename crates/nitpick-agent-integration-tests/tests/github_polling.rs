@@ -237,10 +237,16 @@ fn github_polling_respects_disabled_and_discovery_only_config() {
     assert_eq!(discovery.calls(), 1);
     assert!(discovery_only.provider.reviewed_subjects().is_empty());
     assert!(
-        discovery_only
+        !discovery_only
             .processed
             .needs_review(&review_request("sha-one"))
-            .expect("not marked processed")
+            .expect("marked seen")
+    );
+    assert!(
+        discovery_only
+            .processed
+            .needs_review(&review_request("sha-two"))
+            .expect("changed head needs review")
     );
 }
 

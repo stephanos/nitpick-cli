@@ -52,177 +52,27 @@ public struct MenuSnapshot: Equatable {
     }
 
     public var openReviewsSummary: String {
-        if openReviewCount == 0 {
-            return "no open reviews"
-        }
-        if openReviewCount == 1 {
-            return "1 open review"
-        }
-        return "\(openReviewCount) open reviews"
+        MenuPresentation(snapshot: self).status.openReviewsTitle
     }
 
     public var statusTitle: String {
-        if let statusIssue {
-            return statusIssue.title
-        }
-        guard hostIsRunning else {
-            return "status: agent stopped"
-        }
-        if runningActivityCount == 1 {
-            return artifactSuffix("status: 1 running")
-        }
-        if runningActivityCount > 1 {
-            return artifactSuffix("status: \(runningActivityCount) running")
-        }
-
-        if !reviewSourceEnabled {
-            return "status: discovery disabled"
-        }
-
-        return artifactSuffix("status: idle")
+        MenuPresentation(snapshot: self).status.title
     }
 
     public var statusDetails: String? {
-        statusIssue?.details
+        MenuPresentation(snapshot: self).status.details
     }
 
     public var lastDiscoveryRefreshTitle: String? {
-        guard hostIsRunning else {
-            return nil
-        }
-        guard reviewSourceEnabled else {
-            return "last discovery: disabled"
-        }
-        guard let reviewSourceLastPollUnix else {
-            return "last discovery: never"
-        }
-        return "last discovery: \(relativeTime(reviewSourceLastPollUnix))"
+        let item = MenuPresentation(snapshot: self).lastDiscoveryRefresh
+        return item.isHidden ? nil : item.title
     }
 
     public var recentActivityEntries: [ActivityMenuEntry] {
-        activities
-            .sorted { lhs, rhs in
-                if lhs.updatedAtUnix == rhs.updatedAtUnix {
-                    return lhs.id > rhs.id
-                }
-                return lhs.updatedAtUnix > rhs.updatedAtUnix
-            }
-            .prefix(5)
-            .map { activity in
-                ActivityMenuEntry(id: activity.id, title: activityTitle(activity))
-            }
+        MenuPresentation(snapshot: self).recentActivities.items
     }
 
     public var ongoingReviewEntries: [ActivityMenuEntry] {
-        let activeReviews = activities
-            .filter { activity in
-                activity.kind == "Review" && (activity.status == "Running" || activity.status == "Queued")
-            }
-            .sorted { lhs, rhs in
-                if lhs.status != rhs.status {
-                    return lhs.status == "Running"
-                }
-                if lhs.updatedAtUnix == rhs.updatedAtUnix {
-                    return lhs.id > rhs.id
-                }
-                return lhs.updatedAtUnix > rhs.updatedAtUnix
-            }
-        let visible = activeReviews.prefix(5).map { activity in
-            ActivityMenuEntry(id: activity.id, title: ongoingReviewTitle(activity))
-        }
-        let hiddenQueuedCount = activeReviews.dropFirst(5).filter { activity in
-            activity.status == "Queued"
-        }.count
-        if hiddenQueuedCount == 0 {
-            return Array(visible)
-        }
-        return Array(visible) + [ActivityMenuEntry(id: nil, title: "\(hiddenQueuedCount) more queued...")]
-    }
-
-    private func activityTitle(_ activity: ActivitySnapshot) -> String {
-        let verb = activityVerb(activity)
-        let label = activity.label ?? fallbackLabel(activity)
-        if verb.isEmpty {
-            return "\(relativeTime(activity.updatedAtUnix).padding(toLength: 8, withPad: " ", startingAt: 0)) \(label)"
-        }
-        return "\(relativeTime(activity.updatedAtUnix).padding(toLength: 8, withPad: " ", startingAt: 0)) \(verb) \(label)"
-    }
-
-    private func activityVerb(_ activity: ActivitySnapshot) -> String {
-        if activity.status == "Completed", activity.label?.hasSuffix(" cleaned up") == true {
-            return ""
-        }
-        if activity.kind == "Discovery", activity.status == "Completed" {
-            return ""
-        }
-
-        switch activity.status {
-        case "Running":
-            return "started"
-        case "Completed":
-            return "finished"
-        case "Error":
-            return "failed"
-        case "Cancelled":
-            return "cancelled"
-        default:
-            return activity.status.lowercased()
-        }
-    }
-
-    private func ongoingReviewTitle(_ activity: ActivitySnapshot) -> String {
-        let label = activity.label ?? fallbackLabel(activity)
-        switch activity.status {
-        case "Running":
-            return "🤖 Running \(label)"
-        case "Queued":
-            return "🤖 Queued \(label)"
-        default:
-            return "🤖 \(activity.status) \(label)"
-        }
-    }
-
-    private func fallbackLabel(_ activity: ActivitySnapshot) -> String {
-        switch activity.kind {
-        case "Review":
-            return "review"
-        case "Chat":
-            return "chat"
-        case "Discovery":
-            return "discovery"
-        default:
-            return activity.kind.lowercased()
-        }
-    }
-
-    private func relativeTime(_ unix: UInt64) -> String {
-        let seconds = currentUnix > unix ? currentUnix - unix : 0
-        if seconds < 60 {
-            return "\(seconds)s ago"
-        }
-        let minutes = seconds / 60
-        if minutes < 60 {
-            return "\(minutes)m ago"
-        }
-        let hours = minutes / 60
-        if hours < 24 {
-            return "\(hours)h ago"
-        }
-        return "\(hours / 24)d ago"
-    }
-
-    private func artifactSuffix(_ title: String) -> String {
-        var parts: [String] = []
-        if localOnlyArtifactCount > 0 {
-            parts.append("\(localOnlyArtifactCount) local")
-        }
-        if pendingSyncArtifactCount > 0 {
-            parts.append("\(pendingSyncArtifactCount) pending")
-        }
-        guard !parts.isEmpty else {
-            return title
-        }
-
-        return "\(title), \(parts.joined(separator: ", "))"
+        MenuPresentation(snapshot: self).ongoingReviews
     }
 }

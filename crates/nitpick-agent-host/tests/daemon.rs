@@ -512,6 +512,26 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     wait_until(|| {
         std::fs::read_to_string(&payload_file)
             .is_ok_and(|payload| payload.contains("Review completed: no findings"))
+            && store
+                .list()
+                .expect("activities")
+                .first()
+                .and_then(|activity| {
+                    store
+                        .list_artifacts_for(&activity.id)
+                        .expect("artifacts")
+                        .into_iter()
+                        .next()
+                })
+                .is_some_and(|artifact| {
+                    matches!(
+                        artifact.sync_state,
+                        ArtifactSyncState::Pending {
+                            ref destination,
+                            ..
+                        } if destination == "github-review"
+                    )
+                })
     });
     assert_eq!(
         std::fs::read_to_string(commands_file).expect("commands"),
@@ -532,6 +552,34 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     assert!(payload["comments"][0].get("line").is_none());
     assert!(payload["comments"][0].get("side").is_none());
     assert!(payload.get("event").is_none());
+
+    let activity = store
+        .list()
+        .expect("activities")
+        .into_iter()
+        .next()
+        .expect("activity");
+    let artifacts = store.list_artifacts_for(&activity.id).expect("artifacts");
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0].kind, ArtifactKind::ReviewComment);
+    assert_eq!(
+        artifacts[0].content,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 0,
+            body: "🤖 Review completed: no findings.".into(),
+        })
+    );
+    assert_eq!(
+        artifacts[0].sync_state,
+        ArtifactSyncState::Pending {
+            destination: "github-review".into(),
+            remote_id: Some("99".into()),
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            ),
+        }
+    );
 }
 
 fn review_input_for_head(head_sha: &str) -> ReviewInput {

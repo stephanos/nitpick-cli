@@ -8,7 +8,7 @@ use crate::{CliError, CliOptions, CliRunContext};
 pub enum SystemCommand {
     SyncPending { destination: Option<String> },
     CleanupCheckouts,
-    Reset { confirm: bool, force: bool },
+    Reset { force: bool },
 }
 
 #[derive(Args)]
@@ -26,8 +26,6 @@ pub enum SystemSubcommand {
     CleanupCheckouts,
     Reset {
         #[arg(long)]
-        confirm: bool,
-        #[arg(long)]
         force: bool,
     },
 }
@@ -37,7 +35,7 @@ impl From<SystemSubcommand> for SystemCommand {
         match command {
             SystemSubcommand::SyncPending { destination } => Self::SyncPending { destination },
             SystemSubcommand::CleanupCheckouts => Self::CleanupCheckouts,
-            SystemSubcommand::Reset { confirm, force } => Self::Reset { confirm, force },
+            SystemSubcommand::Reset { force } => Self::Reset { force },
         }
     }
 }
@@ -45,7 +43,7 @@ impl From<SystemSubcommand> for SystemCommand {
 pub fn run(
     command: SystemCommand,
     context: CliRunContext,
-    _options: CliOptions,
+    options: CliOptions,
 ) -> Result<String, CliError> {
     let client = HostClient::new(&context.host_addr);
     match command {
@@ -55,11 +53,15 @@ pub fn run(
         SystemCommand::CleanupCheckouts => {
             Ok(format_cleanup_checkouts(&client.cleanup_checkouts()?))
         }
-        SystemCommand::Reset { confirm, force } => {
-            if !confirm {
-                return Err(CliError::from(
-                    "refusing to reset local state without --confirm",
-                ));
+        SystemCommand::Reset { force } => {
+            match options.reset_confirmation {
+                Some(crate::Confirmation::Yes) => {}
+                Some(crate::Confirmation::No) => return Ok("reset cancelled".into()),
+                None => {
+                    return Err(CliError::from(
+                        "refusing to reset local state without interactive confirmation",
+                    ));
+                }
             }
             Ok(format_local_state_reset(&client.reset_local_state(force)?))
         }
@@ -284,7 +286,7 @@ mod tests {
     use super::{
         HostStatus, SystemCommand, format_host_status, format_local_state_reset, host_status_url,
     };
-    use crate::{CliCommand, parse_command};
+    use crate::{CliCommand, CliOptions, Confirmation, parse_command};
 
     #[test]
     fn rejects_system_status_command() {
@@ -335,18 +337,48 @@ mod tests {
         let command = parse_command([
             "system".to_owned(),
             "reset".to_owned(),
-            "--confirm".to_owned(),
             "--force".to_owned(),
         ])
         .expect("command");
 
         assert_eq!(
             command,
-            CliCommand::System(SystemCommand::Reset {
-                confirm: true,
-                force: true,
-            })
+            CliCommand::System(SystemCommand::Reset { force: true })
         );
+    }
+
+    #[test]
+    fn rejects_reset_confirm_flag() {
+        let error = parse_command([
+            "system".to_owned(),
+            "reset".to_owned(),
+            "--confirm".to_owned(),
+        ])
+        .expect_err("command fails");
+
+        assert!(error.contains("unexpected argument '--confirm'"));
+    }
+
+    #[test]
+    fn reset_cancelled_by_confirmation_does_not_contact_host() {
+        let output = super::run(
+            SystemCommand::Reset { force: false },
+            crate::CliRunContext {
+                host_addr: "127.0.0.1:1".into(),
+                repo_dir: std::path::PathBuf::new(),
+                diff: String::new(),
+                context: String::new(),
+                config_path: std::path::PathBuf::new(),
+                data_dir: std::path::PathBuf::new(),
+            },
+            CliOptions {
+                reset_confirmation: Some(Confirmation::No),
+                ..CliOptions::default()
+            },
+        )
+        .expect("cancelled reset");
+
+        assert_eq!(output, "reset cancelled");
     }
 
     #[test]

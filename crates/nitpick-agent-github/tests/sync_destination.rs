@@ -670,6 +670,92 @@ exit 1
 }
 
 #[test]
+fn github_review_workflow_sync_propagates_pending_review_fetch_failures() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
+  printf 'HTTP 403: Forbidden\n' >&2
+  exit 1
+fi
+exit 1
+"#,
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let mut summary = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewSummary,
+        ArtifactContent::ReviewSummary("summary body".into()),
+    );
+    summary.sync_state = ArtifactSyncState::Pending {
+        destination: "github-review".into(),
+        remote_id: Some("99".into()),
+        remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into()),
+    };
+    let sync = GitHubReviewWorkflowSync::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let error = sync
+        .reconcile_pending_artifact_states(std::slice::from_ref(&summary))
+        .expect_err("fetch failure should propagate");
+
+    assert!(error.message().contains("HTTP 403"));
+}
+
+#[test]
+fn github_review_workflow_sync_propagates_ambiguous_pending_review_404() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
+  printf 'HTTP 404: Not Found\n' >&2
+  exit 1
+fi
+exit 1
+"#,
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let mut summary = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewSummary,
+        ArtifactContent::ReviewSummary("summary body".into()),
+    );
+    summary.sync_state = ArtifactSyncState::Pending {
+        destination: "github-review".into(),
+        remote_id: Some("99".into()),
+        remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into()),
+    };
+    let sync = GitHubReviewWorkflowSync::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let error = sync
+        .reconcile_pending_artifact_states(std::slice::from_ref(&summary))
+        .expect_err("ambiguous 404 should propagate");
+
+    assert!(error.message().contains("HTTP 404"));
+}
+
+#[test]
 fn github_review_workflow_sync_updates_pending_review_body_for_local_summary() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
@@ -788,12 +874,37 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         &gh,
     );
 
-    sync.create_no_findings_draft_file_comment(DIFF_WITH_SRC_LIB)
-        .expect("no findings draft");
+    let comment = sync
+        .no_findings_draft_file_comment(DIFF_WITH_SRC_LIB)
+        .expect("no findings draft")
+        .expect("comment");
+    let artifact = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(comment),
+    );
+
+    let state_change = sync
+        .sync_no_findings_draft_file_comment(&artifact)
+        .expect("sync no findings draft");
 
     let payload: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
+    assert_eq!(
+        state_change,
+        (
+            artifact.id,
+            ArtifactSyncState::Pending {
+                destination: "github-review".into(),
+                remote_id: Some("99".into()),
+                remote_url: Some(
+                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+                ),
+            },
+        )
+    );
     assert!(payload.get("body").is_none());
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
     assert_eq!(payload["comments"][0]["subject_type"], "file");

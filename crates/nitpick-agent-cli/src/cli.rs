@@ -5,6 +5,13 @@ use crate::{DebugArgs, DebugCommand, ReviewArgs, ReviewCommand, SystemArgs, Syst
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CliOptions {
     pub disable_sandbox: bool,
+    pub reset_confirmation: Option<Confirmation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confirmation {
+    Yes,
+    No,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +87,7 @@ pub fn parse_invocation(args: impl IntoIterator<Item = String>) -> Result<CliInv
         command,
         options: CliOptions {
             disable_sandbox: cli.no_sandbox,
+            reset_confirmation: None,
         },
     })
 }

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use nitpick_agent_core::{
-    AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactSyncOutcome,
-    ArtifactSyncState, first_changed_file_for_diff,
+    AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactSyncState,
+    ReviewComment, first_changed_file_for_diff,
 };
 
 use crate::{GitHubCliReviewSyncDestination, PullRequestRef};
@@ -50,7 +50,7 @@ impl GitHubReviewWorkflowSync {
         };
         let review = match self.destination.fetch_review(&review_id) {
             Ok(review) => review,
-            Err(_) => {
+            Err(error) if is_missing_review_error(&error) => {
                 return Ok(Some(
                     artifacts
                         .iter()
@@ -72,6 +72,7 @@ impl GitHubReviewWorkflowSync {
                         .collect(),
                 ));
             }
+            Err(error) => return Err(error),
         };
         if review.state == "PENDING" {
             let has_new_inline_comments = artifacts.iter().any(|artifact| {
@@ -157,15 +158,38 @@ impl GitHubReviewWorkflowSync {
         ))
     }
 
-    pub fn create_no_findings_draft_file_comment(
+    pub fn no_findings_draft_file_comment(&self, diff: &str) -> AgentResult<Option<ReviewComment>> {
+        no_findings_review_comment_for_diff(diff)
+    }
+
+    pub fn sync_no_findings_draft_file_comment(
         &self,
-        diff: &str,
-    ) -> AgentResult<Option<ArtifactSyncOutcome>> {
-        let Some(path) = first_changed_file_for_diff(diff)? else {
-            return Ok(None);
-        };
-        self.destination
-            .create_pending_file_comment(&path, NO_FINDINGS_REVIEW_COMMENT)
-            .map(Some)
+        artifact: &Artifact,
+    ) -> AgentResult<(ArtifactId, ArtifactSyncState)> {
+        let outcomes = self
+            .destination
+            .create_pending_review_batch(std::slice::from_ref(artifact))?;
+        let outcome = outcomes.into_iter().next().ok_or_else(|| {
+            AgentError::invalid_input("github-review sync returned no outcome for file comment")
+        })?;
+        Ok((artifact.id.clone(), outcome.sync_state))
+    }
+}
+
+fn no_findings_review_comment_for_diff(diff: &str) -> AgentResult<Option<ReviewComment>> {
+    let Some(path) = first_changed_file_for_diff(diff)? else {
+        return Ok(None);
+    };
+    Ok(Some(ReviewComment {
+        path,
+        line: 0,
+        body: NO_FINDINGS_REVIEW_COMMENT.into(),
+    }))
+}
+
+fn is_missing_review_error(error: &AgentError) -> bool {
+    match error {
+        AgentError::NotFound { .. } => true,
+        _ => false,
     }
 }

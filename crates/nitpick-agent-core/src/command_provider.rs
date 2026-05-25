@@ -656,6 +656,7 @@ fn macos_sandbox_profile(
         .iter()
         .map(|path| sandbox_subpath_rule("file-read* file-write*", path))
         .collect::<String>();
+    let provider_runtime_paths = provider_runtime_sandbox_rules();
     Ok(format!(
         r#"(version 1)
 (deny default)
@@ -666,9 +667,37 @@ fn macos_sandbox_profile(
 (allow file-read* file-write* (literal "/dev/null"))
 (allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (literal "{command}"))
 (allow file-read* file-write* (subpath "{repo}"))
-{extra_reads}{extra_read_writes}
+{provider_runtime_paths}{extra_reads}{extra_read_writes}
 "#
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn provider_runtime_sandbox_rules() -> String {
+    let mut rules = String::new();
+    for path in [Path::new("/opt/homebrew"), Path::new("/usr/local")] {
+        if path.exists() {
+            rules.push_str(&sandbox_subpath_rule("file-read*", path));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for path in [
+            home.join(".claude"),
+            home.join(".config").join("claude"),
+            home.join(".local").join("share").join("claude"),
+            home.join("Library")
+                .join("Application Support")
+                .join("Claude"),
+            home.join("Library").join("Caches").join("Claude"),
+        ] {
+            rules.push_str(&sandbox_subpath_rule("file-read* file-write*", &path));
+        }
+    }
+    rules.push_str(&sandbox_subpath_rule(
+        "file-read* file-write*",
+        &std::env::temp_dir(),
+    ));
+    rules
 }
 
 #[cfg(target_os = "macos")]
@@ -739,5 +768,28 @@ mod tests {
             r#"(subpath "{}")"#,
             dir.path().canonicalize().expect("temp dir").display()
         )));
+    }
+
+    #[test]
+    fn macos_sandbox_profile_includes_claude_runtime_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_dir = dir.path().join("repo");
+        fs_err::create_dir(&repo_dir).expect("repo dir");
+        let provider_command = dir.path().join("claude");
+        fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let sandbox = CommandSandboxConfig::macos_seatbelt();
+
+        let profile =
+            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox).expect("profile");
+
+        let home = std::env::var("HOME").expect("home");
+        assert!(profile.contains(&format!(r#"(subpath "{home}/.claude")"#)));
+        assert!(profile.contains(&format!(r#"(subpath "{home}/.local/share/claude")"#)));
+        assert!(profile.contains(&format!(
+            r#"(subpath "{}")"#,
+            std::env::temp_dir().canonicalize().expect("temp dir").display()
+        )));
+        assert!(profile.contains(r#"(subpath "/opt/homebrew")"#));
+        assert!(profile.contains(r#"(subpath "/usr/local")"#));
     }
 }
