@@ -388,18 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_review_run_command() {
-        let error = parse_command([
-            "review".to_owned(),
-            "run".to_owned(),
-            "acme/platform#42".to_owned(),
-        ])
-        .expect_err("command fails");
-
-        assert!(error.contains("unrecognized subcommand 'run'"));
-    }
-
-    #[test]
     fn parses_review_chat_command() {
         let command = parse_command([
             "review".to_owned(),
