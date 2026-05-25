@@ -1,4 +1,9 @@
-use std::{env, fs, os::unix::fs::PermissionsExt, sync::Arc};
+use std::{
+    env, fs,
+    os::unix::fs::PermissionsExt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use nitpick_agent_core::{
     AgentProvider, AgentProviderKind, AgentRuntime, AgentSession, ChatInput, CommandAgentProvider,
@@ -221,6 +226,66 @@ fn command_provider_reads_review_output_from_validated_json_file() {
     let output = activity_output.review_output().expect("review output");
     assert_eq!(output.comments.len(), 1);
     assert_eq!(output.comments[0].path, "src.rs");
+}
+
+#[test]
+fn command_provider_persists_review_logs_before_command_exits() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    fs::write(repo_dir.join("src.rs"), "fn main() {}\n").expect("repo file");
+    let command = dir.path().join("provider");
+    fs::write(
+        &command,
+        "#!/bin/sh\ncat >/dev/null\nprintf 'streamed stdout\\n'\nprintf 'streamed stderr\\n' >&2\nsleep 1\nmkdir -p .nitpick\nprintf '{\"comments\":[]}' > .nitpick/review-output.json\n",
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(
+        CommandAgentProvider::new(
+            AgentProviderKind::Claude,
+            Some("test-model".into()),
+            &command,
+        )
+        .with_sandbox(CommandSandboxConfig::unsandboxed()),
+    );
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+    let input = ReviewInput {
+        repo_dir,
+        diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
+        subject: ReviewSubject {
+            repository: "acme/platform".into(),
+            number: Some(42),
+            ..ReviewSubject::default()
+        },
+        ..ReviewInput::default()
+    };
+    let activity = runtime.create_review_activity(&input).expect("activity");
+    let activity_id = activity.id.clone();
+    let runtime_thread = std::thread::spawn(move || runtime.run_review(activity, input));
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let persisted = store.get(&activity_id).expect("persisted activity");
+        let stdout = provider_log(&persisted.session, "provider.stdout");
+        let stderr = provider_log(&persisted.session, "provider.stderr");
+        if stdout == Some("streamed stdout") && stderr == Some("streamed stderr") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "provider logs were not persisted before command exit"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let activity = runtime_thread
+        .join()
+        .expect("runtime thread")
+        .expect("review");
+    assert_eq!(activity.error, None);
 }
 
 #[test]
@@ -684,6 +749,14 @@ fn is_uuid_like(value: &str) -> bool {
             .enumerate()
             .filter(|(index, _)| ![8, 13, 18, 23].contains(index))
             .all(|(_, byte)| byte.is_ascii_hexdigit())
+}
+
+fn provider_log<'a>(session: &'a nitpick_agent_core::AgentSession, role: &str) -> Option<&'a str> {
+    session
+        .messages
+        .iter()
+        .find(|message| message.role == role)
+        .map(|message| message.content.as_str())
 }
 
 trait ActivityOutputExt {

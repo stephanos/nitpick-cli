@@ -1,17 +1,49 @@
 use std::{
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc::{self, Receiver, Sender},
+    thread::JoinHandle,
+    time::Duration,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
-    ChatInput, REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
-    macos_sandbox::SandboxProfileBuilder, validate_review_output_file_for_diff,
+    ChatInput, ProviderLogSink, REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput,
+    ReviewToolConfig, macos_sandbox::SandboxProfileBuilder, validate_review_output_file_for_diff,
 };
 
 const MAX_PROVIDER_LOG_BYTES: usize = 64 * 1024;
+
+struct ProviderCommandOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+enum ProviderStream {
+    Stdout,
+    Stderr,
+}
+
+struct ProviderStreamChunk {
+    stream: ProviderStream,
+    bytes: Vec<u8>,
+}
+
+struct NoopProviderLogSink;
+
+impl ProviderLogSink for NoopProviderLogSink {
+    fn append_stdout(&self, _bytes: &[u8]) -> AgentResult<()> {
+        Ok(())
+    }
+
+    fn append_stderr(&self, _bytes: &[u8]) -> AgentResult<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSandboxConfig {
@@ -40,6 +72,10 @@ impl CommandSandboxConfig {
     fn with_extra_read_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
         self.extra_read_paths.extend(paths);
         self
+    }
+
+    pub fn with_read_paths(self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.with_extra_read_paths(paths)
     }
 
     fn with_extra_read_write_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
@@ -133,6 +169,7 @@ impl CommandAgentProvider {
     fn run_prompt_in_dir_with_sandbox(
         &self,
         session: &mut AgentSession,
+        log_sink: Option<&dyn ProviderLogSink>,
         prompt: &str,
         args: &[String],
         current_dir: Option<&Path>,
@@ -168,16 +205,29 @@ impl CommandAgentProvider {
                 ))
             })?;
 
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AgentError::provider("provider command stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| AgentError::provider("provider command stderr unavailable"))?;
+        let (stream_tx, stream_rx) = mpsc::channel();
+        let stdout_reader =
+            spawn_provider_stream_reader(ProviderStream::Stdout, stdout, stream_tx.clone());
+        let stderr_reader = spawn_provider_stream_reader(ProviderStream::Stderr, stderr, stream_tx);
+
         child
             .stdin
-            .as_mut()
+            .take()
             .ok_or_else(|| AgentError::provider("provider command stdin unavailable"))?
             .write_all(prompt.as_bytes())
             .map_err(|error| AgentError::provider(format!("write provider prompt: {error}")))?;
 
-        let output = child
-            .wait_with_output()
-            .map_err(|error| AgentError::provider(format!("wait for provider command: {error}")))?;
+        let output = collect_provider_output(child, stream_rx, log_sink)?;
+        join_provider_stream_reader(stdout_reader)?;
+        join_provider_stream_reader(stderr_reader)?;
         tracing::debug!(
             provider = %self.kind,
             command = %self.command.display(),
@@ -351,6 +401,15 @@ impl CommandAgentProvider {
             AgentProviderKind::Codex => CommandSandboxConfig::unsandboxed(),
         }
     }
+
+    #[cfg(target_os = "macos")]
+    pub fn macos_sandbox_profile_for_testing(
+        &self,
+        repo_dir: &Path,
+        provider_command: &Path,
+    ) -> AgentResult<String> {
+        macos_sandbox_profile(repo_dir, provider_command, &self.sandbox, None)
+    }
 }
 
 fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
@@ -382,6 +441,104 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
 fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]) {
     push_provider_log(session, "provider.stdout", stdout);
     push_provider_log(session, "provider.stderr", stderr);
+}
+
+fn spawn_provider_stream_reader<R>(
+    stream: ProviderStream,
+    mut reader: R,
+    tx: Sender<AgentResult<ProviderStreamChunk>>,
+) -> JoinHandle<()>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buffer = [0; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let chunk = ProviderStreamChunk {
+                        stream,
+                        bytes: buffer[..count].to_vec(),
+                    };
+                    if tx.send(Ok(chunk)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(AgentError::provider(format!(
+                        "read provider output: {error}"
+                    ))));
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn collect_provider_output(
+    mut child: std::process::Child,
+    rx: Receiver<AgentResult<ProviderStreamChunk>>,
+    log_sink: Option<&dyn ProviderLogSink>,
+) -> AgentResult<ProviderCommandOutput> {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = loop {
+        while let Ok(chunk) = rx.try_recv() {
+            append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, log_sink)?;
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| AgentError::provider(format!("wait for provider command: {error}")))?
+        {
+            break status;
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(chunk) => append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, log_sink)?,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+    };
+    loop {
+        match rx.recv() {
+            Ok(chunk) => append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, log_sink)?,
+            Err(_) => break,
+        }
+    }
+    Ok(ProviderCommandOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn append_provider_stream_chunk(
+    chunk: ProviderStreamChunk,
+    stdout: &mut Vec<u8>,
+    stderr: &mut Vec<u8>,
+    log_sink: Option<&dyn ProviderLogSink>,
+) -> AgentResult<()> {
+    match chunk.stream {
+        ProviderStream::Stdout => {
+            stdout.extend_from_slice(&chunk.bytes);
+            if let Some(log_sink) = log_sink {
+                log_sink.append_stdout(&chunk.bytes)?;
+            }
+        }
+        ProviderStream::Stderr => {
+            stderr.extend_from_slice(&chunk.bytes);
+            if let Some(log_sink) = log_sink {
+                log_sink.append_stderr(&chunk.bytes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn join_provider_stream_reader(handle: JoinHandle<()>) -> AgentResult<()> {
+    handle
+        .join()
+        .map_err(|_| AgentError::provider("provider output reader thread panicked"))
 }
 
 fn record_provider_sandbox_diagnostic(
@@ -504,6 +661,16 @@ fn recent_sandbox_violations(_log_tag: &str) -> Vec<String> {
 impl AgentProvider for CommandAgentProvider {
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
     fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
+        self.review_with_log_sink(session, input, &NoopProviderLogSink)
+    }
+
+    #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
+    fn review_with_log_sink(
+        &self,
+        session: &mut AgentSession,
+        input: &ReviewInput,
+        log_sink: &dyn ProviderLogSink,
+    ) -> AgentResult<ReviewOutput> {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
         let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
@@ -531,6 +698,7 @@ impl AgentProvider for CommandAgentProvider {
         let args = self.review_args(session);
         self.run_prompt_in_dir_with_sandbox(
             session,
+            Some(log_sink),
             &prompt,
             &args,
             Some(&repo_dir),
@@ -551,6 +719,17 @@ impl AgentProvider for CommandAgentProvider {
         input: &ReviewInput,
         tools: &ReviewToolConfig,
     ) -> AgentResult<ReviewOutput> {
+        self.review_with_tools_and_log_sink(session, input, tools, &NoopProviderLogSink)
+    }
+
+    #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
+    fn review_with_tools_and_log_sink(
+        &self,
+        session: &mut AgentSession,
+        input: &ReviewInput,
+        tools: &ReviewToolConfig,
+        log_sink: &dyn ProviderLogSink,
+    ) -> AgentResult<ReviewOutput> {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
         let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
@@ -564,6 +743,7 @@ impl AgentProvider for CommandAgentProvider {
         let sandbox = sandbox.with_review_tool_paths(tools);
         self.run_prompt_in_dir_with_sandbox(
             session,
+            Some(log_sink),
             &prompt,
             &args,
             Some(&repo_dir),
@@ -583,6 +763,7 @@ impl AgentProvider for CommandAgentProvider {
         let args = self.prompt_args();
         self.run_prompt_in_dir_with_sandbox(
             session,
+            None,
             &chat_prompt(self.model.as_deref(), input),
             &args,
             repo_dir.as_deref(),
@@ -988,6 +1169,8 @@ mod tests {
         assert!(profile.contains(r#"(allow process-exec)"#));
         assert!(profile.contains(r#"(allow ipc-posix-sem)"#));
         assert!(profile.contains(r#"(allow pseudo-tty)"#));
+        assert!(profile.contains(r#"(allow file-map-executable"#));
+        assert!(profile.contains(r#"(allow system-mac-syscall (mac-policy-name "vnguard"))"#));
         assert!(profile.contains(r#"(global-name "com.apple.trustd.agent")"#));
         assert!(profile.contains(r#"(literal "/dev/tty")"#));
         assert!(profile.contains(r#"(literal "/dev/urandom")"#));

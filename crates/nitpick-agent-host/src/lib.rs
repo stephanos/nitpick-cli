@@ -17,9 +17,9 @@ use nitpick_agent_core::{
     AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
     ArtifactId, ArtifactKind, ArtifactSyncDestination, ArtifactSyncState, ChatInput,
     CleanupCheckoutsResult, Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus,
-    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput,
-    ReviewMode, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig, SessionStatus,
-    SystemClock, default_data_dir,
+    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore, ProviderLogSink,
+    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig,
+    SessionStatus, SystemClock, default_data_dir,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -56,8 +56,17 @@ impl AgentProvider for HostReviewProvider {
         session: &mut nitpick_agent_core::AgentSession,
         input: &ReviewInput,
     ) -> AgentResult<ReviewOutput> {
+        self.review_with_log_sink(session, input, &NoopProviderLogSink)
+    }
+
+    fn review_with_log_sink(
+        &self,
+        session: &mut nitpick_agent_core::AgentSession,
+        input: &ReviewInput,
+        log_sink: &dyn ProviderLogSink,
+    ) -> AgentResult<ReviewOutput> {
         if !self.inner.supports_review_tools() {
-            return self.inner.review(session, input);
+            return self.inner.review_with_log_sink(session, input, log_sink);
         }
 
         let handle = review_mcp::ReviewMcpServerHandle::start(
@@ -66,7 +75,8 @@ impl AgentProvider for HostReviewProvider {
             self.review_mcp_github_target(input),
         )?;
         let tools = handle.tool_config();
-        self.inner.review_with_tools(session, input, &tools)?;
+        self.inner
+            .review_with_tools_and_log_sink(session, input, &tools, log_sink)?;
         let state = handle.session_state()?;
         if !state.finished {
             return Err(AgentError::provider(
@@ -102,6 +112,18 @@ impl AgentProvider for HostReviewProvider {
 
     fn attach_session(&self, session: &nitpick_agent_core::AgentSession) -> AgentResult<()> {
         self.inner.attach_session(session)
+    }
+}
+
+struct NoopProviderLogSink;
+
+impl ProviderLogSink for NoopProviderLogSink {
+    fn append_stdout(&self, _bytes: &[u8]) -> AgentResult<()> {
+        Ok(())
+    }
+
+    fn append_stderr(&self, _bytes: &[u8]) -> AgentResult<()> {
+        Ok(())
     }
 }
 
@@ -1114,7 +1136,11 @@ impl AgentConfig {
             }
             None => CommandAgentProvider::for_kind(self.provider.clone(), self.model.clone()),
         };
-        provider.with_sandbox(self.sandbox.command_sandbox_config())
+        provider.with_sandbox(
+            self.sandbox
+                .command_sandbox_config()
+                .with_read_paths(self.review_prompt_sandbox_read_paths()),
+        )
     }
 
     fn provider(&self) -> Arc<dyn AgentProvider> {
@@ -1212,6 +1238,14 @@ impl AgentConfig {
         }
         input.review_prompt = prompt;
         Ok(input)
+    }
+
+    fn review_prompt_sandbox_read_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.review_prompt_path.clone()];
+        paths.extend(self.review_extra_prompt_path.iter().cloned());
+        paths.extend(self.review_self_extra_prompt_path.iter().cloned());
+        paths.extend(self.review_requested_extra_prompt_path.iter().cloned());
+        paths
     }
 }
 

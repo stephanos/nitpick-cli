@@ -100,6 +100,7 @@ impl SandboxProfileBuilder {
 
     pub(crate) fn allow_file_read_metadata(mut self) -> Self {
         self.rules.push("(allow file-read-metadata)".into());
+        self.rules.push("(allow file-test-existence)".into());
         self
     }
 
@@ -134,13 +135,66 @@ impl SandboxProfileBuilder {
             Path::new("/System"),
             Path::new("/Library"),
             Path::new("/private/etc"),
+            Path::new("/private/var/db/timezone"),
             Path::new("/etc"),
             Path::new("/usr"),
             Path::new("/bin"),
             Path::new("/sbin"),
+            Path::new("/Applications"),
         ] {
             self = self.allow_read(path);
         }
+        self.rules.push(
+            r#"(allow file-map-executable
+ (subpath "/Library/Apple/System/Library/Frameworks")
+ (subpath "/Library/Apple/System/Library/PrivateFrameworks")
+ (subpath "/Library/Apple/usr/lib")
+ (subpath "/System/Library/Extensions")
+ (subpath "/System/Library/Frameworks")
+ (subpath "/System/Library/PrivateFrameworks")
+ (subpath "/System/Library/SubFrameworks")
+ (subpath "/System/iOSSupport/System/Library/Frameworks")
+ (subpath "/System/iOSSupport/System/Library/PrivateFrameworks")
+ (subpath "/System/iOSSupport/System/Library/SubFrameworks")
+ (subpath "/usr/lib")
+)"#
+            .into(),
+        );
+        self.rules
+            .push(r#"(allow file-read* file-test-existence (literal "/"))"#.into());
+        self.rules.push(
+            r#"(allow file-read-metadata file-test-existence
+ (literal "/etc")
+ (literal "/tmp")
+ (literal "/var")
+ (literal "/private/etc/localtime")
+ (path-ancestors "/System/Volumes/Data/private")
+ (subpath "/var")
+ (subpath "/private/var")
+)"#
+            .into(),
+        );
+        self.rules.push(
+            r#"(allow file-read* file-test-existence
+ (literal "/System/Library/CoreServices")
+ (literal "/System/Library/CoreServices/.SystemVersionPlatform.plist")
+ (literal "/System/Library/CoreServices/SystemVersion.plist")
+ (literal "/dev/autofs_nowait")
+ (literal "/private/etc/master.passwd")
+ (literal "/private/etc/passwd")
+ (literal "/private/etc/protocols")
+ (literal "/private/etc/services")
+ (literal "/private/var/db/eligibilityd/eligibility.plist")
+)"#
+            .into(),
+        );
+        self.rules
+            .push(r#"(allow system-mac-syscall (mac-policy-name "vnguard"))"#.into());
+        self.rules.push(
+            r#"(allow system-mac-syscall (require-all (mac-policy-name "Sandbox") (mac-syscall-number 67)))"#.into(),
+        );
+        self.rules
+            .push(r#"(allow system-fsctl (fsctl-command FSIOC_CAS_BSDFLAGS))"#.into());
         self.rules
             .push("(allow ipc-posix-shm-read* ipc-posix-shm-write*)".into());
         self.rules.push("(allow ipc-posix-sem)".into());

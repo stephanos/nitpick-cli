@@ -398,6 +398,62 @@ command = "/tmp/fake-claude"
     assert_eq!(provider.command().to_string_lossy(), "/tmp/fake-claude");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn command_provider_sandbox_includes_configured_prompt_files() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let prompt_path = dir.path().join("review-prompt.md");
+    let extra_prompt_path = dir.path().join("extra.md");
+    let self_prompt_path = dir.path().join("self.md");
+    let requested_prompt_path = dir.path().join("requested.md");
+    for path in [
+        &prompt_path,
+        &extra_prompt_path,
+        &self_prompt_path,
+        &requested_prompt_path,
+    ] {
+        std::fs::write(path, "prompt").expect("write prompt");
+    }
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[agent]
+provider = "claude"
+command = "/bin/sh"
+
+[reviews]
+extra_prompt_path = "{}"
+self_review_extra_prompt_path = "{}"
+requested_review_extra_prompt_path = "{}"
+"#,
+            extra_prompt_path.display(),
+            self_prompt_path.display(),
+            requested_prompt_path.display()
+        ),
+    )
+    .expect("write config");
+    let config = AgentConfig::load(&config_path).expect("config");
+
+    let provider = config.command_provider();
+    let profile = provider
+        .macos_sandbox_profile_for_testing(dir.path(), std::path::Path::new("/bin/sh"))
+        .expect("profile");
+
+    for path in [
+        &prompt_path,
+        &extra_prompt_path,
+        &self_prompt_path,
+        &requested_prompt_path,
+    ] {
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* (literal "{}"))"#,
+            path.canonicalize().expect("canonical prompt").display()
+        )));
+    }
+}
+
 #[test]
 fn parses_github_discovery_config_from_toml() {
     let config = AgentConfig::from_toml(

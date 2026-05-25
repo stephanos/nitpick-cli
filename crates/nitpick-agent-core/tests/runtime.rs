@@ -1,9 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use nitpick_agent_core::{
     ActivityKind, ActivityOutput, ActivityStatus, AgentProvider, AgentResult, AgentRuntime,
     AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, MemoryActivityStore,
-    ReviewComment, ReviewInput, ReviewOutput, ReviewSubject,
+    ProviderLogSink, ReviewComment, ReviewInput, ReviewOutput, ReviewSubject,
 };
 
 #[derive(Default)]
@@ -59,6 +62,40 @@ impl AgentProvider for RecordingProvider {
         session.provider_session_id = Some("provider-chat-session".into());
 
         Ok(format!("answered {}", input.prompt))
+    }
+}
+
+struct StreamingProvider;
+
+impl AgentProvider for StreamingProvider {
+    fn review_with_log_sink(
+        &self,
+        session: &mut AgentSession,
+        _input: &ReviewInput,
+        log_sink: &dyn ProviderLogSink,
+    ) -> AgentResult<ReviewOutput> {
+        session.messages.push(nitpick_agent_core::AgentMessage {
+            role: "provider.stdout".into(),
+            content: "session-start\n".into(),
+        });
+        log_sink.append_stdout(b"streamed stdout\n")?;
+        log_sink.append_stderr(b"streamed stderr\n")?;
+        std::thread::sleep(Duration::from_millis(250));
+        Ok(ReviewOutput {
+            comments: Vec::new(),
+        })
+    }
+
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        unreachable!("runtime should pass a provider log sink")
+    }
+
+    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+        unreachable!("chat is not used in this test")
     }
 }
 
@@ -139,6 +176,51 @@ fn review_activity_runs_provider_and_persists_completion() {
             body: "Prefer a local artifact before syncing acme/platform.".into(),
         })
     );
+}
+
+#[test]
+fn review_activity_persists_provider_logs_while_provider_is_running() {
+    let provider = Arc::new(StreamingProvider);
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+    let activity = runtime
+        .create_review_activity(&ReviewInput::default())
+        .expect("activity");
+    let activity_id = activity.id.clone();
+    let runtime_thread = std::thread::spawn(move || {
+        runtime
+            .run_review(activity, ReviewInput::default())
+            .expect("review")
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let persisted = store.get(&activity_id).expect("persisted activity");
+        let stdout = persisted
+            .session
+            .messages
+            .iter()
+            .find(|message| message.role == "provider.stdout")
+            .map(|message| message.content.as_str());
+        let stderr = persisted
+            .session
+            .messages
+            .iter()
+            .find(|message| message.role == "provider.stderr")
+            .map(|message| message.content.as_str());
+        if stdout == Some("streamed stdout") && stderr == Some("streamed stderr") {
+            assert_eq!(persisted.status, ActivityStatus::Running);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "provider logs were not persisted while running"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let activity = runtime_thread.join().expect("runtime thread");
+    assert_eq!(activity.status, ActivityStatus::Completed);
 }
 
 #[test]
