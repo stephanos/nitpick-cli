@@ -153,7 +153,11 @@ fn format_provider_logs(activity: &Activity) -> Option<String> {
         .session
         .messages
         .iter()
-        .filter(|message| message.role == "provider.stdout" || message.role == "provider.stderr")
+        .filter(|message| {
+            message.role == "provider.stdout"
+                || message.role == "provider.stderr"
+                || message.role == "provider.sandbox"
+        })
         .map(|message| {
             format!(
                 "{}\n{}",
@@ -526,11 +530,15 @@ mod tests {
                 role: "provider.stderr".into(),
                 content: "warning".into(),
             },
+            nitpick_agent_core::AgentMessage {
+                role: "provider.sandbox".into(),
+                content: "retry with --no-sandbox".into(),
+            },
         ];
 
         assert_eq!(
             super::format_activity_debug_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n\nArtifacts\n  none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n\nArtifacts\n  none"
         );
     }
 

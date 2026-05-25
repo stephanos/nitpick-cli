@@ -8,7 +8,7 @@ use std::{
 use crate::{
     AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
     ChatInput, REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
-    validate_review_output_file_for_diff,
+    macos_sandbox::SandboxProfileBuilder, validate_review_output_file_for_diff,
 };
 
 const MAX_PROVIDER_LOG_BYTES: usize = 64 * 1024;
@@ -186,15 +186,19 @@ impl CommandAgentProvider {
         record_provider_logs(session, &output.stdout, &output.stderr);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            if sandbox.enabled {
+                record_provider_sandbox_diagnostic(session, output.status, &stderr);
+            }
             return Err(AgentError::provider(format!(
-                "{} provider command failed with status {}{}",
+                "{} provider command failed with status {}{}{}",
                 self.kind,
                 output.status,
                 if stderr.is_empty() {
                     String::new()
                 } else {
                     format!(": {stderr}")
-                }
+                },
+                sandbox_failure_hint(sandbox.enabled)
             )));
         }
 
@@ -361,6 +365,17 @@ fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]
     push_provider_log(session, "provider.stderr", stderr);
 }
 
+fn record_provider_sandbox_diagnostic(
+    session: &mut AgentSession,
+    status: std::process::ExitStatus,
+    stderr: &str,
+) {
+    session.messages.push(AgentMessage {
+        role: "provider.sandbox".into(),
+        content: sandbox_diagnostic(status, stderr),
+    });
+}
+
 fn push_provider_log(session: &mut AgentSession, role: &str, bytes: &[u8]) {
     let content = bounded_provider_log(bytes);
     if content.is_empty() {
@@ -380,6 +395,30 @@ fn bounded_provider_log(bytes: &[u8]) -> String {
         value = format!("[truncated to last {MAX_PROVIDER_LOG_BYTES} bytes]\n{value}");
     }
     value
+}
+
+fn sandbox_failure_hint(sandbox_enabled: bool) -> String {
+    if sandbox_enabled {
+        "; sandbox was enabled, retry with --no-sandbox to confirm whether this is a sandbox denial"
+            .into()
+    } else {
+        String::new()
+    }
+}
+
+fn sandbox_diagnostic(status: std::process::ExitStatus, stderr: &str) -> String {
+    let mut lines = vec![
+        format!("sandboxed provider command failed with status {status}"),
+        "retry with --no-sandbox to confirm whether the macOS sandbox is blocking the provider"
+            .into(),
+    ];
+    if stderr.trim().is_empty() {
+        lines.push("provider stderr was empty".into());
+    } else {
+        lines.push("provider stderr:".into());
+        lines.push(stderr.trim().into());
+    }
+    lines.join("\n")
 }
 
 impl AgentProvider for CommandAgentProvider {
@@ -680,87 +719,88 @@ fn macos_sandbox_profile(
     let repo_dir = repo_dir
         .canonicalize()
         .map_err(|error| AgentError::sandbox(format!("canonicalize sandbox repo dir: {error}")))?;
-    let repo = escape_sandbox_string(&repo_dir.to_string_lossy());
     let command = provider_command
         .canonicalize()
         .unwrap_or_else(|_| provider_command.to_path_buf());
-    let command = escape_sandbox_string(&command.to_string_lossy());
-    let extra_reads = sandbox
-        .extra_read_paths
-        .iter()
-        .map(|path| sandbox_literal_rule("file-read*", path))
-        .collect::<String>();
-    let extra_read_writes = sandbox
-        .extra_read_write_paths
-        .iter()
-        .map(|path| sandbox_subpath_rule("file-read* file-write*", path))
-        .collect::<String>();
-    let provider_runtime_paths = provider_runtime_sandbox_rules();
-    Ok(format!(
-        r#"(version 1)
-(deny default)
-(allow process*)
-(allow network*)
-(allow sysctl-read)
-(allow file-read-metadata)
-(allow file-read* file-write* (literal "/dev/null"))
-(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (literal "{command}"))
-(allow file-read* file-write* (subpath "{repo}"))
-{provider_runtime_paths}{extra_reads}{extra_read_writes}
-"#
-    ))
+    Ok(SandboxProfileBuilder::new()
+        .allow_processes()
+        .allow_mach_lookup()
+        .allow_network()
+        .allow_sysctl_read()
+        .allow_file_read_metadata()
+        .allow_device_runtime()
+        .allow_macos_runtime()
+        .allow_literal_read(&command)
+        .allow_read_write(&repo_dir)
+        .allow_reads(&provider_runtime_read_paths())
+        .allow_read_writes(&provider_runtime_read_write_paths())
+        .allow_literal_reads(&sandbox.extra_read_paths)
+        .allow_read_writes(&sandbox.extra_read_write_paths)
+        .render())
 }
 
 #[cfg(target_os = "macos")]
-fn provider_runtime_sandbox_rules() -> String {
-    let mut rules = String::new();
+fn provider_runtime_read_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     for path in [Path::new("/opt/homebrew"), Path::new("/usr/local")] {
         if path.exists() {
-            rules.push_str(&sandbox_subpath_rule("file-read*", path));
+            paths.push(path.to_path_buf());
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        for path in [
-            home.join(".claude"),
+        paths.extend([
             home.join(".config").join("claude"),
             home.join(".local").join("share").join("claude"),
             home.join("Library")
                 .join("Application Support")
                 .join("Claude"),
-            home.join("Library").join("Caches").join("Claude"),
-        ] {
-            rules.push_str(&sandbox_subpath_rule("file-read* file-write*", &path));
-        }
+            home.join("Library").join("Keychains"),
+        ]);
     }
-    rules.push_str(&sandbox_subpath_rule(
-        "file-read* file-write*",
-        &std::env::temp_dir(),
-    ));
-    rules
+    paths
 }
 
 #[cfg(target_os = "macos")]
-fn sandbox_literal_rule(operation: &str, path: &Path) -> String {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let path = escape_sandbox_string(&path.to_string_lossy());
-    format!(r#"(allow {operation} (literal "{path}"))"#) + "\n"
-}
-
-#[cfg(target_os = "macos")]
-fn sandbox_subpath_rule(operation: &str, path: &Path) -> String {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let path = escape_sandbox_string(&path.to_string_lossy());
-    format!(r#"(allow {operation} (subpath "{path}"))"#) + "\n"
-}
-
-#[cfg(target_os = "macos")]
-fn escape_sandbox_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+fn provider_runtime_read_write_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        paths.extend([
+            home.join(".claude"),
+            home.join(".cache"),
+            home.join(".npm"),
+            home.join("Library").join("Caches").join("Claude"),
+        ]);
+    }
+    paths.push(std::env::temp_dir());
+    paths
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_diagnostic_mentions_no_sandbox_retry() {
+        let command = if cfg!(target_os = "windows") {
+            "cmd"
+        } else {
+            "sh"
+        };
+        let status = std::process::Command::new(command)
+            .arg(if cfg!(target_os = "windows") {
+                "/C"
+            } else {
+                "-c"
+            })
+            .arg("exit 6")
+            .status()
+            .expect("status");
+
+        assert!(sandbox_failure_hint(true).contains("--no-sandbox"));
+        assert_eq!(sandbox_failure_hint(false), "");
+        assert!(sandbox_diagnostic(status, "").contains("provider stderr was empty"));
+        assert!(sandbox_diagnostic(status, "").contains("--no-sandbox"));
+    }
 
     #[test]
     fn macos_sandbox_profile_includes_review_tool_paths() {
@@ -822,12 +862,25 @@ mod tests {
             macos_sandbox_profile(&repo_dir, &provider_command, &sandbox).expect("profile");
 
         let home = std::env::var("HOME").expect("home");
-        assert!(profile.contains(&format!(r#"(subpath "{home}/.claude")"#)));
-        assert!(profile.contains(&format!(r#"(subpath "{home}/.local/share/claude")"#)));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* (subpath "{home}/.local/share/claude"))"#
+        )));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* (subpath "{home}/Library/Keychains"))"#
+        )));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* file-write* (subpath "{home}/.claude"))"#
+        )));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* file-write* (subpath "{home}/.cache"))"#
+        )));
         assert!(profile.contains(&format!(
             r#"(subpath "{}")"#,
             std::env::temp_dir().canonicalize().expect("temp dir").display()
         )));
+        assert!(profile.contains(r#"(allow mach-lookup)"#));
+        assert!(profile.contains(r#"(literal "/dev/urandom")"#));
+        assert!(profile.contains(r#"(subpath "/private/etc")"#));
         assert!(profile.contains(r#"(subpath "/opt/homebrew")"#));
         assert!(profile.contains(r#"(subpath "/usr/local")"#));
     }

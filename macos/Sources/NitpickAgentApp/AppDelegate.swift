@@ -400,7 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func activityProviderLogDetails(_ activity: ActivitySnapshot) -> String? {
         let logs: [String] = activity.session?.messages
             .filter { message in
-                message.role == "provider.stdout" || message.role == "provider.stderr"
+                message.role == "provider.stdout"
+                    || message.role == "provider.stderr"
+                    || message.role == "provider.sandbox"
             }
             .map { message in
                 let label = message.role.replacingOccurrences(of: "provider.", with: "")

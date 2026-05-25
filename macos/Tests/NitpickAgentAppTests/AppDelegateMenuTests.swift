@@ -209,6 +209,10 @@ final class AppDelegateMenuTests: XCTestCase {
                         role: "provider.stderr",
                         content: "warning"
                     ),
+                    ActivityMessageSnapshot(
+                        role: "provider.sandbox",
+                        content: "retry with --no-sandbox"
+                    ),
                 ]
             ),
             createdAtUnix: 1_000,
@@ -221,7 +225,7 @@ final class AppDelegateMenuTests: XCTestCase {
         )
         XCTAssertEqual(
             appDelegate.activityProviderLogDetailsForTesting(activity),
-            "stdout\n  review progress\n  no findings\nstderr\n  warning"
+            "stdout\n  review progress\n  no findings\nstderr\n  warning\nsandbox\n  retry with --no-sandbox"
         )
     }
 }

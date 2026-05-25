@@ -329,10 +329,12 @@ fn format_unix_iso_utc(timestamp: u64) -> String {
 
 fn format_review_started(activity: &Activity, subject: &str) -> String {
     format!(
-        "review {}  {}\n  {}  nitpick review show {subject}\n  {}  nitpick review list --status active",
+        "review {}  {}\n  {}  nitpick review show {subject}\n  {}   nitpick debug logs {}\n  {}  nitpick review list --status active",
         crate::style::status_lower(&activity.status),
         crate::style::label(activity.id.to_string()),
         crate::style::label("status"),
+        crate::style::label("debug"),
+        activity.id,
         crate::style::label("active")
     )
 }
@@ -373,7 +375,7 @@ mod tests {
 
         assert_eq!(
             format_review_started(&activity, "acme/platform#42"),
-            "review \u{1b}[34mrunning\u{1b}[0m  \u{1b}[2mactivity-7\u{1b}[0m\n  \u{1b}[2mstatus\u{1b}[0m  nitpick review show acme/platform#42\n  \u{1b}[2mactive\u{1b}[0m  nitpick review list --status active"
+            "review \u{1b}[34mrunning\u{1b}[0m  \u{1b}[2mactivity-7\u{1b}[0m\n  \u{1b}[2mstatus\u{1b}[0m  nitpick review show acme/platform#42\n  \u{1b}[2mdebug\u{1b}[0m   nitpick debug logs activity-7\n  \u{1b}[2mactive\u{1b}[0m  nitpick review list --status active"
         );
     }
 
