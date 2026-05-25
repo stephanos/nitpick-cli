@@ -954,7 +954,14 @@ impl HostDaemon {
             .collect::<AgentResult<Vec<_>>>()?;
         let new_requests = deduplicate_review_requests(new_requests);
         for request in &new_requests {
-            self.record_review_request_detected_activity(request)?;
+            let activity = self.record_review_request_detected_activity(request)?;
+            if !self.config.github_discovery.auto_review {
+                self.processed_reviews.mark_processed_at(
+                    request,
+                    Some(activity.id.to_string()),
+                    now,
+                )?;
+            }
         }
         if !self.config.github_discovery.auto_review {
             return Ok(ReviewSourcePollResult {

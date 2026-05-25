@@ -10,7 +10,7 @@ use nitpick_agent_core::{
     ReviewOutput, ReviewRequest, ReviewSource, SessionStatus,
 };
 use nitpick_agent_github::PullRequestRef;
-use nitpick_agent_host::{AgentConfig, HostDaemon};
+use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon};
 
 #[test]
 fn host_status_reports_current_activity_count() {
@@ -157,6 +157,46 @@ fn daemon_records_completed_checkout_cleanup_activity() {
             .label
             .as_deref(),
         Some("acme/platform#42 cleaned up")
+    );
+}
+
+#[test]
+fn discovery_poll_does_not_relog_seen_requests_after_restart() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let processed = Arc::new(MemoryProcessedReviewStore::default());
+    let config = AgentConfig {
+        github_discovery: GitHubDiscoveryConfig {
+            enabled: true,
+            auto_review: false,
+            ..GitHubDiscoveryConfig::default()
+        },
+        ..AgentConfig::default()
+    };
+    let first = HostDaemon::with_dependencies(
+        store.clone(),
+        config.clone(),
+        processed.clone(),
+        Arc::new(NoFindingsProvider),
+        Arc::new(SingleReviewSource),
+        Arc::new(FixedClock(1_000)),
+    );
+    first.poll_review_requests().expect("first poll");
+
+    let restarted = HostDaemon::with_dependencies(
+        store.clone(),
+        config,
+        processed,
+        Arc::new(NoFindingsProvider),
+        Arc::new(SingleReviewSource),
+        Arc::new(FixedClock(2_000)),
+    );
+    restarted.poll_review_requests().expect("restart poll");
+
+    let activities = store.list().expect("activities");
+    assert_eq!(activities.len(), 1);
+    assert_eq!(
+        activities[0].label.as_deref(),
+        Some("review request acme/platform#42")
     );
 }
 
@@ -446,5 +486,27 @@ impl ReviewSource for EmptyReviewSource {
 
     fn review_input(&self, _request: &ReviewRequest) -> AgentResult<ReviewInput> {
         Ok(ReviewInput::default())
+    }
+}
+
+struct SingleReviewSource;
+
+impl ReviewSource for SingleReviewSource {
+    fn name(&self) -> &'static str {
+        "single"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        Ok(vec![ReviewRequest {
+            source: "github".into(),
+            repository: "acme/platform".into(),
+            number: Some(42),
+            id: "42".into(),
+            head_sha: "sha-one".into(),
+        }])
+    }
+
+    fn review_input(&self, _request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        Ok(review_input_for_head("sha-one"))
     }
 }
