@@ -100,6 +100,12 @@ fn format_activity_logs_with_options(
     ];
     if let Some(review) = review_shorthand(activity) {
         rows.push(vec![crate::style::label("review"), review.into()]);
+        if let Some(url) = review_url(review) {
+            rows.push(vec![
+                crate::style::label("url"),
+                crate::style::hyperlink(&url, &url),
+            ]);
+        }
     }
     rows.push(vec![
         crate::style::label("status"),
@@ -203,6 +209,14 @@ fn review_shorthand(activity: &Activity) -> Option<&str> {
         .label
         .as_deref()
         .and_then(|label| label.strip_prefix("review on "))
+}
+
+fn review_url(review: &str) -> Option<String> {
+    let reference = review.parse::<PullRequestRef>().ok()?;
+    Some(format!(
+        "https://github.com/{}/{}/pull/{}",
+        reference.owner, reference.repo, reference.number
+    ))
 }
 
 fn format_review_activity(activity: &Activity) -> String {
@@ -490,7 +504,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nOutput\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body\n\nArtifacts\n  \u{1b}[2mid\u{1b}[0m          \u{1b}[2mkind\u{1b}[0m           \u{1b}[2mcontent\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary  artifact summary"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/acme/platform/pull/42\u{1b}\\https://github.com/acme/platform/pull/42\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nOutput\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body\n\nArtifacts\n  \u{1b}[2mid\u{1b}[0m          \u{1b}[2mkind\u{1b}[0m           \u{1b}[2mcontent\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary  artifact summary"
         );
     }
 
@@ -508,7 +522,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nArtifacts\n  none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/stephanos/subvoc/pull/1\u{1b}\\https://github.com/stephanos/subvoc/pull/1\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nArtifacts\n  none"
         );
     }
 

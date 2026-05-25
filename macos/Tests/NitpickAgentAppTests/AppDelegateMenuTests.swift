@@ -228,4 +228,29 @@ final class AppDelegateMenuTests: XCTestCase {
             "stdout\n  review progress\n  no findings\nstderr\n  warning\nsandbox\n  retry with --no-sandbox"
         )
     }
+
+    @MainActor
+    func testReviewActivityDetailsExposeClickableReviewLink() throws {
+        let appDelegate = AppDelegate()
+        let activity = ActivitySnapshot(
+            id: "activity-13",
+            kind: "Review",
+            status: "Completed",
+            label: "review on temporalio/temporal#10384",
+            createdAtUnix: 1_000,
+            updatedAtUnix: 1_017
+        )
+
+        let link = try XCTUnwrap(appDelegate.activityReviewLinkFieldForTesting(activity))
+        XCTAssertEqual(link.stringValue, "temporalio/temporal#10384")
+
+        var effectiveRange = NSRange(location: 0, length: 0)
+        let value = link.attributedStringValue.attribute(
+            .link,
+            at: 0,
+            effectiveRange: &effectiveRange
+        ) as? URL
+        XCTAssertEqual(value?.absoluteString, "https://github.com/temporalio/temporal/pull/10384")
+        XCTAssertEqual(effectiveRange, NSRange(location: 0, length: link.stringValue.count))
+    }
 }

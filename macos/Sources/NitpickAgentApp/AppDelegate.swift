@@ -376,8 +376,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = activity.label ?? activity.kind
         alert.informativeText = activityDetailText(activity)
-        if let providerLogDetails = activityProviderLogDetails(activity) {
-            alert.accessoryView = makeScrollableDetailsView(providerLogDetails)
+        if let accessoryView = activityDetailsAccessoryView(activity) {
+            alert.accessoryView = accessoryView
         }
         alert.alertStyle = activity.status == "Error" ? .warning : .informational
         alert.addButton(withTitle: "OK")
@@ -395,6 +395,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lines.append(error)
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func activityDetailsAccessoryView(_ activity: ActivitySnapshot) -> NSView? {
+        let reviewLinkField = activityReviewLinkField(activity)
+        let providerLogView = activityProviderLogDetails(activity).map(makeScrollableDetailsView)
+        guard reviewLinkField != nil || providerLogView != nil else {
+            return nil
+        }
+        guard let reviewLinkField, let providerLogView else {
+            return reviewLinkField ?? providerLogView
+        }
+
+        let stackView = NSStackView(views: [reviewLinkField, providerLogView])
+        stackView.orientation = .vertical
+        stackView.alignment = .leading
+        stackView.spacing = 8
+        stackView.setFrameSize(NSSize(
+            width: agentErrorDetailsViewSize.width,
+            height: reviewLinkField.intrinsicContentSize.height + stackView.spacing + agentErrorDetailsViewSize.height
+        ))
+        return stackView
+    }
+
+    private func activityReviewLinkField(_ activity: ActivitySnapshot) -> NSTextField? {
+        guard let reviewLink = activityReviewLink(activity) else {
+            return nil
+        }
+        let field = NSTextField(wrappingLabelWithString: reviewLink.display)
+        field.isSelectable = true
+        field.allowsEditingTextAttributes = true
+        field.attributedStringValue = NSAttributedString(
+            string: reviewLink.display,
+            attributes: [
+                .link: reviewLink.url,
+                .foregroundColor: NSColor.linkColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ]
+        )
+        field.toolTip = reviewLink.url.absoluteString
+        field.setFrameSize(NSSize(
+            width: agentErrorDetailsViewSize.width,
+            height: field.intrinsicContentSize.height
+        ))
+        return field
+    }
+
+    private func activityReviewLink(_ activity: ActivitySnapshot) -> ActivityReviewLink? {
+        guard activity.kind == "Review", let label = activity.label else {
+            return nil
+        }
+        let pattern = #"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([0-9]+)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: label,
+                range: NSRange(label.startIndex..<label.endIndex, in: label)
+              ),
+              let repositoryRange = Range(match.range(at: 1), in: label),
+              let numberRange = Range(match.range(at: 2), in: label)
+        else {
+            return nil
+        }
+
+        let repository = String(label[repositoryRange])
+        let number = String(label[numberRange])
+        return ActivityReviewLink(
+            display: "\(repository)#\(number)",
+            url: URL(string: "https://github.com/\(repository)/pull/\(number)")!
+        )
     }
 
     private func activityProviderLogDetails(_ activity: ActivitySnapshot) -> String? {
@@ -551,6 +619,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private struct ActivityReviewLink {
+    var display: String
+    var url: URL
+}
+
 #if DEBUG
 extension AppDelegate {
     func makeMenuForTesting() -> NSMenu {
@@ -604,6 +677,10 @@ extension AppDelegate {
 
     func activityProviderLogDetailsForTesting(_ activity: ActivitySnapshot) -> String? {
         activityProviderLogDetails(activity)
+    }
+
+    func activityReviewLinkFieldForTesting(_ activity: ActivitySnapshot) -> NSTextField? {
+        activityReviewLinkField(activity)
     }
 }
 #endif

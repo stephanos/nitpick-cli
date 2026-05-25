@@ -41,6 +41,10 @@ pub(crate) fn warn(value: impl std::fmt::Display) -> String {
     colorize(value, anstyle::AnsiColor::Yellow.on_default())
 }
 
+pub(crate) fn hyperlink(label: impl std::fmt::Display, url: impl std::fmt::Display) -> String {
+    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
+}
+
 pub(crate) fn table(rows: Vec<Vec<String>>) -> String {
     use tabled::{
         builder::Builder,
