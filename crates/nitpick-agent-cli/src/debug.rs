@@ -103,7 +103,12 @@ pub fn run(
                 .map_err(CliError::from)?;
             let config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
                 .map_err(CliError::from)?;
-            print_provider_diagnostic_start(&config, provider.as_ref(), model.as_deref(), options.disable_sandbox)?;
+            print_provider_diagnostic_start(
+                &config,
+                provider.as_ref(),
+                model.as_deref(),
+                options.disable_sandbox,
+            )?;
             let activity = client.provider_diagnostic(&ProviderDiagnosticInput {
                 repo_dir: context.repo_dir,
                 provider,
@@ -131,31 +136,17 @@ fn print_provider_diagnostic_start(
         .command
         .as_deref()
         .unwrap_or_else(|| provider.as_str());
-    let model = model
-        .or(config.model.as_deref())
-        .unwrap_or("(default)");
+    let model = model.or(config.model.as_deref()).unwrap_or("(default)");
     let sandbox = if sandbox_disabled {
         "none (--no-sandbox)"
     } else {
         config.sandbox.mode.as_str()
     };
     let rows = vec![
-        vec![
-            crate::style::label("provider"),
-            provider.as_str().into(),
-        ],
-        vec![
-            crate::style::label("command"),
-            command.into(),
-        ],
-        vec![
-            crate::style::label("model"),
-            model.into(),
-        ],
-        vec![
-            crate::style::label("sandbox"),
-            sandbox.into(),
-        ],
+        vec![crate::style::label("provider"), provider.as_str().into()],
+        vec![crate::style::label("command"), command.into()],
+        vec![crate::style::label("model"), model.into()],
+        vec![crate::style::label("sandbox"), sandbox.into()],
         vec![
             crate::style::label("prompt"),
             "Hi. Reply with exactly: OK".into(),
