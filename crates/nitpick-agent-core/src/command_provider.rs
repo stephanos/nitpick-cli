@@ -462,7 +462,7 @@ fn new_sandbox_log_tag() -> String {
 #[cfg(target_os = "macos")]
 fn recent_sandbox_violations(log_tag: &str) -> Vec<String> {
     std::thread::sleep(std::time::Duration::from_millis(150));
-    let predicate = format!(r#"eventMessage CONTAINS "{log_tag}""#);
+    let predicate = format!(r#"eventMessage CONTAINS "{log_tag}" AND process != "log""#);
     let output = Command::new("/usr/bin/log")
         .args(["show", "--last", "2m", "--style", "compact", "--predicate"])
         .arg(predicate)
@@ -473,10 +473,24 @@ fn recent_sandbox_violations(log_tag: &str) -> Vec<String> {
     if !output.status.success() {
         return Vec::new();
     }
-    bounded_provider_log(&output.stdout)
+    sandbox_violation_lines(&bounded_provider_log(&output.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn sandbox_violation_lines(output: &str) -> Vec<String> {
+    output
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("Timestamp ")
+                && !line.contains(" log[")
+                && !line.contains("log run noninteractively")
+                && (line.contains("Sandbox:")
+                    || line.contains("deny(")
+                    || line.contains(" deny ")
+                    || line.contains("Violation:"))
+        })
         .take(20)
         .map(ToOwned::to_owned)
         .collect()
@@ -873,6 +887,21 @@ mod tests {
         assert!(
             sandbox_diagnostic(status, "", &["Sandbox: deny file-read-data".into()])
                 .contains("matching macOS sandbox violations")
+        );
+    }
+
+    #[test]
+    fn sandbox_violation_lines_ignores_log_query_output() {
+        let output = r#"Timestamp               Ty Process[PID:TID]
+2026-05-25 14:25:36.543 Df log[78270:22db5d] [com.apple.log:] log run noninteractively, parent: 75368 (nitpick-agent-host), args: '/usr/bin/log' 'show' '--last' '2m' '--style' 'compact' '--predicate' 'eventMessage CONTAINS "NITPICK_SANDBOX_1"'
+2026-05-25 14:25:36.544 Df kernel[0:0] Sandbox: claude(123) deny(1) file-read-data /private/var/db/mds NITPICK_SANDBOX_1
+"#;
+
+        assert_eq!(
+            sandbox_violation_lines(output),
+            vec![
+                "2026-05-25 14:25:36.544 Df kernel[0:0] Sandbox: claude(123) deny(1) file-read-data /private/var/db/mds NITPICK_SANDBOX_1"
+            ]
         );
     }
 
