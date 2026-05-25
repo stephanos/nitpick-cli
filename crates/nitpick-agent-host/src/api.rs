@@ -7,8 +7,8 @@ use axum::{
 };
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, AgentError, AgentResult, Artifact,
-    ArtifactId, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, HostStatus, ReviewInput,
-    ReviewRequest,
+    ArtifactId, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, HostStatus,
+    LocalStateResetResult, ReviewInput, ReviewRequest,
 };
 use nitpick_agent_github::DiscoveredPullRequest;
 use serde::Deserialize;
@@ -32,6 +32,7 @@ pub fn api_router(daemon: HostDaemon) -> Router {
         .route("/artifacts/{id}/sync-state", post(artifact_sync_state))
         .route("/artifacts/{id}/sync", post(artifact_sync))
         .route("/maintenance/cleanup-checkouts", post(cleanup_checkouts))
+        .route("/system/reset", post(reset_local_state))
         .route("/reviews", post(review))
         .route("/chats", post(chat))
         .with_state(daemon)
@@ -254,10 +255,22 @@ async fn cleanup_checkouts(
     Ok(Json(daemon.cleanup_checkouts()?))
 }
 
+async fn reset_local_state(
+    State(daemon): State<HostDaemon>,
+    Json(input): Json<ResetLocalStateInput>,
+) -> Result<Json<LocalStateResetResult>, ApiError> {
+    Ok(Json(daemon.reset_local_state(input.force)?))
+}
+
 #[derive(Deserialize)]
 struct ArtifactSyncInput {
     destination: String,
     target: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResetLocalStateInput {
+    force: bool,
 }
 
 async fn review(

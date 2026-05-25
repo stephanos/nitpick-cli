@@ -6,6 +6,11 @@ pub(crate) struct ArtifactSyncInput<'a> {
     pub(crate) target: Option<&'a str>,
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct ResetLocalStateInput {
+    pub(crate) force: bool,
+}
+
 pub(crate) fn request_host(
     agent: &ureq::Agent,
     addr: &str,

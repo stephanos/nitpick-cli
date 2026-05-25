@@ -37,6 +37,8 @@ pub trait ArtifactStore: Send + Sync {
         id: &ArtifactId,
         sync_state: ArtifactSyncState,
     ) -> AgentResult<Artifact>;
+
+    fn clear_artifacts(&self) -> AgentResult<usize>;
 }
 
 pub trait ActivityStore: ArtifactStore + Send + Sync {
@@ -49,6 +51,8 @@ pub trait ActivityStore: ArtifactStore + Send + Sync {
     fn list(&self) -> AgentResult<Vec<Activity>>;
 
     fn delete(&self, id: &ActivityId) -> AgentResult<()>;
+
+    fn clear_activities(&self) -> AgentResult<usize>;
 }
 
 #[derive(Default)]
@@ -100,6 +104,14 @@ impl MemoryActivityStore {
     ) -> AgentResult<Artifact> {
         <Self as ArtifactStore>::update_artifact_sync_state(self, id, sync_state)
     }
+
+    pub fn clear_activities(&self) -> AgentResult<usize> {
+        <Self as ActivityStore>::clear_activities(self)
+    }
+
+    pub fn clear_artifacts(&self) -> AgentResult<usize> {
+        <Self as ArtifactStore>::clear_artifacts(self)
+    }
 }
 
 impl ActivityStore for MemoryActivityStore {
@@ -150,6 +162,16 @@ impl ActivityStore for MemoryActivityStore {
             .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
         artifacts.retain(|_, artifact| &artifact.activity_id != id);
         Ok(())
+    }
+
+    fn clear_activities(&self) -> AgentResult<usize> {
+        let mut activities = self
+            .activities
+            .lock()
+            .map_err(|_| AgentError::io("activity store lock", "poisoned"))?;
+        let count = activities.len();
+        activities.clear();
+        Ok(count)
     }
 }
 
@@ -226,6 +248,16 @@ impl ArtifactStore for MemoryActivityStore {
         artifact.sync_state = sync_state;
         Ok(artifact.clone())
     }
+
+    fn clear_artifacts(&self) -> AgentResult<usize> {
+        let mut artifacts = self
+            .artifacts
+            .lock()
+            .map_err(|_| AgentError::io("artifact store lock", "poisoned"))?;
+        let count = artifacts.len();
+        artifacts.clear();
+        Ok(count)
+    }
 }
 
 pub struct FsActivityStore {
@@ -268,6 +300,14 @@ impl FsActivityStore {
         sync_state: ArtifactSyncState,
     ) -> AgentResult<Artifact> {
         <Self as ArtifactStore>::update_artifact_sync_state(self, id, sync_state)
+    }
+
+    pub fn clear_activities(&self) -> AgentResult<usize> {
+        <Self as ActivityStore>::clear_activities(self)
+    }
+
+    pub fn clear_artifacts(&self) -> AgentResult<usize> {
+        <Self as ArtifactStore>::clear_artifacts(self)
     }
 }
 
@@ -331,6 +371,10 @@ impl ActivityStore for FsActivityStore {
         }
         Ok(())
     }
+
+    fn clear_activities(&self) -> AgentResult<usize> {
+        clear_json_dir(&activity_dir(&self.base))
+    }
 }
 
 impl ArtifactStore for FsActivityStore {
@@ -383,6 +427,23 @@ impl ArtifactStore for FsActivityStore {
         write_json_atomic(&artifact_path(&self.base, id), &artifact)?;
         Ok(artifact)
     }
+
+    fn clear_artifacts(&self) -> AgentResult<usize> {
+        clear_json_dir(&artifact_dir(&self.base))
+    }
+}
+
+fn clear_json_dir(dir: &Path) -> AgentResult<usize> {
+    fs::create_dir_all(dir).map_err(fs_error("create clear dir"))?;
+    let mut count = 0;
+    for entry in fs::read_dir(dir).map_err(fs_error("read clear dir"))? {
+        let path = entry.map_err(fs_error("read clear dir entry"))?.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            fs::remove_file(&path).map_err(fs_error("clear json file"))?;
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn activity_dir(base: &Path) -> PathBuf {

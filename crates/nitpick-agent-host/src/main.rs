@@ -112,6 +112,7 @@ fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(false)
         .try_init();
 }
 
@@ -130,7 +131,8 @@ fn build_daemon() -> Result<(HostDaemon, PathBuf, PathBuf), String> {
         Arc::new(store),
         config,
         Arc::new(processed_reviews),
-    );
+    )
+    .with_data_dir(data_dir.clone());
     daemon
         .recover_interrupted_activities()
         .map_err(|error| error.to_string())?;

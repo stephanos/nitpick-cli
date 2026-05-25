@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use nitpick_agent_core::{
-    Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, ReviewInput, ReviewRequest,
-    parse_json_str,
+    Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult,
+    ReviewInput, ReviewRequest, parse_json_str,
 };
 
 use crate::{
     HostClientError, HostClientResult,
-    transport::{ArtifactSyncInput, request_host},
+    transport::{ArtifactSyncInput, ResetLocalStateInput, request_host},
 };
 
 const HOST_CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -133,6 +133,10 @@ impl HostClient {
 
     pub fn cleanup_checkouts(&self) -> HostClientResult<CleanupCheckoutsResult> {
         self.post_json("/maintenance/cleanup-checkouts", &serde_json::json!({}))
+    }
+
+    pub fn reset_local_state(&self, force: bool) -> HostClientResult<LocalStateResetResult> {
+        self.post_json("/system/reset", &ResetLocalStateInput { force })
     }
 
     fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> HostClientResult<T> {

@@ -95,6 +95,22 @@ impl PollingState {
             .map_err(|_| AgentError::io("polling state lock", "poisoned"))? = Some(now);
         Ok(())
     }
+
+    pub(crate) fn clear(&self) -> AgentResult<()> {
+        *self
+            .last_poll_unix
+            .lock()
+            .map_err(|_| AgentError::io("polling state lock", "poisoned"))? = None;
+        *self
+            .last_poll_summary
+            .lock()
+            .map_err(|_| AgentError::io("polling state lock", "poisoned"))? = None;
+        *self
+            .open_review_count
+            .lock()
+            .map_err(|_| AgentError::io("polling state lock", "poisoned"))? = 0;
+        Ok(())
+    }
 }
 
 fn review_source_error_summary(error: &str) -> String {

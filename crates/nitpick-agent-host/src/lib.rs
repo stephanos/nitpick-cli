@@ -16,9 +16,10 @@ use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentError,
     AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
     ArtifactId, ArtifactSyncDestination, ArtifactSyncState, ChatInput, CleanupCheckoutsResult,
-    Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus, MemoryProcessedReviewStore,
-    ProcessedReviewStore, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource,
-    ReviewToolConfig, SessionStatus, SystemClock, first_changed_file_for_diff,
+    Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus, LocalStateResetResult,
+    MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput, ReviewMode, ReviewOutput,
+    ReviewRequest, ReviewSource, ReviewToolConfig, SessionStatus, SystemClock, default_data_dir,
+    first_changed_file_for_diff,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -194,6 +195,7 @@ pub struct HostDaemon {
     review_source: Arc<dyn ReviewSource>,
     clock: Arc<dyn Clock>,
     automatic_checkout_cleanup: bool,
+    data_dir: PathBuf,
     polling_state: PollingState,
     review_slots: ReviewSlotManager,
 }
@@ -215,6 +217,7 @@ impl HostDaemon {
             review_source,
             clock: Arc::new(SystemClock),
             automatic_checkout_cleanup: true,
+            data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_slots: ReviewSlotManager::new(max_concurrent),
         }
@@ -236,6 +239,7 @@ impl HostDaemon {
             review_source,
             clock: Arc::new(SystemClock),
             automatic_checkout_cleanup: true,
+            data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_slots: ReviewSlotManager::new(max_concurrent),
         }
@@ -255,6 +259,7 @@ impl HostDaemon {
             review_source,
             clock,
             automatic_checkout_cleanup: false,
+            data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_slots: ReviewSlotManager::new(max_concurrent),
         }
@@ -272,6 +277,7 @@ impl HostDaemon {
             review_source,
             clock: Arc::new(SystemClock),
             automatic_checkout_cleanup: true,
+            data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_slots: ReviewSlotManager::new(max_concurrent),
         }
@@ -294,9 +300,15 @@ impl HostDaemon {
             review_source,
             clock,
             automatic_checkout_cleanup: false,
+            data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_slots: ReviewSlotManager::new(max_concurrent),
         }
+    }
+
+    pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = data_dir.into();
+        self
     }
 
     pub fn status(&self) -> AgentResult<HostStatus> {
@@ -381,6 +393,75 @@ impl HostDaemon {
         }
 
         Ok(recovered_count)
+    }
+
+    pub fn reset_local_state(&self, force: bool) -> AgentResult<LocalStateResetResult> {
+        if !force && self.has_active_review_activity()? {
+            return Err(AgentError::invalid_input(
+                "cannot reset local state while reviews are active; rerun with --force to reset anyway",
+            ));
+        }
+
+        let removed_artifact_count = self.store.clear_artifacts()?;
+        let removed_activity_count = self.store.clear_activities()?;
+        let removed_processed_review_count = self.processed_reviews.clear_processed()?;
+        let removed_checkout_count = self.clear_checkouts()?;
+        self.polling_state.clear()?;
+        let truncated_log = self.truncate_daemon_log()?;
+
+        Ok(LocalStateResetResult {
+            removed_activity_count,
+            removed_artifact_count,
+            removed_processed_review_count,
+            removed_checkout_count,
+            truncated_log,
+        })
+    }
+
+    fn has_active_review_activity(&self) -> AgentResult<bool> {
+        Ok(self.store.list()?.into_iter().any(|activity| {
+            activity.kind == ActivityKind::Review
+                && matches!(
+                    activity.status,
+                    ActivityStatus::Queued | ActivityStatus::Running
+                )
+        }))
+    }
+
+    fn clear_checkouts(&self) -> AgentResult<usize> {
+        let checkout_root = self.checkout_root();
+        if !checkout_root.exists() {
+            return Ok(0);
+        }
+
+        let removed_count = fs::read_dir(&checkout_root)
+            .map_err(|error| AgentError::io_path("read checkout root", &checkout_root, error))?
+            .filter_map(|entry| entry.ok())
+            .count();
+        fs::remove_dir_all(&checkout_root)
+            .map_err(|error| AgentError::io_path("clear checkout root", &checkout_root, error))?;
+        fs::create_dir_all(&checkout_root)
+            .map_err(|error| AgentError::io_path("create checkout root", &checkout_root, error))?;
+        Ok(removed_count)
+    }
+
+    fn checkout_root(&self) -> PathBuf {
+        self.config
+            .checkout_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.data_dir.join("checkouts"))
+    }
+
+    fn truncate_daemon_log(&self) -> AgentResult<bool> {
+        let path = self.data_dir.join("logs").join("daemon.log");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| AgentError::io_path("create log dir", parent, error))?;
+        }
+        fs::write(&path, "")
+            .map_err(|error| AgentError::io_path("truncate daemon log", &path, error))?;
+        Ok(true)
     }
 
     pub fn record_checkout_cleanup_activity(

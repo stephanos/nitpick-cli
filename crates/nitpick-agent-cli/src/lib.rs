@@ -29,8 +29,8 @@ pub use review::{
 };
 pub use style::format_error_message;
 pub use system::{
-    SystemArgs, SystemCommand, format_cleanup_checkouts, format_host_status, host_status_url,
-    parse_host_status_json,
+    SystemArgs, SystemCommand, format_cleanup_checkouts, format_host_status,
+    format_local_state_reset, host_status_url, parse_host_status_json,
 };
 
 #[derive(Debug, thiserror::Error)]

@@ -1,6 +1,6 @@
 use clap::{Args, Subcommand};
 use nitpick_agent_client::HostClient;
-use nitpick_agent_core::{CleanupCheckoutsResult, HostStatus};
+use nitpick_agent_core::{CleanupCheckoutsResult, HostStatus, LocalStateResetResult};
 
 use crate::{CliError, CliOptions, CliRunContext};
 
@@ -8,6 +8,7 @@ use crate::{CliError, CliOptions, CliRunContext};
 pub enum SystemCommand {
     SyncPending { destination: Option<String> },
     CleanupCheckouts,
+    Reset { confirm: bool, force: bool },
 }
 
 #[derive(Args)]
@@ -19,8 +20,16 @@ pub struct SystemArgs {
 #[derive(Subcommand)]
 #[command(rename_all = "kebab-case")]
 pub enum SystemSubcommand {
-    SyncPending { destination: Option<String> },
+    SyncPending {
+        destination: Option<String>,
+    },
     CleanupCheckouts,
+    Reset {
+        #[arg(long)]
+        confirm: bool,
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 impl From<SystemSubcommand> for SystemCommand {
@@ -28,6 +37,7 @@ impl From<SystemSubcommand> for SystemCommand {
         match command {
             SystemSubcommand::SyncPending { destination } => Self::SyncPending { destination },
             SystemSubcommand::CleanupCheckouts => Self::CleanupCheckouts,
+            SystemSubcommand::Reset { confirm, force } => Self::Reset { confirm, force },
         }
     }
 }
@@ -44,6 +54,14 @@ pub fn run(
         )),
         SystemCommand::CleanupCheckouts => {
             Ok(format_cleanup_checkouts(&client.cleanup_checkouts()?))
+        }
+        SystemCommand::Reset { confirm, force } => {
+            if !confirm {
+                return Err(CliError::from(
+                    "refusing to reset local state without --confirm",
+                ));
+            }
+            Ok(format_local_state_reset(&client.reset_local_state(force)?))
         }
     }
 }
@@ -217,6 +235,44 @@ pub fn format_cleanup_checkouts(result: &CleanupCheckoutsResult) -> String {
     )
 }
 
+pub fn format_local_state_reset(result: &LocalStateResetResult) -> String {
+    let rows = vec![
+        vec![
+            crate::style::label("activities"),
+            result.removed_activity_count.to_string(),
+        ],
+        vec![
+            crate::style::label("artifacts"),
+            result.removed_artifact_count.to_string(),
+        ],
+        vec![
+            crate::style::label("processed reviews"),
+            result.removed_processed_review_count.to_string(),
+        ],
+        vec![
+            crate::style::label("checkouts"),
+            result.removed_checkout_count.to_string(),
+        ],
+        vec![
+            crate::style::label("daemon log"),
+            if result.truncated_log {
+                "truncated".into()
+            } else {
+                "unchanged".into()
+            },
+        ],
+    ];
+    format!(
+        "{}\n{}",
+        crate::style::success("local state reset"),
+        crate::style::table(rows)
+            .lines()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
 pub fn host_status_url(addr: &str) -> String {
     format!("http://{addr}/status")
 }
@@ -225,7 +281,9 @@ pub fn host_status_url(addr: &str) -> String {
 mod tests {
     use nitpick_agent_core::{AgentProviderKind, CleanupCheckoutsResult};
 
-    use super::{HostStatus, SystemCommand, format_host_status, host_status_url};
+    use super::{
+        HostStatus, SystemCommand, format_host_status, format_local_state_reset, host_status_url,
+    };
     use crate::{CliCommand, parse_command};
 
     #[test]
@@ -273,6 +331,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_reset_command() {
+        let command = parse_command([
+            "system".to_owned(),
+            "reset".to_owned(),
+            "--confirm".to_owned(),
+            "--force".to_owned(),
+        ])
+        .expect("command");
+
+        assert_eq!(
+            command,
+            CliCommand::System(SystemCommand::Reset {
+                confirm: true,
+                force: true,
+            })
+        );
+    }
+
+    #[test]
     fn formats_cleanup_checkouts_result() {
         assert_eq!(
             super::format_cleanup_checkouts(&CleanupCheckoutsResult {
@@ -287,6 +364,20 @@ mod tests {
                 cleaned: Vec::new(),
             }),
             "no checkouts cleaned up"
+        );
+    }
+
+    #[test]
+    fn formats_local_state_reset_result() {
+        assert_eq!(
+            format_local_state_reset(&nitpick_agent_core::LocalStateResetResult {
+                removed_activity_count: 2,
+                removed_artifact_count: 3,
+                removed_processed_review_count: 4,
+                removed_checkout_count: 1,
+                truncated_log: true,
+            }),
+            "\u{1b}[32mlocal state reset\u{1b}[0m\n  \u{1b}[2mactivities\u{1b}[0m         2\n  \u{1b}[2martifacts\u{1b}[0m          3\n  \u{1b}[2mprocessed reviews\u{1b}[0m  4\n  \u{1b}[2mcheckouts\u{1b}[0m          1\n  \u{1b}[2mdaemon log\u{1b}[0m         truncated"
         );
     }
 

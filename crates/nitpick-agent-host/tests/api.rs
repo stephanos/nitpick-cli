@@ -127,6 +127,91 @@ async fn activities_endpoint_filters_review_history_and_applies_limit() {
 }
 
 #[tokio::test]
+async fn reset_endpoint_clears_local_state() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut activity = store.create(ActivityKind::Review).expect("activity");
+    activity.status = ActivityStatus::Completed;
+    store.save(&activity).expect("save activity");
+    let artifact = store
+        .create_artifact(
+            activity.id.clone(),
+            ArtifactKind::ReviewSummary,
+            ArtifactContent::ReviewSummary("local summary".into()),
+        )
+        .expect("artifact");
+    store.save_artifacts(&[artifact]).expect("save artifact");
+    let processed = Arc::new(MemoryProcessedReviewStore::default());
+    ProcessedReviewStore::mark_processed_at(
+        processed.as_ref(),
+        &ReviewRequest {
+            source: "github".into(),
+            repository: "acme/platform".into(),
+            number: Some(42),
+            id: "42".into(),
+            head_sha: "abc123".into(),
+        },
+        Some(activity.id.to_string()),
+        1_000,
+    )
+    .expect("mark processed");
+    let checkout_root = data_dir.path().join("checkouts");
+    fs::create_dir_all(checkout_root.join("acme-platform-42")).expect("checkout dir");
+    let log_path = data_dir.path().join("logs").join("daemon.log");
+    fs::create_dir_all(log_path.parent().expect("log parent")).expect("log dir");
+    fs::write(&log_path, "old log").expect("log");
+    let app = api_router(
+        HostDaemon::with_config_and_processed_reviews(
+            store.clone(),
+            AgentConfig::default(),
+            processed.clone(),
+        )
+        .with_data_dir(data_dir.path()),
+    );
+
+    let response = app
+        .oneshot(json_request(
+            "/system/reset",
+            &serde_json::json!({ "force": false }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["removed_activity_count"], 1);
+    assert_eq!(body["removed_artifact_count"], 1);
+    assert_eq!(body["removed_processed_review_count"], 1);
+    assert_eq!(body["removed_checkout_count"], 1);
+    assert_eq!(body["truncated_log"], true);
+    assert!(store.list().expect("activities").is_empty());
+    assert!(store.list_artifacts().expect("artifacts").is_empty());
+    assert!(processed.list_processed().expect("processed").is_empty());
+    assert!(checkout_root.exists());
+    assert_eq!(fs::read_to_string(&log_path).expect("log"), "");
+}
+
+#[tokio::test]
+async fn reset_endpoint_rejects_active_reviews_without_force() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut activity = store.create(ActivityKind::Review).expect("activity");
+    activity.status = ActivityStatus::Running;
+    store.save(&activity).expect("save activity");
+    let app = api_router(HostDaemon::new(store.clone()));
+
+    let response = app
+        .oneshot(json_request(
+            "/system/reset",
+            &serde_json::json!({ "force": false }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(store.list().expect("activities").len(), 1);
+}
+
+#[tokio::test]
 async fn missing_activity_returns_not_found() {
     let app = api_router(HostDaemon::new(Arc::new(MemoryActivityStore::default())));
 

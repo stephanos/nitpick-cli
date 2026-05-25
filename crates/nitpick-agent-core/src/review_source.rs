@@ -63,6 +63,16 @@ impl ProcessedReviewStore for MemoryProcessedReviewStore {
             .map_err(|_| AgentError::io("processed review store lock", "poisoned"))?;
         Ok(reviews.values().cloned().collect())
     }
+
+    fn clear_processed(&self) -> AgentResult<usize> {
+        let mut reviews = self
+            .reviews
+            .lock()
+            .map_err(|_| AgentError::io("processed review store lock", "poisoned"))?;
+        let count = reviews.len();
+        reviews.clear();
+        Ok(count)
+    }
 }
 
 pub struct FsProcessedReviewStore {
@@ -98,6 +108,27 @@ impl ProcessedReviewStore for FsProcessedReviewStore {
 
     fn list_processed(&self) -> AgentResult<Vec<ProcessedReview>> {
         read_json_dir(&self.base)
+    }
+
+    fn clear_processed(&self) -> AgentResult<usize> {
+        fs::create_dir_all(&self.base).map_err(|error| {
+            AgentError::io_path("create processed review dir", &self.base, error)
+        })?;
+        let mut count = 0;
+        for entry in fs::read_dir(&self.base)
+            .map_err(|error| AgentError::io_path("read processed review dir", &self.base, error))?
+        {
+            let path = entry
+                .map_err(|error| AgentError::io("read processed review dir entry", error))?
+                .path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                fs::remove_file(&path).map_err(|error| {
+                    AgentError::io_path("clear processed review file", &path, error)
+                })?;
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -143,6 +174,8 @@ pub trait ProcessedReviewStore: Send + Sync {
     fn save_processed(&self, review: &ProcessedReview) -> AgentResult<()>;
 
     fn list_processed(&self) -> AgentResult<Vec<ProcessedReview>>;
+
+    fn clear_processed(&self) -> AgentResult<usize>;
 
     fn needs_review(&self, request: &ReviewRequest) -> AgentResult<bool> {
         Ok(self

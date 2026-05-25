@@ -30,3 +30,12 @@ pub struct CleanupCheckoutsResult {
     pub removed_count: usize,
     pub cleaned: Vec<String>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LocalStateResetResult {
+    pub removed_activity_count: usize,
+    pub removed_artifact_count: usize,
+    pub removed_processed_review_count: usize,
+    pub removed_checkout_count: usize,
+    pub truncated_log: bool,
+}
