@@ -825,7 +825,10 @@ impl HostDaemon {
         Ok(queued)
     }
 
-    pub fn run_provider_diagnostic(&self, input: ProviderDiagnosticInput) -> AgentResult<Activity> {
+    pub fn enqueue_provider_diagnostic(
+        &self,
+        input: ProviderDiagnosticInput,
+    ) -> AgentResult<Activity> {
         let mut config = self.config.clone();
         if let Some(provider) = input.provider {
             config.provider = provider;
@@ -842,15 +845,19 @@ impl HostDaemon {
         let mut activity = runtime.create_chat_activity()?;
         activity.label = Some("provider diagnostic".into());
         self.store.save(&activity)?;
-        runtime.run_chat(
-            activity,
-            ChatInput {
-                repo_dir: input.repo_dir,
-                prompt: "Hi. Reply with exactly: OK".into(),
-                context: "Nitpick provider diagnostic.".into(),
-                disable_sandbox: input.disable_sandbox,
-            },
-        )
+        let queued = activity.clone();
+        thread::spawn(move || {
+            let _ = runtime.run_chat(
+                activity,
+                ChatInput {
+                    repo_dir: input.repo_dir,
+                    prompt: "Hi. Reply with exactly: OK".into(),
+                    context: "Nitpick provider diagnostic.".into(),
+                    disable_sandbox: input.disable_sandbox,
+                },
+            );
+        });
+        Ok(queued)
     }
 
     fn runtime(&self) -> AgentRuntime {

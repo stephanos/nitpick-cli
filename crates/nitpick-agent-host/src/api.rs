@@ -292,7 +292,7 @@ async fn provider_diagnostic(
     State(daemon): State<HostDaemon>,
     Json(input): Json<ProviderDiagnosticInput>,
 ) -> Result<Json<Activity>, ApiError> {
-    Ok(Json(daemon.run_provider_diagnostic(input)?))
+    Ok(Json(daemon.enqueue_provider_diagnostic(input)?))
 }
 
 struct ApiError(AgentError);

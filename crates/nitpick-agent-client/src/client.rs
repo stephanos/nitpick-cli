@@ -43,6 +43,10 @@ impl HostClient {
         self.get_json("/activities")
     }
 
+    pub fn activity(&self, activity_id: &str) -> HostClientResult<Activity> {
+        self.get_json(&format!("/activities/{activity_id}"))
+    }
+
     pub fn filtered_activities(
         &self,
         kind: Option<&str>,

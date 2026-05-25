@@ -1,8 +1,12 @@
 use clap::{Args, Subcommand};
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{Activity, ActivityOutput, ActivityStatus, ProviderDiagnosticInput};
+use std::time::{Duration, Instant};
 
 use crate::{CliError, CliOptions, CliRunContext};
+
+const PROVIDER_DIAGNOSTIC_WAIT: Duration = Duration::from_secs(60);
+const PROVIDER_DIAGNOSTIC_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DebugCommand {
@@ -100,12 +104,29 @@ pub fn run(
                 model,
                 disable_sandbox: options.disable_sandbox,
             })?;
+            let activity = wait_for_provider_diagnostic(&client, activity)?;
             Ok(format_provider_diagnostic(
                 &activity,
                 options.disable_sandbox,
             ))
         }
     }
+}
+
+fn wait_for_provider_diagnostic(
+    client: &HostClient,
+    mut activity: Activity,
+) -> Result<Activity, CliError> {
+    let deadline = Instant::now() + PROVIDER_DIAGNOSTIC_WAIT;
+    while matches!(
+        activity.status,
+        ActivityStatus::Queued | ActivityStatus::Running
+    ) && Instant::now() < deadline
+    {
+        std::thread::sleep(PROVIDER_DIAGNOSTIC_POLL_INTERVAL);
+        activity = client.activity(activity.id.as_str())?;
+    }
+    Ok(activity)
 }
 
 fn format_provider_diagnostic(activity: &Activity, sandbox_disabled: bool) -> String {
