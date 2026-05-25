@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::review_identity::ReviewIdentity;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewInput {
     pub repo_dir: PathBuf,
@@ -46,11 +48,7 @@ pub struct ReviewRequest {
 
 impl ReviewRequest {
     pub fn display_reference(&self) -> String {
-        match self.number {
-            Some(number) => format!("{}#{}", self.repository, number),
-            None if self.id.is_empty() => self.repository.clone(),
-            None => format!("{}#{}", self.repository, self.id),
-        }
+        ReviewIdentity::from_request(self).display_reference()
     }
 }
 

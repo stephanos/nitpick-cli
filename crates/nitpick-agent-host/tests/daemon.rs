@@ -4,10 +4,10 @@ use std::sync::{
 };
 
 use nitpick_agent_core::{
-    ActivityKind, ActivityStatus, ActivityStore, AgentProvider, AgentProviderKind, AgentResult,
-    AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, FixedClock,
-    FsActivityStore, HostStatus, MemoryActivityStore, MemoryProcessedReviewStore, ReviewInput,
-    ReviewOutput, ReviewRequest, ReviewSource, SessionStatus,
+    ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider, AgentProviderKind,
+    AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput,
+    FixedClock, FsActivityStore, HostStatus, MemoryActivityStore, MemoryProcessedReviewStore,
+    ReviewInput, ReviewOutput, ReviewRequest, ReviewSource, SessionStatus,
 };
 use nitpick_agent_github::PullRequestRef;
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon};
@@ -177,7 +177,7 @@ fn discovery_poll_does_not_relog_seen_requests_after_restart() {
         config.clone(),
         processed.clone(),
         Arc::new(NoFindingsProvider),
-        Arc::new(SingleReviewSource),
+        Arc::new(SingleReviewSource::new("sha-one")),
         Arc::new(FixedClock(1_000)),
     );
     first.poll_review_requests().expect("first poll");
@@ -187,7 +187,7 @@ fn discovery_poll_does_not_relog_seen_requests_after_restart() {
         config,
         processed,
         Arc::new(NoFindingsProvider),
-        Arc::new(SingleReviewSource),
+        Arc::new(SingleReviewSource::new("sha-one")),
         Arc::new(FixedClock(2_000)),
     );
     restarted.poll_review_requests().expect("restart poll");
@@ -198,6 +198,47 @@ fn discovery_poll_does_not_relog_seen_requests_after_restart() {
         activities[0].label.as_deref(),
         Some("review request acme/platform#42")
     );
+}
+
+#[test]
+fn discovery_poll_records_updated_head_after_seen_request_changes() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let processed = Arc::new(MemoryProcessedReviewStore::default());
+    let config = AgentConfig {
+        github_discovery: GitHubDiscoveryConfig {
+            enabled: true,
+            auto_review: false,
+            ..GitHubDiscoveryConfig::default()
+        },
+        ..AgentConfig::default()
+    };
+    let first = HostDaemon::with_dependencies(
+        store.clone(),
+        config.clone(),
+        processed.clone(),
+        Arc::new(NoFindingsProvider),
+        Arc::new(SingleReviewSource::new("sha-one")),
+        Arc::new(FixedClock(1_000)),
+    );
+    first.poll_review_requests().expect("first poll");
+
+    let restarted = HostDaemon::with_dependencies(
+        store.clone(),
+        config,
+        processed,
+        Arc::new(NoFindingsProvider),
+        Arc::new(SingleReviewSource::new("sha-two")),
+        Arc::new(FixedClock(2_000)),
+    );
+    restarted.poll_review_requests().expect("updated head poll");
+
+    let activities = store.list().expect("activities");
+    assert_eq!(activities.len(), 2);
+    assert!(activities.iter().all(|activity| {
+        activity.kind == ActivityKind::Discovery
+            && activity.status == ActivityStatus::Completed
+            && activity.label.as_deref() == Some("review request acme/platform#42")
+    }));
 }
 
 #[test]
@@ -324,6 +365,107 @@ fn enqueue_review_serializes_multiple_updated_heads_for_same_pr() {
 }
 
 #[test]
+fn enqueue_review_releases_slot_when_provider_errors() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(ErrorThenBlockingProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig {
+            max_concurrent_reviews: 1,
+            ..AgentConfig::default()
+        },
+        Arc::new(MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(EmptyReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+
+    let first = daemon
+        .enqueue_review(review_input_for_pr(41, "sha-one"))
+        .expect("first review enqueued");
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 1);
+    let second = daemon
+        .enqueue_review(review_input_for_pr(42, "sha-one"))
+        .expect("second review enqueued");
+
+    assert_eq!(first.status, ActivityStatus::Running);
+    assert_eq!(second.status, ActivityStatus::Queued);
+
+    provider.release_error();
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 2);
+    provider.release_success();
+    wait_until(|| {
+        let first = store.get(&first.id).expect("first activity");
+        let second = store.get(&second.id).expect("second activity");
+        first.status == ActivityStatus::Error && second.status == ActivityStatus::Completed
+    });
+}
+
+#[test]
+fn enqueue_review_releases_slot_before_completed_artifact_sync() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let sync_started = dir.path().join("sync-started");
+    let release_sync = dir.path().join("release-sync");
+    std::fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+if [ "$1" = "api" ]; then
+  : > {sync_started}
+  while [ ! -f {release_sync} ]; do
+    sleep 0.05
+  done
+  exit 1
+fi
+exit 1
+"#,
+            sync_started = sync_started.display(),
+            release_sync = release_sync.display()
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(CountingNoFindingsProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            max_concurrent_reviews: 1,
+            ..AgentConfig::default()
+        },
+        Arc::new(MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(EmptyReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+
+    let first = daemon
+        .enqueue_review(review_input_for_pr(41, "sha-one"))
+        .expect("first review enqueued");
+    wait_until(|| sync_started.exists());
+    let second = daemon
+        .enqueue_review(review_input_for_pr(42, "sha-one"))
+        .expect("second review enqueued");
+
+    assert_eq!(first.status, ActivityStatus::Running);
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 2);
+
+    std::fs::write(&release_sync, "").expect("release sync");
+    wait_until(|| {
+        let first = store.get(&first.id).expect("first activity");
+        let second = store.get(&second.id).expect("second activity");
+        first.status == ActivityStatus::Completed && second.status == ActivityStatus::Completed
+    });
+}
+
+#[test]
 fn enqueue_review_creates_no_findings_file_level_draft_comment_when_completed_review_has_no_comments()
  {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -393,10 +535,14 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
 }
 
 fn review_input_for_head(head_sha: &str) -> ReviewInput {
+    review_input_for_pr(42, head_sha)
+}
+
+fn review_input_for_pr(number: u64, head_sha: &str) -> ReviewInput {
     ReviewInput {
         subject: nitpick_agent_core::ReviewSubject {
             repository: "acme/platform".into(),
-            number: Some(42),
+            number: Some(number),
             ..nitpick_agent_core::ReviewSubject::default()
         },
         head_sha: head_sha.into(),
@@ -457,6 +603,60 @@ impl AgentProvider for BlockingProvider {
     }
 }
 
+#[derive(Default)]
+struct ErrorThenBlockingProvider {
+    started: AtomicUsize,
+    error_released: Mutex<bool>,
+    error_changed: Condvar,
+    success_released: Mutex<bool>,
+    success_changed: Condvar,
+}
+
+impl ErrorThenBlockingProvider {
+    fn release_error(&self) {
+        *self.error_released.lock().expect("error release lock") = true;
+        self.error_changed.notify_all();
+    }
+
+    fn release_success(&self) {
+        *self.success_released.lock().expect("success release lock") = true;
+        self.success_changed.notify_all();
+    }
+}
+
+impl AgentProvider for ErrorThenBlockingProvider {
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        let started = self.started.fetch_add(1, Ordering::SeqCst);
+        if started == 0 {
+            let mut released = self.error_released.lock().expect("error release lock");
+            while !*released {
+                released = self
+                    .error_changed
+                    .wait(released)
+                    .expect("error release wait");
+            }
+            return Err(AgentError::provider("provider failed"));
+        }
+
+        let mut released = self.success_released.lock().expect("success release lock");
+        while !*released {
+            released = self
+                .success_changed
+                .wait(released)
+                .expect("success release wait");
+        }
+        Ok(ReviewOutput::default())
+    }
+
+    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+        Ok("done".into())
+    }
+}
+
 struct NoFindingsProvider;
 
 impl AgentProvider for NoFindingsProvider {
@@ -465,6 +665,26 @@ impl AgentProvider for NoFindingsProvider {
         _session: &mut AgentSession,
         _input: &ReviewInput,
     ) -> AgentResult<ReviewOutput> {
+        Ok(ReviewOutput::default())
+    }
+
+    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+        Ok("done".into())
+    }
+}
+
+#[derive(Default)]
+struct CountingNoFindingsProvider {
+    started: AtomicUsize,
+}
+
+impl AgentProvider for CountingNoFindingsProvider {
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ReviewInput,
+    ) -> AgentResult<ReviewOutput> {
+        self.started.fetch_add(1, Ordering::SeqCst);
         Ok(ReviewOutput::default())
     }
 
@@ -489,7 +709,15 @@ impl ReviewSource for EmptyReviewSource {
     }
 }
 
-struct SingleReviewSource;
+struct SingleReviewSource {
+    head_sha: &'static str,
+}
+
+impl SingleReviewSource {
+    fn new(head_sha: &'static str) -> Self {
+        Self { head_sha }
+    }
+}
 
 impl ReviewSource for SingleReviewSource {
     fn name(&self) -> &'static str {
@@ -502,11 +730,11 @@ impl ReviewSource for SingleReviewSource {
             repository: "acme/platform".into(),
             number: Some(42),
             id: "42".into(),
-            head_sha: "sha-one".into(),
+            head_sha: self.head_sha.into(),
         }])
     }
 
     fn review_input(&self, _request: &ReviewRequest) -> AgentResult<ReviewInput> {
-        Ok(review_input_for_head("sha-one"))
+        Ok(review_input_for_head(self.head_sha))
     }
 }

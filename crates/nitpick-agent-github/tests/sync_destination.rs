@@ -4,9 +4,18 @@ use nitpick_agent_core::{
 };
 use nitpick_agent_github::{
     GitHubCliReviewSyncDestination, GitHubCliSyncDestination, GitHubDryRunSyncDestination,
-    PullRequestRef,
+    GitHubReviewWorkflowSync, PullRequestRef,
 };
 use std::{fs, os::unix::fs::PermissionsExt};
+
+const DIFF_WITH_SRC_LIB: &str = r#"diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-old
++new
+"#;
 
 #[test]
 fn github_dry_run_marks_artifact_pending_for_github() {
@@ -603,6 +612,195 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
             .expect("payload json");
     assert_eq!(payload["body"], "updated summary");
     assert_eq!(review.state, "PENDING");
+}
+
+#[test]
+fn github_review_workflow_sync_marks_pending_artifacts_synced_after_manual_submission() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
+  printf '{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"COMMENT","commit_id":"abc123"}'
+  exit 0
+fi
+exit 1
+"#,
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let mut summary = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewSummary,
+        ArtifactContent::ReviewSummary("summary body".into()),
+    );
+    summary.sync_state = ArtifactSyncState::Pending {
+        destination: "github-review".into(),
+        remote_id: Some("99".into()),
+        remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into()),
+    };
+    let sync = GitHubReviewWorkflowSync::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let updates = sync
+        .reconcile_pending_artifact_states(std::slice::from_ref(&summary))
+        .expect("reconcile")
+        .expect("updates");
+
+    assert_eq!(
+        updates,
+        vec![(
+            summary.id,
+            ArtifactSyncState::Synced {
+                destination: "github-review".into(),
+                remote_id: Some(
+                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+                ),
+            },
+        )]
+    );
+}
+
+#[test]
+fn github_review_workflow_sync_updates_pending_review_body_for_local_summary() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99" ]; then
+  printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99 --method PUT --input -" ]; then
+  cat > {payload}
+  printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}'
+  exit 0
+fi
+exit 1
+"#,
+            commands = commands_file.display(),
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let mut pending_comment = Artifact::local(
+        ArtifactId::new("artifact-1"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewComment,
+        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "Already staged.".into(),
+        }),
+    );
+    pending_comment.sync_state = ArtifactSyncState::Pending {
+        destination: "github-review".into(),
+        remote_id: Some("99".into()),
+        remote_url: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into()),
+    };
+    let summary = Artifact::local(
+        ArtifactId::new("artifact-2"),
+        ActivityId::new("activity-1"),
+        ArtifactKind::ReviewSummary,
+        ArtifactContent::ReviewSummary("updated summary".into()),
+    );
+    let sync = GitHubReviewWorkflowSync::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let updates = sync
+        .reconcile_pending_artifact_states(&[pending_comment.clone(), summary.clone()])
+        .expect("reconcile")
+        .expect("updates");
+
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "api repos/acme/platform/pulls/42/reviews/99\napi repos/acme/platform/pulls/42/reviews/99 --method PUT --input -\n"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["body"], "updated summary");
+    assert_eq!(
+        updates,
+        vec![
+            (pending_comment.id, pending_comment.sync_state),
+            (
+                summary.id,
+                ArtifactSyncState::Pending {
+                    destination: "github-review".into(),
+                    remote_id: Some("99".into()),
+                    remote_url: Some(
+                        "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+                    ),
+                },
+            ),
+        ]
+    );
+}
+
+#[test]
+fn github_review_workflow_sync_creates_no_findings_file_level_draft_comment() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let payload_file = dir.path().join("payload");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "pr" ]; then
+  printf '{{"headRefOid":"abc123"}}\n'
+  exit 0
+fi
+cat > {payload}
+printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+"#,
+            payload = payload_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let sync = GitHubReviewWorkflowSync::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    sync.create_no_findings_draft_file_comment(DIFF_WITH_SRC_LIB)
+        .expect("no findings draft");
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert!(payload.get("body").is_none());
+    assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
+    assert_eq!(payload["comments"][0]["subject_type"], "file");
+    assert_eq!(
+        payload["comments"][0]["body"],
+        "🤖 Review completed: no findings."
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentProvider,
     AgentResult, ArtifactContent, ArtifactKind, ChatInput, ReviewInput, ReviewOutput,
-    SessionStatus,
+    SessionStatus, review_identity::ReviewIdentity,
 };
 
 #[derive(Clone)]
@@ -125,17 +125,7 @@ impl AgentRuntime {
 }
 
 pub fn review_session_id(input: &ReviewInput) -> String {
-    let key = match input.subject.number {
-        Some(number) if input.head_sha.is_empty() => {
-            format!("github:{}#{number}", input.subject.repository)
-        }
-        Some(number) => format!(
-            "github:{}#{number}@{}",
-            input.subject.repository, input.head_sha
-        ),
-        None => format!("review:{}", input.subject.repository),
-    };
-    uuid_from_key(&key)
+    uuid_from_key(&ReviewIdentity::from_input(input).session_key())
 }
 
 fn uuid_from_key(key: &str) -> String {

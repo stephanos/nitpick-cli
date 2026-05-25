@@ -9,6 +9,7 @@ mod json;
 mod model;
 mod provider;
 mod repo_path;
+mod review_identity;
 mod review_output;
 mod review_session;
 mod review_source;

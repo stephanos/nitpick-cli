@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{ReviewInput, ReviewOutput, session::AgentSession};
+use crate::{ReviewInput, ReviewOutput, review_identity::ReviewIdentity, session::AgentSession};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -67,10 +67,7 @@ impl Activity {
     }
 
     pub fn label_review(&mut self, input: &ReviewInput) {
-        self.label = Some(match input.subject.number {
-            Some(number) => format!("review on {}#{number}", input.subject.repository),
-            None => format!("review on {}", input.subject.repository),
-        });
+        self.label = Some(ReviewIdentity::from_input(input).activity_label());
     }
 }
 

@@ -1,23 +1,26 @@
 use std::{
     collections::HashSet,
     env,
-    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::Command,
     str::FromStr,
     time::Instant,
 };
 
+use command::{GitHubCommand, command_status_error};
 use fs_err as fs;
 use nitpick_agent_core::{
     ActivityId, AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactKind,
     ArtifactSyncDestination, ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput,
     ReviewMode, ReviewRequest, ReviewSource, ReviewSubject, checkout_root_from_env_values,
-    parse_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 
+mod command;
+mod review_sync;
+
 pub use nitpick_agent_core::{FsProcessedReviewStore, MemoryProcessedReviewStore};
+pub use review_sync::{GitHubReviewWorkflowSync, NO_FINDINGS_REVIEW_COMMENT};
 
 pub struct GitHubDryRunSyncDestination;
 
@@ -40,14 +43,14 @@ impl ArtifactSyncDestination for GitHubDryRunSyncDestination {
 
 pub struct GitHubCliSyncDestination {
     target: PullRequestRef,
-    command: PathBuf,
+    command: GitHubCommand,
 }
 
 impl GitHubCliSyncDestination {
     pub fn new(target: PullRequestRef, command: impl Into<PathBuf>) -> Self {
         Self {
             target,
-            command: command.into(),
+            command: GitHubCommand::new(command),
         }
     }
 
@@ -71,14 +74,14 @@ impl GitHubCliSyncDestination {
 
 pub struct GitHubCliReviewSyncDestination {
     target: PullRequestRef,
-    command: PathBuf,
+    command: GitHubCommand,
 }
 
 impl GitHubCliReviewSyncDestination {
     pub fn new(target: PullRequestRef, command: impl Into<PathBuf>) -> Self {
         Self {
             target,
-            command: command.into(),
+            command: GitHubCommand::new(command),
         }
     }
 
@@ -257,7 +260,7 @@ impl PullRequestState {
 }
 
 pub struct GitHubCliDiscovery {
-    command: PathBuf,
+    command: GitHubCommand,
     git_command: PathBuf,
     checkout_root: PathBuf,
     review_request_scopes: Vec<ReviewRequestScope>,
@@ -278,7 +281,7 @@ pub trait ReviewRequestDiscovery: Send + Sync {
 impl GitHubCliDiscovery {
     pub fn new(command: impl Into<PathBuf>) -> Self {
         Self {
-            command: command.into(),
+            command: GitHubCommand::new(command),
             git_command: PathBuf::from("git"),
             checkout_root: default_checkout_root(),
             review_request_scopes: Vec::new(),
@@ -291,7 +294,7 @@ impl GitHubCliDiscovery {
         checkout_root: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            command: command.into(),
+            command: GitHubCommand::new(command),
             git_command: git_command.into(),
             checkout_root: checkout_root.into(),
             review_request_scopes: Vec::new(),
@@ -537,7 +540,7 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
 }
 
 fn search_pull_requests(
-    command: &Path,
+    command: &GitHubCommand,
     scope: Option<&ReviewRequestScope>,
 ) -> AgentResult<Vec<SearchPullRequest>> {
     let mut args = vec![
@@ -565,28 +568,7 @@ fn search_pull_requests(
         "--json".to_owned(),
         "repository,number".to_owned(),
     ]);
-    tracing::debug!(command = %command.display(), args = ?args, "running GitHub CLI");
-    let started = Instant::now();
-    let output = Command::new(command)
-        .args(&args)
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!(
-                "failed to start GitHub CLI `{}`: {error}",
-                command.display()
-            ))
-        })?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub CLI finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-
-    parse_github_json(&output.stdout, "GitHub review request response")
+    command.json(&args, "GitHub review request response")
 }
 
 fn review_request_scopes(allowlist: &[String]) -> Vec<ReviewRequestScope> {
@@ -624,7 +606,7 @@ fn default_checkout_root() -> PathBuf {
 }
 
 fn ensure_checkout(
-    command: &Path,
+    command: &GitHubCommand,
     git_command: &Path,
     checkout_root: &Path,
     pull_request: &DiscoveredPullRequest,
@@ -642,36 +624,18 @@ fn ensure_checkout(
         fs::create_dir_all(parent)
             .map_err(|error| AgentError::io_path("create checkout parent", parent, error))?;
         tracing::debug!(
-            command = %command.display(),
+            command = %command.path().display(),
             repository = %pull_request.repository(),
             "cloning GitHub checkout"
         );
-        let started = Instant::now();
-        let output = Command::new(command)
-            .args([
-                "repo",
-                "clone",
-                &pull_request.repository(),
-                repo_dir.to_string_lossy().as_ref(),
-                "--",
-                "--quiet",
-            ])
-            .output()
-            .map_err(|error| {
-                AgentError::github_cli(format!(
-                    "failed to start GitHub CLI `{}`: {error}",
-                    command.display()
-                ))
-            })?;
-        tracing::debug!(
-            command = %command.display(),
-            status = %output.status,
-            duration_ms = started.elapsed().as_millis(),
-            "GitHub checkout clone finished"
-        );
-        if !output.status.success() {
-            return Err(github_cli_status_error(&output));
-        }
+        command.output(&[
+            "repo",
+            "clone",
+            &pull_request.repository(),
+            repo_dir.to_string_lossy().as_ref(),
+            "--",
+            "--quiet",
+        ])?;
     }
 
     run_git(
@@ -782,20 +746,19 @@ struct SearchRepository {
 }
 
 fn pull_request_head_sha(
-    command: &Path,
+    command: &GitHubCommand,
     owner: &str,
     repo: &str,
     number: u64,
 ) -> AgentResult<String> {
     tracing::debug!(
-        command = %command.display(),
+        command = %command.path().display(),
         repository = %format!("{owner}/{repo}"),
         number,
         "reading GitHub PR head SHA"
     );
-    let started = Instant::now();
-    let output = Command::new(command)
-        .args([
+    let response: PullRequestHeadResponse = command.json(
+        &[
             "pr",
             "view",
             &number.to_string(),
@@ -803,25 +766,9 @@ fn pull_request_head_sha(
             &format!("{owner}/{repo}"),
             "--json",
             "headRefOid",
-        ])
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!(
-                "failed to start GitHub CLI `{}`: {error}",
-                command.display()
-            ))
-        })?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub PR head SHA command finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-    let response: PullRequestHeadResponse =
-        parse_github_json(&output.stdout, "GitHub PR response")?;
+        ],
+        "GitHub PR response",
+    )?;
     Ok(response.head_ref_oid)
 }
 
@@ -832,20 +779,19 @@ struct PullRequestHeadResponse {
 }
 
 fn pull_request_details(
-    command: &Path,
+    command: &GitHubCommand,
     owner: &str,
     repo: &str,
     number: u64,
 ) -> AgentResult<PullRequestDetails> {
     tracing::debug!(
-        command = %command.display(),
+        command = %command.path().display(),
         repository = %format!("{owner}/{repo}"),
         number,
         "reading GitHub PR details"
     );
-    let started = Instant::now();
-    let output = Command::new(command)
-        .args([
+    let response: PullRequestDetailsResponse = command.json(
+        &[
             "pr",
             "view",
             &number.to_string(),
@@ -853,25 +799,9 @@ fn pull_request_details(
             &format!("{owner}/{repo}"),
             "--json",
             "title,author,url,headRefOid,headRefName,state,mergedAt",
-        ])
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!(
-                "failed to start GitHub CLI `{}`: {error}",
-                command.display()
-            ))
-        })?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub PR details command finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-    let response: PullRequestDetailsResponse =
-        parse_github_json(&output.stdout, "GitHub PR response")?;
+        ],
+        "GitHub PR response",
+    )?;
     Ok(response.into_details())
 }
 
@@ -913,78 +843,48 @@ struct PullRequestAuthor {
     login: String,
 }
 
-fn pull_request_diff(command: &Path, owner: &str, repo: &str, number: u64) -> AgentResult<String> {
+fn pull_request_diff(
+    command: &GitHubCommand,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> AgentResult<String> {
     tracing::debug!(
-        command = %command.display(),
+        command = %command.path().display(),
         repository = %format!("{owner}/{repo}"),
         number,
         "reading GitHub PR diff"
     );
-    let started = Instant::now();
-    let output = Command::new(command)
-        .args([
-            "pr",
-            "diff",
-            &number.to_string(),
-            "--repo",
-            &format!("{owner}/{repo}"),
-        ])
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!(
-                "failed to start GitHub CLI `{}`: {error}",
-                command.display()
-            ))
-        })?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub PR diff command finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
+    let output = command.output(&[
+        "pr",
+        "diff",
+        &number.to_string(),
+        "--repo",
+        &format!("{owner}/{repo}"),
+    ])?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn pull_request_has_nitpick_review(
-    command: &Path,
+    command: &GitHubCommand,
     owner: &str,
     repo: &str,
     number: u64,
     head_sha: &str,
 ) -> AgentResult<bool> {
     tracing::debug!(
-        command = %command.display(),
+        command = %command.path().display(),
         repository = %format!("{owner}/{repo}"),
         number,
         "listing GitHub PR reviews"
     );
-    let started = Instant::now();
-    let output = Command::new(command)
-        .args([
+    let reviews: Vec<PullRequestReviewResponse> = command.json(
+        &[
             "api",
             &format!("repos/{owner}/{repo}/pulls/{number}/reviews"),
-        ])
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!(
-                "failed to start GitHub CLI `{}`: {error}",
-                command.display()
-            ))
-        })?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub PR reviews command finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-    let reviews: Vec<PullRequestReviewResponse> =
-        parse_github_json(&output.stdout, "GitHub PR reviews response")?;
+        ],
+        "GitHub PR reviews response",
+    )?;
     Ok(reviews.into_iter().any(|review| {
         review.commit_id == head_sha && review.body.is_some_and(|body| has_nitpick_marker(&body))
     }))
@@ -998,77 +898,6 @@ struct PullRequestReviewResponse {
 
 fn has_nitpick_marker(body: &str) -> bool {
     body.contains("<!-- nitpick-agent:") || body.contains("<!-- nitpick:")
-}
-
-fn github_cli_status_error(output: &std::process::Output) -> AgentError {
-    command_status_error("GitHub CLI", output)
-}
-
-fn command_status_error(command: &str, output: &std::process::Output) -> AgentError {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    let message = format!(
-        "{command} failed with status {}{}",
-        output.status,
-        if stderr.is_empty() {
-            String::new()
-        } else {
-            format!(": {stderr}")
-        }
-    );
-    if command == "GitHub CLI" {
-        if is_github_rate_limit_error(&stderr) {
-            let retry_after_seconds = parse_retry_after_seconds(&stderr);
-            let retry_hint = retry_after_seconds
-                .map(|seconds| format!(" retry after {seconds} seconds."))
-                .unwrap_or_else(|| " retry after the rate limit resets.".to_owned());
-            return AgentError::github_rate_limited(
-                format!("GitHub rate limited the request;{retry_hint} {message}"),
-                retry_after_seconds,
-            );
-        }
-        AgentError::github_cli(message)
-    } else {
-        AgentError::provider(message)
-    }
-}
-
-fn is_github_rate_limit_error(stderr: &str) -> bool {
-    let stderr = stderr.to_ascii_lowercase();
-    stderr.contains("http 429")
-        || stderr.contains("status 429")
-        || stderr.contains(" 429")
-        || stderr.contains("api rate limit exceeded")
-        || stderr.contains("secondary rate limit")
-}
-
-fn parse_retry_after_seconds(stderr: &str) -> Option<u64> {
-    let lower = stderr.to_ascii_lowercase();
-    for marker in ["retry-after:", "retry after"] {
-        let Some(start) = lower.find(marker) else {
-            continue;
-        };
-        let rest = &lower[start + marker.len()..];
-        if let Some(seconds) = first_number(rest) {
-            return Some(seconds);
-        }
-    }
-    None
-}
-
-fn first_number(value: &str) -> Option<u64> {
-    let start = value.find(|character: char| character.is_ascii_digit())?;
-    let digits = value[start..]
-        .chars()
-        .take_while(|character| character.is_ascii_digit())
-        .collect::<String>();
-    digits.parse().ok()
-}
-
-fn parse_github_json<T: serde::de::DeserializeOwned>(
-    bytes: &[u8],
-    context: &str,
-) -> AgentResult<T> {
-    parse_json_bytes(bytes, &format!("invalid {context}"))
 }
 
 impl ArtifactSyncDestination for GitHubCliSyncDestination {
@@ -1144,7 +973,7 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
 }
 
 fn sync_review_batch_with_github_cli(
-    command: &Path,
+    command: &GitHubCommand,
     target: &PullRequestRef,
     artifacts: &[Artifact],
     destination: &str,
@@ -1259,50 +1088,18 @@ fn review_comment_payload(comment: ReviewComment) -> serde_json::Value {
 }
 
 fn sync_with_github_cli(
-    command: &Path,
+    command: &GitHubCommand,
     args: &[&str],
     body: &str,
     destination: &str,
 ) -> AgentResult<ArtifactSyncOutcome> {
     tracing::debug!(
-        command = %command.display(),
+        command = %command.path().display(),
         args = ?args,
         destination,
         "syncing artifact with GitHub CLI"
     );
-    let started = Instant::now();
-    let mut child = Command::new(command)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            AgentError::github_cli(format!(
-                "failed to start GitHub CLI `{}`: {error}",
-                command.display()
-            ))
-        })?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| AgentError::github_cli("GitHub CLI stdin unavailable"))?
-        .write_all(body.as_bytes())
-        .map_err(|error| AgentError::github_cli(format!("write GitHub body: {error}")))?;
-    drop(child.stdin.take());
-
-    let output = child
-        .wait_with_output()
-        .map_err(|error| AgentError::github_cli(format!("wait for GitHub CLI: {error}")))?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub artifact sync command finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
+    let output = command.output_with_input(args, body)?;
     let remote_id = github_remote_id_from_stdout(&output.stdout);
 
     Ok(ArtifactSyncOutcome {
@@ -1315,13 +1112,13 @@ fn sync_with_github_cli(
 }
 
 fn sync_pending_review_with_github_cli(
-    command: &Path,
+    command: &GitHubCommand,
     args: &[&str],
     body: &str,
     destination: &str,
 ) -> AgentResult<ArtifactSyncOutcome> {
-    let output = run_github_cli_with_input(command, args, body)?;
-    let review: GitHubReviewResponse = parse_github_json(&output.stdout, "GitHub review response")?;
+    let review: GitHubReviewResponse =
+        command.json_with_input(args, body, "GitHub review response")?;
     Ok(ArtifactSyncOutcome {
         sync_state: ArtifactSyncState::Pending {
             destination: destination.into(),
@@ -1333,49 +1130,25 @@ fn sync_pending_review_with_github_cli(
 }
 
 fn github_review_from_cli(
-    command: &Path,
+    command: &GitHubCommand,
     endpoint_args: &[&str],
 ) -> AgentResult<GitHubReviewResponse> {
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
-    tracing::debug!(command = %command.display(), args = ?args, "running GitHub review API command");
-    let started = Instant::now();
-    let output = Command::new(command)
-        .args(&args)
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!("run GitHub CLI `{}`: {error}", command.display()))
-        })?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub review API command finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-    parse_github_json(&output.stdout, "GitHub review response")
+    command.json_with_start_error(&args, "GitHub review response", "run GitHub CLI")
 }
 
 fn github_review_comments_from_cli(
-    command: &Path,
+    command: &GitHubCommand,
     endpoint_args: &[&str],
 ) -> AgentResult<Vec<GitHubReviewComment>> {
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
-    tracing::debug!(command = %command.display(), args = ?args, "running GitHub review comments API command");
-    let output = Command::new(command)
-        .args(&args)
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!("run GitHub CLI `{}`: {error}", command.display()))
-        })?;
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-    let comments: Vec<GitHubReviewCommentResponse> =
-        parse_github_json(&output.stdout, "GitHub review comments response")?;
+    let comments: Vec<GitHubReviewCommentResponse> = command.json_with_start_error(
+        &args,
+        "GitHub review comments response",
+        "run GitHub CLI",
+    )?;
     Ok(comments
         .into_iter()
         .map(|comment| GitHubReviewComment {
@@ -1393,93 +1166,30 @@ fn github_review_comments_from_cli(
 }
 
 fn github_reviews_from_cli(
-    command: &Path,
+    command: &GitHubCommand,
     endpoint_args: &[&str],
 ) -> AgentResult<Vec<GitHubReviewResponse>> {
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
-    tracing::debug!(command = %command.display(), args = ?args, "running GitHub reviews API command");
-    let output = Command::new(command)
-        .args(&args)
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!("run GitHub CLI `{}`: {error}", command.display()))
-        })?;
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-    parse_github_json(&output.stdout, "GitHub reviews response")
+    command.json_with_start_error(&args, "GitHub reviews response", "run GitHub CLI")
 }
 
-fn github_delete_from_cli(command: &Path, endpoint_args: &[&str]) -> AgentResult<()> {
+fn github_delete_from_cli(command: &GitHubCommand, endpoint_args: &[&str]) -> AgentResult<()> {
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
     args.extend_from_slice(&["--method", "DELETE"]);
-    tracing::debug!(command = %command.display(), args = ?args, "running GitHub delete API command");
-    let output = Command::new(command)
-        .args(&args)
-        .output()
-        .map_err(|error| {
-            AgentError::github_cli(format!("run GitHub CLI `{}`: {error}", command.display()))
-        })?;
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
+    command.output_with_start_error(&args, "run GitHub CLI")?;
     Ok(())
 }
 
 fn github_review_from_cli_with_input(
-    command: &Path,
+    command: &GitHubCommand,
     endpoint_args: &[&str],
     body: &str,
 ) -> AgentResult<GitHubReviewResponse> {
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
-    let output = run_github_cli_with_input(command, &args, body)?;
-    parse_github_json(&output.stdout, "GitHub review response")
-}
-
-fn run_github_cli_with_input(command: &Path, args: &[&str], body: &str) -> AgentResult<Output> {
-    tracing::debug!(
-        command = %command.display(),
-        args = ?args,
-        body_bytes = body.len(),
-        "running GitHub CLI with stdin"
-    );
-    let started = Instant::now();
-    let mut child = Command::new(command)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            AgentError::github_cli(format!(
-                "failed to start GitHub CLI `{}`: {error}",
-                command.display()
-            ))
-        })?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| AgentError::github_cli("GitHub CLI stdin unavailable"))?
-        .write_all(body.as_bytes())
-        .map_err(|error| AgentError::github_cli(format!("write GitHub body: {error}")))?;
-    drop(child.stdin.take());
-
-    let output = child
-        .wait_with_output()
-        .map_err(|error| AgentError::github_cli(format!("wait for GitHub CLI: {error}")))?;
-    tracing::debug!(
-        command = %command.display(),
-        status = %output.status,
-        duration_ms = started.elapsed().as_millis(),
-        "GitHub CLI with stdin finished"
-    );
-    if !output.status.success() {
-        return Err(github_cli_status_error(&output));
-    }
-    Ok(output)
+    command.json_with_input(&args, body, "GitHub review response")
 }
 
 fn github_remote_id_from_stdout(stdout: &[u8]) -> String {
@@ -1619,7 +1329,9 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt as _;
 
-    use super::{command_status_error, is_github_rate_limit_error, parse_retry_after_seconds};
+    use super::command::{
+        command_status_error, is_github_rate_limit_error, parse_retry_after_seconds,
+    };
 
     #[test]
     fn detects_github_rate_limit_errors() {

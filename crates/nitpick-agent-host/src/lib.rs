@@ -1,14 +1,14 @@
 mod api;
 mod polling_state;
+mod review_intake;
 pub mod review_mcp;
+mod review_queue;
 mod review_slots;
 
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     thread,
-    time::Duration,
 };
 
 use fs_err as fs;
@@ -19,20 +19,20 @@ use nitpick_agent_core::{
     Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus, LocalStateResetResult,
     MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput, ReviewMode, ReviewOutput,
     ReviewRequest, ReviewSource, ReviewToolConfig, SessionStatus, SystemClock, default_data_dir,
-    first_changed_file_for_diff,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
-    GitHubCliSyncDestination, GitHubDryRunSyncDestination, GitHubReviewComment, PullRequestRef,
+    GitHubCliSyncDestination, GitHubDryRunSyncDestination, GitHubReviewComment,
+    GitHubReviewWorkflowSync, PullRequestRef,
 };
 use polling_state::PollingState;
-use review_slots::ReviewSlotManager;
+use review_intake::ReviewRequestIntake;
+use review_queue::ReviewExecutionQueue;
 use serde::Deserialize;
 
 pub use api::api_router;
 
 const ACTIVITY_PRUNE_AGE_SECS: u64 = 24 * 60 * 60;
-const NO_FINDINGS_REVIEW_COMMENT: &str = "🤖 Review completed: no findings.";
 
 #[derive(Clone)]
 pub struct HostReviewProvider {
@@ -197,7 +197,7 @@ pub struct HostDaemon {
     automatic_checkout_cleanup: bool,
     data_dir: PathBuf,
     polling_state: PollingState,
-    review_slots: ReviewSlotManager,
+    review_queue: ReviewExecutionQueue,
 }
 
 impl HostDaemon {
@@ -211,7 +211,7 @@ impl HostDaemon {
         let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
-            store,
+            store: store.clone(),
             processed_reviews: Arc::new(MemoryProcessedReviewStore::default()),
             provider,
             review_source,
@@ -219,7 +219,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: true,
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
-            review_slots: ReviewSlotManager::new(max_concurrent),
+            review_queue: ReviewExecutionQueue::new(store, max_concurrent),
         }
     }
 
@@ -233,7 +233,7 @@ impl HostDaemon {
         let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
-            store,
+            store: store.clone(),
             processed_reviews,
             provider,
             review_source,
@@ -241,7 +241,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: true,
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
-            review_slots: ReviewSlotManager::new(max_concurrent),
+            review_queue: ReviewExecutionQueue::new(store, max_concurrent),
         }
     }
 
@@ -253,7 +253,7 @@ impl HostDaemon {
         let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
-            store,
+            store: store.clone(),
             processed_reviews: Arc::new(MemoryProcessedReviewStore::default()),
             provider,
             review_source,
@@ -261,7 +261,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: false,
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
-            review_slots: ReviewSlotManager::new(max_concurrent),
+            review_queue: ReviewExecutionQueue::new(store, max_concurrent),
         }
     }
 
@@ -271,7 +271,7 @@ impl HostDaemon {
         let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
-            store,
+            store: store.clone(),
             processed_reviews: Arc::new(MemoryProcessedReviewStore::default()),
             provider,
             review_source,
@@ -279,7 +279,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: true,
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
-            review_slots: ReviewSlotManager::new(max_concurrent),
+            review_queue: ReviewExecutionQueue::new(store, max_concurrent),
         }
     }
 
@@ -294,7 +294,7 @@ impl HostDaemon {
         let max_concurrent = config.max_concurrent_reviews;
         Self {
             config,
-            store,
+            store: store.clone(),
             processed_reviews,
             provider,
             review_source,
@@ -302,7 +302,7 @@ impl HostDaemon {
             automatic_checkout_cleanup: false,
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
-            review_slots: ReviewSlotManager::new(max_concurrent),
+            review_queue: ReviewExecutionQueue::new(store, max_concurrent),
         }
     }
 
@@ -622,8 +622,7 @@ impl HostDaemon {
         }
         let artifacts = self.store.list_artifacts_for(id)?;
         if destination == "github-review"
-            && let Some(updated) =
-                self.reconcile_submitted_github_review_artifacts(&artifacts, target)?
+            && let Some(updated) = self.reconcile_github_review_artifacts(&artifacts, target)?
         {
             return Ok(Some(updated));
         }
@@ -657,17 +656,8 @@ impl HostDaemon {
     ) -> AgentResult<()> {
         self.sync_activity_artifacts(&activity.id, "github-review", Some(target))?;
         if self.completed_review_has_no_comments(activity)? {
-            let Some(path) = first_changed_file_for_diff(&input.diff)? else {
-                return Ok(());
-            };
-            let target = target.parse::<PullRequestRef>().map_err(|error| {
-                AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
-            })?;
-            GitHubCliReviewSyncDestination::new(
-                target,
-                self.config.github_command.as_deref().unwrap_or("gh"),
-            )
-            .create_pending_file_comment(&path, NO_FINDINGS_REVIEW_COMMENT)?;
+            self.github_review_workflow_sync(target)?
+                .create_no_findings_draft_file_comment(&input.diff)?;
         }
         Ok(())
     }
@@ -685,166 +675,42 @@ impl HostDaemon {
             .any(|artifact| matches!(artifact.content, ArtifactContent::ReviewComment(_))))
     }
 
-    fn reconcile_submitted_github_review_artifacts(
+    fn reconcile_github_review_artifacts(
         &self,
         artifacts: &[Artifact],
         target: Option<&str>,
     ) -> AgentResult<Option<Vec<Artifact>>> {
-        let pending_artifacts = artifacts
-            .iter()
-            .filter(|artifact| {
-                matches!(
-                    artifact.sync_state,
-                    ArtifactSyncState::Pending {
-                        ref destination,
-                        remote_id: Some(_),
-                        ..
-                    } if destination == "github-review"
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if pending_artifacts.is_empty() {
-            return Ok(None);
-        }
-        let review_id = match &pending_artifacts[0].sync_state {
-            ArtifactSyncState::Pending {
-                remote_id: Some(review_id),
-                ..
-            } => review_id.clone(),
-            _ => return Ok(None),
-        };
         let target = target.ok_or_else(|| {
             AgentError::invalid_input("github-review sync requires a pull request target")
         })?;
-        let target = target.parse::<PullRequestRef>().map_err(|error| {
-            AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
-        })?;
-        let destination = GitHubCliReviewSyncDestination::new(
-            target,
-            self.config.github_command.as_deref().unwrap_or("gh"),
-        );
-        let review = match destination.fetch_review(&review_id) {
-            Ok(review) => review,
-            Err(_) => {
-                let mut updated = Vec::with_capacity(artifacts.len());
-                for artifact in artifacts {
-                    let next_state = match &artifact.sync_state {
-                        ArtifactSyncState::Pending {
-                            destination,
-                            remote_id: Some(current_review_id),
-                            ..
-                        } if destination == "github-review" && current_review_id == &review_id => {
-                            ArtifactSyncState::LocalOnly
-                        }
-                        _ => artifact.sync_state.clone(),
-                    };
-                    updated.push(
-                        self.store
-                            .update_artifact_sync_state(&artifact.id, next_state)?,
-                    );
-                }
-                return Ok(Some(updated));
-            }
+        let updates = self
+            .github_review_workflow_sync(target)?
+            .reconcile_pending_artifact_states(artifacts)?;
+        let Some(updates) = updates else {
+            return Ok(None);
         };
-        if review.state == "PENDING" {
-            let has_new_inline_comments = artifacts.iter().any(|artifact| {
-                artifact.sync_state == ArtifactSyncState::LocalOnly
-                    && matches!(artifact.content, ArtifactContent::ReviewComment(_))
-            });
-            if has_new_inline_comments {
-                return Err(AgentError::invalid_input(
-                    "pending GitHub draft review already exists; submit or clear the draft review before staging new inline comments",
-                ));
-            }
-
-            let remote_url = review.html_url.clone().or_else(|| {
-                pending_artifacts
-                    .iter()
-                    .find_map(|artifact| match &artifact.sync_state {
-                        ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
-                        _ => None,
-                    })
-            });
-            let local_summary = artifacts.iter().find_map(|artifact| {
-                if artifact.sync_state != ArtifactSyncState::LocalOnly {
-                    return None;
-                }
-                match &artifact.content {
-                    ArtifactContent::ReviewSummary(summary) => Some(summary.clone()),
-                    _ => None,
-                }
-            });
-            if let Some(summary) = local_summary {
-                destination.update_pending_review_body(&review_id, &summary)?;
-            }
-            let mut updated = Vec::with_capacity(artifacts.len());
-            for artifact in artifacts {
-                let next_state = if artifact.sync_state == ArtifactSyncState::LocalOnly {
-                    match &artifact.content {
-                        ArtifactContent::ReviewSummary(_) => ArtifactSyncState::Pending {
-                            destination: "github-review".into(),
-                            remote_id: Some(review_id.clone()),
-                            remote_url: remote_url.clone(),
-                        },
-                        _ => artifact.sync_state.clone(),
-                    }
-                } else {
-                    artifact.sync_state.clone()
-                };
-                updated.push(
-                    self.store
-                        .update_artifact_sync_state(&artifact.id, next_state)?,
-                );
-            }
-            return Ok(Some(updated));
-        }
-        let remote_id = review.html_url.or_else(|| {
-            pending_artifacts
-                .iter()
-                .find_map(|artifact| match &artifact.sync_state {
-                    ArtifactSyncState::Pending { remote_url, .. } => remote_url.clone(),
-                    _ => None,
-                })
-        });
         let mut updated = Vec::with_capacity(artifacts.len());
-        for artifact in artifacts {
-            let next_state = match &artifact.sync_state {
-                ArtifactSyncState::Pending {
-                    destination,
-                    remote_id: Some(current_review_id),
-                    ..
-                } if destination == "github-review" && current_review_id == &review_id => {
-                    ArtifactSyncState::Synced {
-                        destination: "github-review".into(),
-                        remote_id: remote_id.clone(),
-                    }
-                }
-                _ => artifact.sync_state.clone(),
-            };
+        for (artifact_id, next_state) in updates {
             updated.push(
                 self.store
-                    .update_artifact_sync_state(&artifact.id, next_state)?,
+                    .update_artifact_sync_state(&artifact_id, next_state)?,
             );
         }
         Ok(Some(updated))
     }
 
-    pub fn discover_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
-        self.review_source.requested_reviews()
+    fn github_review_workflow_sync(&self, target: &str) -> AgentResult<GitHubReviewWorkflowSync> {
+        let target = target.parse::<PullRequestRef>().map_err(|error| {
+            AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
+        })?;
+        Ok(GitHubReviewWorkflowSync::new(
+            target,
+            self.config.github_command.as_deref().unwrap_or("gh"),
+        ))
     }
 
-    fn discover_allowed_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
-        self.discover_review_requests().map(|requests| {
-            requests
-                .into_iter()
-                .filter(|request| {
-                    self.config
-                        .github_discovery
-                        .allows_repository(&request.repository)
-                })
-                .collect()
-        })
+    pub fn discover_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
+        self.review_intake().discover_review_requests()
     }
 
     #[deprecated(note = "use discover_review_requests")]
@@ -856,24 +722,7 @@ impl HostDaemon {
     }
 
     pub fn discover_new_review_requests(&self) -> AgentResult<Vec<ReviewRequest>> {
-        self.discover_allowed_review_requests()?
-            .into_iter()
-            .filter_map(
-                |request| match self.processed_reviews.needs_review(&request) {
-                    Ok(true) => Some(Ok(request)),
-                    Ok(false) => None,
-                    Err(error) => Some(Err(error)),
-                },
-            )
-            .filter_map(|request| match request {
-                Ok(request) => match self.review_source.already_reviewed(&request) {
-                    Ok(true) => None,
-                    Ok(false) => Some(Ok(request)),
-                    Err(error) => Some(Err(error)),
-                },
-                Err(error) => Some(Err(error)),
-            })
-            .collect()
+        self.review_intake().discover_new_review_requests()
     }
 
     #[deprecated(note = "use discover_new_review_requests")]
@@ -886,17 +735,20 @@ impl HostDaemon {
 
     #[tracing::instrument(skip_all)]
     pub fn poll_review_requests(&self) -> AgentResult<ReviewSourcePollResult> {
-        let mut result = match self.run_review_source_poll() {
-            Ok(result) => result,
-            Err(error) => {
-                let now = self.clock.now_unix();
-                let message = error.message();
-                tracing::warn!(error = %message, "review source poll failed");
-                self.polling_state
-                    .record_error(&self.store, now, &message)?;
-                return Err(error);
-            }
-        };
+        let mut result = self.review_intake().poll(
+            |request| {
+                self.record_review_request_detected_activity(request)
+                    .map(|activity| activity.id.to_string())
+            },
+            |input| {
+                let activity = self.start_review(input)?;
+                if activity.status == ActivityStatus::Completed {
+                    Ok(Some(activity.id.to_string()))
+                } else {
+                    Ok(None)
+                }
+            },
+        )?;
         if result.skipped_reason.is_none() && self.automatic_checkout_cleanup {
             match self.cleanup_checkouts() {
                 Ok(cleanup) => {
@@ -915,91 +767,15 @@ impl HostDaemon {
         Ok(result)
     }
 
-    fn run_review_source_poll(&self) -> AgentResult<ReviewSourcePollResult> {
-        if !self.config.github_discovery.enabled {
-            tracing::debug!("review source poll skipped because discovery is disabled");
-            return Ok(ReviewSourcePollResult::skipped("disabled"));
-        }
-
-        let now = self.clock.now_unix();
-        {
-            if let Some(last_poll) = self.polling_state.last_poll_unix()?
-                && now.saturating_sub(last_poll) < self.config.github_discovery.interval_seconds
-            {
-                tracing::debug!("review source poll skipped because interval has not elapsed");
-                return Ok(ReviewSourcePollResult::skipped("interval"));
-            }
-            self.polling_state.update_last_poll(now)?;
-        }
-
-        let discovered_requests = self.discover_allowed_review_requests()?;
-        let discovered_count = discovered_requests.len();
-        let new_requests = discovered_requests
-            .into_iter()
-            .filter_map(
-                |request| match self.processed_reviews.needs_review(&request) {
-                    Ok(true) => Some(Ok(request)),
-                    Ok(false) => None,
-                    Err(error) => Some(Err(error)),
-                },
-            )
-            .filter_map(|request| match request {
-                Ok(request) => match self.review_source.already_reviewed(&request) {
-                    Ok(true) => None,
-                    Ok(false) => Some(Ok(request)),
-                    Err(error) => Some(Err(error)),
-                },
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<AgentResult<Vec<_>>>()?;
-        let new_requests = deduplicate_review_requests(new_requests);
-        for request in &new_requests {
-            let activity = self.record_review_request_detected_activity(request)?;
-            if !self.config.github_discovery.auto_review {
-                self.processed_reviews.mark_processed_at(
-                    request,
-                    Some(activity.id.to_string()),
-                    now,
-                )?;
-            }
-        }
-        if !self.config.github_discovery.auto_review {
-            return Ok(ReviewSourcePollResult {
-                discovered_count,
-                enqueued_count: 0,
-                cleanup_removed_count: 0,
-                cleanup_error: None,
-                skipped_reason: None,
-            });
-        }
-
-        let mut enqueued_count = 0;
-        for request in new_requests {
-            let activity = self.start_review(self.review_source.review_input(&request)?)?;
-            if activity.status != ActivityStatus::Completed {
-                continue;
-            }
-            self.processed_reviews.mark_processed_at(
-                &request,
-                Some(activity.id.to_string()),
-                now,
-            )?;
-            enqueued_count += 1;
-        }
-
-        let result = ReviewSourcePollResult {
-            discovered_count,
-            enqueued_count,
-            cleanup_removed_count: 0,
-            cleanup_error: None,
-            skipped_reason: None,
-        };
-        tracing::info!(
-            discovered_count = result.discovered_count,
-            enqueued_count = result.enqueued_count,
-            "review source poll completed"
-        );
-        Ok(result)
+    fn review_intake(&self) -> ReviewRequestIntake {
+        ReviewRequestIntake::new(
+            self.config.clone(),
+            self.store.clone(),
+            self.processed_reviews.clone(),
+            self.review_source.clone(),
+            self.clock.clone(),
+            self.polling_state.clone(),
+        )
     }
 
     #[deprecated(note = "use poll_review_requests")]
@@ -1014,59 +790,16 @@ impl HostDaemon {
 
     pub fn enqueue_review(&self, input: ReviewInput) -> AgentResult<Activity> {
         let input = self.config.apply_review_prompt(input)?;
-        if let Some(activity) = self.active_review_for_input(&input)? {
-            return Ok(activity);
-        }
-        let same_pr_active = self.has_active_review_for_same_pr(&input)?;
-        let runtime = self.runtime();
-        let mut activity = runtime.create_queued_review_activity(&input)?;
-        let slot_acquired = !same_pr_active && self.review_slots.try_acquire()?;
-        if slot_acquired {
-            activity = runtime.mark_activity_running(activity)?;
-        }
-        let queued = activity.clone();
         let daemon = self.clone();
-        thread::spawn(move || {
-            let _ = daemon.run_enqueued_review(activity, input, slot_acquired);
-        });
-        Ok(queued)
-    }
-
-    fn active_review_for_input(&self, input: &ReviewInput) -> AgentResult<Option<Activity>> {
-        if input.head_sha.is_empty() {
-            return Ok(None);
-        }
-        let Some(number) = input.subject.number else {
-            return Ok(None);
-        };
-        let label = format!("review on {}#{number}", input.subject.repository);
-        let session_id = nitpick_agent_core::review_session_id(input);
-        Ok(self
-            .store
-            .list()?
-            .into_iter()
-            .filter(|activity| activity.kind == ActivityKind::Review)
-            .filter(|activity| {
-                matches!(
-                    activity.status,
-                    ActivityStatus::Queued | ActivityStatus::Running
-                )
-            })
-            .filter(|activity| activity.label.as_deref() == Some(label.as_str()))
-            .find(|activity| {
-                activity.session.provider_session_id.as_deref() == Some(session_id.as_str())
-            }))
-    }
-
-    fn has_active_review_for_same_pr(&self, input: &ReviewInput) -> AgentResult<bool> {
-        let Some(label) = review_label(input) else {
-            return Ok(false);
-        };
-        Ok(self.store.list()?.into_iter().any(|activity| {
-            activity.kind == ActivityKind::Review
-                && active_review_status(&activity.status)
-                && activity.label.as_deref() == Some(label.as_str())
-        }))
+        let post_review_daemon = self.clone();
+        self.review_queue.enqueue(
+            input,
+            self.runtime(),
+            move |activity, input| daemon.run_enqueued_review(activity, input),
+            move |result, input| {
+                post_review_daemon.sync_completed_enqueued_review(result, input);
+            },
+        )
     }
 
     pub fn start_chat(&self, input: ChatInput) -> AgentResult<Activity> {
@@ -1093,23 +826,16 @@ impl HostDaemon {
         )
     }
 
-    fn run_enqueued_review(
-        &self,
-        activity: Activity,
-        input: ReviewInput,
-        slot_acquired: bool,
-    ) -> AgentResult<Activity> {
-        let github_sync_target = github_review_sync_target(&input);
-        if !slot_acquired {
-            self.wait_for_prior_reviews_on_same_pr(&activity)?;
-            self.review_slots.wait_and_acquire()?;
-        }
-        let result = self.runtime().run_review(activity, input.clone());
-        self.review_slots.release()?;
-        if let Ok(activity) = &result
+    fn run_enqueued_review(&self, activity: Activity, input: ReviewInput) -> AgentResult<Activity> {
+        self.runtime().run_review(activity, input)
+    }
+
+    fn sync_completed_enqueued_review(&self, result: &AgentResult<Activity>, input: &ReviewInput) {
+        let github_sync_target = github_review_sync_target(input);
+        if let Ok(activity) = result
             && activity.status == ActivityStatus::Completed
             && let Some(target) = github_sync_target.as_deref()
-            && let Err(error) = self.sync_completed_github_review(activity, target, &input)
+            && let Err(error) = self.sync_completed_github_review(activity, target, input)
         {
             tracing::warn!(
                 activity_id = %activity.id,
@@ -1117,26 +843,6 @@ impl HostDaemon {
                 error = %error,
                 "sync completed review artifacts failed"
             );
-        }
-        result
-    }
-
-    fn wait_for_prior_reviews_on_same_pr(&self, activity: &Activity) -> AgentResult<()> {
-        let Some(label) = activity.label.as_deref() else {
-            return Ok(());
-        };
-        loop {
-            let has_prior = self.store.list()?.into_iter().any(|candidate| {
-                candidate.kind == ActivityKind::Review
-                    && active_review_status(&candidate.status)
-                    && candidate.id != activity.id
-                    && candidate.label.as_deref() == Some(label)
-                    && activity_started_before(&candidate, activity)
-            });
-            if !has_prior {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(250));
         }
     }
 }
@@ -1146,42 +852,6 @@ fn github_review_sync_target(input: &ReviewInput) -> Option<String> {
         .subject
         .number
         .map(|number| format!("{}#{}", input.subject.repository, number))
-}
-
-fn review_label(input: &ReviewInput) -> Option<String> {
-    input
-        .subject
-        .number
-        .map(|number| format!("review on {}#{number}", input.subject.repository))
-}
-
-fn active_review_status(status: &ActivityStatus) -> bool {
-    matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
-}
-
-fn activity_started_before(candidate: &Activity, activity: &Activity) -> bool {
-    candidate
-        .created_at_unix
-        .cmp(&activity.created_at_unix)
-        .then_with(|| candidate.id.cmp(&activity.id))
-        .is_lt()
-}
-
-fn deduplicate_review_requests(requests: Vec<ReviewRequest>) -> Vec<ReviewRequest> {
-    let mut seen = HashSet::new();
-    requests
-        .into_iter()
-        .filter(|request| seen.insert(review_request_version_key(request)))
-        .collect()
-}
-
-fn review_request_version_key(request: &ReviewRequest) -> (String, Option<u64>, String, String) {
-    (
-        request.repository.clone(),
-        request.number,
-        request.id.clone(),
-        request.head_sha.clone(),
-    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
