@@ -9,6 +9,8 @@ mod json;
 mod macos_sandbox;
 mod model;
 mod provider;
+mod provider_command_runner;
+mod provider_log;
 mod repo_path;
 mod review_identity;
 mod review_output;
@@ -33,7 +35,10 @@ pub use json::{parse_json_bytes, parse_json_str, read_json, read_json_dir, write
 pub use model::{
     ChatInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSubject,
 };
-pub use provider::{AgentProvider, ProviderLogSink, ReviewToolConfig};
+pub use provider::{
+    AgentProvider, NoopProviderRunSink, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
+    ReviewToolConfig,
+};
 pub use repo_path::RepoPath;
 pub use review_output::{
     REVIEW_OUTPUT_RELATIVE_PATH, validate_review_output_file, validate_review_output_file_for_diff,

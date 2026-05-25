@@ -9,41 +9,23 @@ pub struct ReviewToolConfig {
 }
 
 pub trait AgentProvider: Send + Sync {
-    fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput>;
-
-    fn review_with_log_sink(
+    fn review(
         &self,
         session: &mut AgentSession,
         input: &ReviewInput,
-        _log_sink: &dyn ProviderLogSink,
-    ) -> AgentResult<ReviewOutput> {
-        self.review(session, input)
-    }
+        context: ProviderReviewContext<'_>,
+    ) -> AgentResult<ReviewOutput>;
 
     fn supports_review_tools(&self) -> bool {
         false
     }
 
-    fn review_with_tools(
+    fn chat(
         &self,
         session: &mut AgentSession,
-        input: &ReviewInput,
-        _tools: &ReviewToolConfig,
-    ) -> AgentResult<ReviewOutput> {
-        self.review(session, input)
-    }
-
-    fn review_with_tools_and_log_sink(
-        &self,
-        session: &mut AgentSession,
-        input: &ReviewInput,
-        tools: &ReviewToolConfig,
-        _log_sink: &dyn ProviderLogSink,
-    ) -> AgentResult<ReviewOutput> {
-        self.review_with_tools(session, input, tools)
-    }
-
-    fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String>;
+        input: &ChatInput,
+        context: ProviderRunContext<'_>,
+    ) -> AgentResult<String>;
 
     fn attach_session(&self, _session: &AgentSession) -> AgentResult<()> {
         Err(AgentError::provider(
@@ -52,8 +34,55 @@ pub trait AgentProvider: Send + Sync {
     }
 }
 
-pub trait ProviderLogSink: Send + Sync {
+#[derive(Clone, Copy)]
+pub struct ProviderReviewContext<'a> {
+    pub tools: Option<&'a ReviewToolConfig>,
+    pub run_sink: &'a dyn ProviderRunSink,
+}
+
+impl<'a> ProviderReviewContext<'a> {
+    pub fn new(run_sink: &'a dyn ProviderRunSink) -> Self {
+        Self {
+            tools: None,
+            run_sink,
+        }
+    }
+
+    pub fn with_tools(mut self, tools: &'a ReviewToolConfig) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ProviderRunContext<'a> {
+    pub run_sink: &'a dyn ProviderRunSink,
+}
+
+impl<'a> ProviderRunContext<'a> {
+    pub fn new(run_sink: &'a dyn ProviderRunSink) -> Self {
+        Self { run_sink }
+    }
+}
+
+pub trait ProviderRunSink: Send + Sync {
     fn append_stdout(&self, bytes: &[u8]) -> AgentResult<()>;
 
     fn append_stderr(&self, bytes: &[u8]) -> AgentResult<()>;
+
+    fn flush(&self) -> AgentResult<()> {
+        Ok(())
+    }
+}
+
+pub struct NoopProviderRunSink;
+
+impl ProviderRunSink for NoopProviderRunSink {
+    fn append_stdout(&self, _bytes: &[u8]) -> AgentResult<()> {
+        Ok(())
+    }
+
+    fn append_stderr(&self, _bytes: &[u8]) -> AgentResult<()> {
+        Ok(())
+    }
 }

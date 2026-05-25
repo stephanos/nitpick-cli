@@ -1,12 +1,16 @@
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use crate::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentProvider,
-    AgentResult, ArtifactContent, ArtifactKind, ChatInput, ProviderLogSink, ReviewInput,
-    ReviewOutput, SessionStatus, review_identity::ReviewIdentity,
+    AgentResult, ArtifactContent, ArtifactKind, ChatInput, ProviderReviewContext,
+    ProviderRunContext, ProviderRunSink, ReviewInput, ReviewOutput, SessionStatus, provider_log,
+    review_identity::ReviewIdentity,
 };
 
-const MAX_PROVIDER_LOG_BYTES: usize = 64 * 1024;
+const PROVIDER_LOG_SAVE_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub struct AgentRuntime {
@@ -57,15 +61,11 @@ impl AgentRuntime {
         }
         activity.touch();
         self.store.save(&activity)?;
-        let log_sink = ActivityProviderLogSink {
-            store: self.store.clone(),
-            activity_id: activity.id.clone(),
-        };
-        match self
-            .provider
-            .review_with_log_sink(&mut activity.session, &input, &log_sink)
-        {
+        let run_sink = ActivityProviderRunSink::new(self.store.clone(), activity.id.clone());
+        let context = ProviderReviewContext::new(&run_sink);
+        match self.provider.review(&mut activity.session, &input, context) {
             Ok(output) => {
+                run_sink.flush()?;
                 merge_provider_logs_from_store(self.store.as_ref(), &mut activity)?;
                 let artifacts = review_artifacts(self.store.as_ref(), &activity, &output)?;
                 activity.status = ActivityStatus::Completed;
@@ -74,6 +74,7 @@ impl AgentRuntime {
                 self.store.save_artifacts(&artifacts)?;
             }
             Err(error) => {
+                run_sink.flush()?;
                 merge_provider_logs_from_store(self.store.as_ref(), &mut activity)?;
                 activity.status = ActivityStatus::Error;
                 activity.session.status = SessionStatus::Error(error.to_string());
@@ -97,8 +98,12 @@ impl AgentRuntime {
     }
 
     pub fn run_chat(&self, mut activity: Activity, input: ChatInput) -> AgentResult<Activity> {
-        match self.provider.chat(&mut activity.session, &input) {
+        let run_sink = ActivityProviderRunSink::new(self.store.clone(), activity.id.clone());
+        let context = ProviderRunContext::new(&run_sink);
+        match self.provider.chat(&mut activity.session, &input, context) {
             Ok(output) => {
+                run_sink.flush()?;
+                merge_provider_logs_from_store(self.store.as_ref(), &mut activity)?;
                 let artifact = self.store.create_artifact(
                     activity.id.clone(),
                     ArtifactKind::ChatResponse,
@@ -110,6 +115,8 @@ impl AgentRuntime {
                 self.store.save_artifacts(&[artifact])?;
             }
             Err(error) => {
+                run_sink.flush()?;
+                merge_provider_logs_from_store(self.store.as_ref(), &mut activity)?;
                 activity.status = ActivityStatus::Error;
                 activity.session.status = SessionStatus::Error(error.to_string());
                 activity.error = Some(error.to_string());
@@ -135,31 +142,107 @@ impl AgentRuntime {
     }
 }
 
-struct ActivityProviderLogSink {
+struct ActivityProviderRunSink {
     store: Arc<dyn ActivityStore>,
     activity_id: crate::ActivityId,
+    state: Mutex<ActivityProviderRunSinkState>,
 }
 
-impl ProviderLogSink for ActivityProviderLogSink {
+impl ActivityProviderRunSink {
+    fn new(store: Arc<dyn ActivityStore>, activity_id: crate::ActivityId) -> Self {
+        Self {
+            store,
+            activity_id,
+            state: Mutex::new(ActivityProviderRunSinkState::default()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ActivityProviderRunSinkState {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    last_save: Option<Instant>,
+    dirty: bool,
+}
+
+impl ProviderRunSink for ActivityProviderRunSink {
     fn append_stdout(&self, bytes: &[u8]) -> AgentResult<()> {
-        self.append_provider_log("provider.stdout", bytes)
+        self.append_provider_log(ProviderRunStream::Stdout, bytes)
     }
 
     fn append_stderr(&self, bytes: &[u8]) -> AgentResult<()> {
-        self.append_provider_log("provider.stderr", bytes)
+        self.append_provider_log(ProviderRunStream::Stderr, bytes)
+    }
+
+    fn flush(&self) -> AgentResult<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| crate::AgentError::io("provider run sink lock", "poisoned"))?;
+        if !state.dirty {
+            return Ok(());
+        }
+        self.save_provider_logs(&mut state)
     }
 }
 
-impl ActivityProviderLogSink {
-    fn append_provider_log(&self, role: &str, bytes: &[u8]) -> AgentResult<()> {
+impl ActivityProviderRunSink {
+    fn append_provider_log(&self, stream: ProviderRunStream, bytes: &[u8]) -> AgentResult<()> {
         if bytes.is_empty() {
             return Ok(());
         }
-        let mut activity = self.store.get(&self.activity_id)?;
-        append_provider_log(&mut activity, role, bytes);
-        activity.touch();
-        self.store.save(&activity)
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| crate::AgentError::io("provider run sink lock", "poisoned"))?;
+        let first_chunk_for_stream = match stream {
+            ProviderRunStream::Stdout => state.stdout.is_empty(),
+            ProviderRunStream::Stderr => state.stderr.is_empty(),
+        };
+        match stream {
+            ProviderRunStream::Stdout => state.stdout.extend_from_slice(bytes),
+            ProviderRunStream::Stderr => state.stderr.extend_from_slice(bytes),
+        }
+        state.dirty = true;
+        let should_save = state
+            .last_save
+            .map(|last_save| last_save.elapsed() >= PROVIDER_LOG_SAVE_INTERVAL)
+            .unwrap_or(true)
+            || first_chunk_for_stream;
+        if should_save {
+            self.save_provider_logs(&mut state)?;
+        }
+        Ok(())
     }
+
+    fn save_provider_logs(&self, state: &mut ActivityProviderRunSinkState) -> AgentResult<()> {
+        let mut activity = self.store.get(&self.activity_id)?;
+        if !state.stdout.is_empty() {
+            provider_log::upsert_provider_log(
+                &mut activity.session,
+                "provider.stdout",
+                &provider_log::bounded_provider_log(&state.stdout),
+            );
+        }
+        if !state.stderr.is_empty() {
+            provider_log::upsert_provider_log(
+                &mut activity.session,
+                "provider.stderr",
+                &provider_log::bounded_provider_log(&state.stderr),
+            );
+        }
+        activity.touch();
+        self.store.save(&activity)?;
+        state.last_save = Some(Instant::now());
+        state.dirty = false;
+        Ok(())
+    }
+}
+
+enum ProviderRunStream {
+    Stdout,
+    Stderr,
 }
 
 fn merge_provider_logs_from_store(
@@ -171,58 +254,11 @@ fn merge_provider_logs_from_store(
         .session
         .messages
         .iter()
-        .filter(|message| is_provider_log_role(&message.role))
+        .filter(|message| provider_log::is_provider_log_role(&message.role))
     {
-        upsert_provider_log(activity, &message.role, &message.content);
+        provider_log::upsert_provider_log(&mut activity.session, &message.role, &message.content);
     }
     Ok(())
-}
-
-fn upsert_provider_log(activity: &mut Activity, role: &str, content: &str) {
-    if let Some(message) = activity
-        .session
-        .messages
-        .iter_mut()
-        .find(|message| message.role == role)
-    {
-        message.content = content.into();
-    } else {
-        activity.session.messages.push(crate::AgentMessage {
-            role: role.into(),
-            content: content.into(),
-        });
-    }
-}
-
-fn append_provider_log(activity: &mut Activity, role: &str, bytes: &[u8]) {
-    let existing = activity
-        .session
-        .messages
-        .iter()
-        .find(|message| message.role == role)
-        .map(|message| message.content.as_bytes())
-        .unwrap_or_default();
-    let mut merged = Vec::with_capacity(existing.len().saturating_add(bytes.len()));
-    merged.extend_from_slice(existing);
-    merged.extend_from_slice(bytes);
-    upsert_provider_log(activity, role, &bounded_provider_log(&merged));
-}
-
-fn bounded_provider_log(bytes: &[u8]) -> String {
-    let truncated = bytes.len() > MAX_PROVIDER_LOG_BYTES;
-    let start = bytes.len().saturating_sub(MAX_PROVIDER_LOG_BYTES);
-    let mut value = String::from_utf8_lossy(&bytes[start..]).trim().to_owned();
-    if truncated {
-        value = format!("[truncated to last {MAX_PROVIDER_LOG_BYTES} bytes]\n{value}");
-    }
-    value
-}
-
-fn is_provider_log_role(role: &str) -> bool {
-    matches!(
-        role,
-        "provider.stdout" | "provider.stderr" | "provider.sandbox"
-    )
 }
 
 pub fn review_session_id(input: &ReviewInput) -> String {

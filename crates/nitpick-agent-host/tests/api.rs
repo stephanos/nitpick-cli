@@ -11,8 +11,9 @@ use axum::{
 use nitpick_agent_core::{
     ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
     AgentProviderKind, AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState,
-    ChatInput, MemoryActivityStore, MemoryProcessedReviewStore, ProcessedReviewStore, ReviewInput,
-    ReviewOutput, ReviewRequest, ReviewSource, ReviewSubject, SystemClock,
+    ChatInput, MemoryActivityStore, MemoryProcessedReviewStore, ProcessedReviewStore,
+    ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput, ReviewRequest,
+    ReviewSource, ReviewSubject, SystemClock,
 };
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon, api_router};
 use serde_json::Value;
@@ -1399,6 +1400,7 @@ impl AgentProvider for FakeProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         Ok(ReviewOutput {
             comments: vec![nitpick_agent_core::ReviewComment {
@@ -1409,7 +1411,12 @@ impl AgentProvider for FakeProvider {
         })
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok("chat response".into())
     }
 }

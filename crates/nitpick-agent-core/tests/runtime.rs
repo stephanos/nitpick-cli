@@ -1,12 +1,17 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use nitpick_agent_core::{
-    ActivityKind, ActivityOutput, ActivityStatus, AgentProvider, AgentResult, AgentRuntime,
-    AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput, MemoryActivityStore,
-    ProviderLogSink, ReviewComment, ReviewInput, ReviewOutput, ReviewSubject,
+    Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore,
+    AgentProvider, AgentResult, AgentRuntime, AgentSession, Artifact, ArtifactContent, ArtifactId,
+    ArtifactKind, ArtifactStore, ArtifactSyncState, ChatInput, MemoryActivityStore,
+    ProviderReviewContext, ProviderRunContext, ReviewComment, ReviewInput, ReviewOutput,
+    ReviewSubject,
 };
 
 #[derive(Default)]
@@ -29,7 +34,12 @@ impl RecordingProvider {
 }
 
 impl AgentProvider for RecordingProvider {
-    fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
+    fn review(
+        &self,
+        session: &mut AgentSession,
+        input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
+    ) -> AgentResult<ReviewOutput> {
         self.calls.lock().expect("calls lock").push("review");
         self.review_session_ids
             .lock()
@@ -57,7 +67,12 @@ impl AgentProvider for RecordingProvider {
         })
     }
 
-    fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        session: &mut AgentSession,
+        input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         self.calls.lock().expect("calls lock").push("chat");
         session.provider_session_id = Some("provider-chat-session".into());
 
@@ -68,34 +83,161 @@ impl AgentProvider for RecordingProvider {
 struct StreamingProvider;
 
 impl AgentProvider for StreamingProvider {
-    fn review_with_log_sink(
+    fn review(
         &self,
         session: &mut AgentSession,
         _input: &ReviewInput,
-        log_sink: &dyn ProviderLogSink,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         session.messages.push(nitpick_agent_core::AgentMessage {
             role: "provider.stdout".into(),
             content: "session-start\n".into(),
         });
-        log_sink.append_stdout(b"streamed stdout\n")?;
-        log_sink.append_stderr(b"streamed stderr\n")?;
+        context.run_sink.append_stdout(b"streamed stdout\n")?;
+        context.run_sink.append_stderr(b"streamed stderr\n")?;
         std::thread::sleep(Duration::from_millis(250));
         Ok(ReviewOutput {
             comments: Vec::new(),
         })
     }
 
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
+        unreachable!("chat is not used in this test")
+    }
+}
+
+struct StreamingChatProvider;
+
+impl AgentProvider for StreamingChatProvider {
     fn review(
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
-        unreachable!("runtime should pass a provider log sink")
+        unreachable!("review is not used in this test")
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
-        unreachable!("chat is not used in this test")
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
+        context.run_sink.append_stdout(b"chat stdout\n")?;
+        context.run_sink.append_stderr(b"chat stderr\n")?;
+        std::thread::sleep(Duration::from_millis(250));
+        Ok("chat response".into())
+    }
+}
+
+struct BurstyChatProvider;
+
+impl AgentProvider for BurstyChatProvider {
+    fn review(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
+    ) -> AgentResult<ReviewOutput> {
+        unreachable!("review is not used in this test")
+    }
+
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
+        for index in 0..6 {
+            context
+                .run_sink
+                .append_stdout(format!("chunk-{index}\n").as_bytes())?;
+        }
+        Ok("chat response".into())
+    }
+}
+
+#[derive(Default)]
+struct CountingStore {
+    inner: MemoryActivityStore,
+    saves: AtomicUsize,
+}
+
+impl CountingStore {
+    fn save_count(&self) -> usize {
+        self.saves.load(Ordering::SeqCst)
+    }
+}
+
+impl ActivityStore for CountingStore {
+    fn create(&self, kind: ActivityKind) -> AgentResult<Activity> {
+        self.inner.create(kind)
+    }
+
+    fn save(&self, activity: &Activity) -> AgentResult<()> {
+        self.saves.fetch_add(1, Ordering::SeqCst);
+        self.inner.save(activity)
+    }
+
+    fn get(&self, id: &ActivityId) -> AgentResult<Activity> {
+        self.inner.get(id)
+    }
+
+    fn list(&self) -> AgentResult<Vec<Activity>> {
+        self.inner.list()
+    }
+
+    fn delete(&self, id: &ActivityId) -> AgentResult<()> {
+        <MemoryActivityStore as ActivityStore>::delete(&self.inner, id)
+    }
+
+    fn clear_activities(&self) -> AgentResult<usize> {
+        self.inner.clear_activities()
+    }
+}
+
+impl ArtifactStore for CountingStore {
+    fn create_artifact(
+        &self,
+        activity_id: ActivityId,
+        kind: ArtifactKind,
+        content: ArtifactContent,
+    ) -> AgentResult<Artifact> {
+        self.inner.create_artifact(activity_id, kind, content)
+    }
+
+    fn save_artifacts(&self, artifacts: &[Artifact]) -> AgentResult<()> {
+        self.inner.save_artifacts(artifacts)
+    }
+
+    fn list_artifacts_for(&self, activity_id: &ActivityId) -> AgentResult<Vec<Artifact>> {
+        self.inner.list_artifacts_for(activity_id)
+    }
+
+    fn list_artifacts(&self) -> AgentResult<Vec<Artifact>> {
+        self.inner.list_artifacts()
+    }
+
+    fn get_artifact(&self, id: &ArtifactId) -> AgentResult<Artifact> {
+        self.inner.get_artifact(id)
+    }
+
+    fn update_artifact_sync_state(
+        &self,
+        id: &ArtifactId,
+        sync_state: ArtifactSyncState,
+    ) -> AgentResult<Artifact> {
+        self.inner.update_artifact_sync_state(id, sync_state)
+    }
+
+    fn clear_artifacts(&self) -> AgentResult<usize> {
+        self.inner.clear_artifacts()
     }
 }
 
@@ -221,6 +363,75 @@ fn review_activity_persists_provider_logs_while_provider_is_running() {
 
     let activity = runtime_thread.join().expect("runtime thread");
     assert_eq!(activity.status, ActivityStatus::Completed);
+}
+
+#[test]
+fn chat_activity_persists_provider_logs_while_provider_is_running() {
+    let provider = Arc::new(StreamingChatProvider);
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+    let activity = runtime.create_chat_activity().expect("activity");
+    let activity_id = activity.id.clone();
+    let runtime_thread = std::thread::spawn(move || {
+        runtime
+            .run_chat(activity, ChatInput::default())
+            .expect("chat")
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let persisted = store.get(&activity_id).expect("persisted activity");
+        let stdout = persisted
+            .session
+            .messages
+            .iter()
+            .find(|message| message.role == "provider.stdout")
+            .map(|message| message.content.as_str());
+        let stderr = persisted
+            .session
+            .messages
+            .iter()
+            .find(|message| message.role == "provider.stderr")
+            .map(|message| message.content.as_str());
+        if stdout == Some("chat stdout") && stderr == Some("chat stderr") {
+            assert_eq!(persisted.status, ActivityStatus::Running);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "chat provider logs were not persisted while running"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let activity = runtime_thread.join().expect("runtime thread");
+    assert_eq!(activity.status, ActivityStatus::Completed);
+}
+
+#[test]
+fn provider_log_sink_throttles_bursty_activity_saves() {
+    let provider = Arc::new(BurstyChatProvider);
+    let store = Arc::new(CountingStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+
+    let activity = runtime
+        .start_chat(ChatInput::default())
+        .expect("chat activity");
+
+    let stdout = activity
+        .session
+        .messages
+        .iter()
+        .find(|message| message.role == "provider.stdout")
+        .map(|message| message.content.as_str());
+    assert_eq!(
+        stdout,
+        Some("chunk-0\nchunk-1\nchunk-2\nchunk-3\nchunk-4\nchunk-5")
+    );
+    assert!(
+        store.save_count() <= 5,
+        "bursty provider output should not save once per chunk"
+    );
 }
 
 #[test]

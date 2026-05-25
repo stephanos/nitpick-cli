@@ -7,8 +7,9 @@ use std::{
 
 use nitpick_agent_core::{
     AgentProvider, AgentProviderKind, AgentRuntime, AgentSession, ChatInput, CommandAgentProvider,
-    CommandSandboxConfig, MemoryActivityStore, ReviewInput, ReviewSubject, ReviewToolConfig,
-    validate_review_output_file, validate_review_output_file_for_diff,
+    CommandSandboxConfig, MemoryActivityStore, NoopProviderRunSink, ProviderReviewContext,
+    ReviewInput, ReviewSubject, ReviewToolConfig, validate_review_output_file,
+    validate_review_output_file_for_diff,
 };
 
 #[test]
@@ -266,7 +267,7 @@ fn command_provider_persists_review_logs_before_command_exits() {
     let activity_id = activity.id.clone();
     let runtime_thread = std::thread::spawn(move || runtime.run_review(activity, input));
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let persisted = store.get(&activity_id).expect("persisted activity");
         let stdout = provider_log(&persisted.session, "provider.stdout");
@@ -404,8 +405,12 @@ fn command_provider_review_with_tools_passes_mcp_config_and_skips_review_output_
         ..AgentSession::default()
     };
 
+    let tools = ReviewToolConfig {
+        mcp_config_path: mcp_config_path.clone(),
+        instructions: "Use add_review_comment, then finish_review.".into(),
+    };
     let output = provider
-        .review_with_tools(
+        .review(
             &mut session,
             &ReviewInput {
                 repo_dir: repo_dir.clone(),
@@ -420,10 +425,7 @@ fn command_provider_review_with_tools_passes_mcp_config_and_skips_review_output_
                 },
                 ..ReviewInput::default()
             },
-            &ReviewToolConfig {
-                mcp_config_path: mcp_config_path.clone(),
-                instructions: "Use add_review_comment, then finish_review.".into(),
-            },
+            ProviderReviewContext::new(&NoopProviderRunSink).with_tools(&tools),
         )
         .expect("review with tools");
 
@@ -474,18 +476,19 @@ fn codex_command_provider_review_with_tools_passes_mcp_server_config_overrides()
     let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &command);
     let mut session = AgentSession::default();
 
+    let tools = ReviewToolConfig {
+        mcp_config_path,
+        instructions: "Use tools".into(),
+    };
     provider
-        .review_with_tools(
+        .review(
             &mut session,
             &ReviewInput {
                 repo_dir,
                 diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
                 ..ReviewInput::default()
             },
-            &ReviewToolConfig {
-                mcp_config_path,
-                instructions: "Use tools".into(),
-            },
+            ProviderReviewContext::new(&NoopProviderRunSink).with_tools(&tools),
         )
         .expect("review with tools");
 

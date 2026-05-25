@@ -2,7 +2,8 @@ use std::{fs, sync::Arc};
 
 use nitpick_agent_core::{
     ActivityStatus, AgentProvider, AgentResult, AgentRuntime, AgentSession, ChatInput,
-    MemoryActivityStore, ReviewInput, ReviewOutput, ReviewSubject, ReviewToolConfig,
+    MemoryActivityStore, ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput,
+    ReviewSubject,
 };
 use nitpick_agent_host::{
     HostDaemon, HostReviewProvider,
@@ -342,16 +343,9 @@ impl AgentProvider for FinishingToolProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
-        panic!("tool-aware provider should use review_with_tools");
-    }
-
-    fn review_with_tools(
-        &self,
-        _session: &mut AgentSession,
-        _input: &ReviewInput,
-        tools: &ReviewToolConfig,
-    ) -> AgentResult<ReviewOutput> {
+        let tools = context.tools.expect("tool-aware provider should use tools");
         let tools = ReviewMcpTools::from_state_path(state_path_from_config(&tools.mcp_config_path));
         tools
             .add_review_comment(AddReviewCommentInput {
@@ -364,7 +358,12 @@ impl AgentProvider for FinishingToolProvider {
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok(String::new())
     }
 }
@@ -380,20 +379,21 @@ impl AgentProvider for NonFinishingToolProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
-        panic!("tool-aware provider should use review_with_tools");
-    }
-
-    fn review_with_tools(
-        &self,
-        _session: &mut AgentSession,
-        _input: &ReviewInput,
-        _tools: &ReviewToolConfig,
-    ) -> AgentResult<ReviewOutput> {
+        assert!(
+            context.tools.is_some(),
+            "tool-aware provider should use tools"
+        );
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok(String::new())
     }
 }
@@ -409,16 +409,9 @@ impl AgentProvider for FileBackedToolProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
-        panic!("tool-aware provider should use review_with_tools");
-    }
-
-    fn review_with_tools(
-        &self,
-        _session: &mut AgentSession,
-        _input: &ReviewInput,
-        tools: &ReviewToolConfig,
-    ) -> AgentResult<ReviewOutput> {
+        let tools = context.tools.expect("tool-aware provider should use tools");
         let state_path = state_path_from_config(&tools.mcp_config_path);
         let initial_state =
             load_review_mcp_session_state(&state_path).expect("initial session state");
@@ -435,7 +428,12 @@ impl AgentProvider for FileBackedToolProvider {
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok(String::new())
     }
 }
@@ -451,16 +449,9 @@ impl AgentProvider for DeletingToolProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
-        panic!("tool-aware provider should use review_with_tools");
-    }
-
-    fn review_with_tools(
-        &self,
-        _session: &mut AgentSession,
-        _input: &ReviewInput,
-        tools: &ReviewToolConfig,
-    ) -> AgentResult<ReviewOutput> {
+        let tools = context.tools.expect("tool-aware provider should use tools");
         let tools = ReviewMcpTools::from_state_path(state_path_from_config(&tools.mcp_config_path));
         let existing = tools.existing_review_comments()?;
         assert_eq!(existing.comments.len(), 2);
@@ -471,7 +462,12 @@ impl AgentProvider for DeletingToolProvider {
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok(String::new())
     }
 }

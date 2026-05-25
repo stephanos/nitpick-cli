@@ -1,49 +1,16 @@
 use std::{
-    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc::{self, Receiver, Sender},
-    thread::JoinHandle,
-    time::Duration,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
-    ChatInput, ProviderLogSink, REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput,
-    ReviewToolConfig, macos_sandbox::SandboxProfileBuilder, validate_review_output_file_for_diff,
+    ChatInput, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
+    REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
+    macos_sandbox::SandboxProfileBuilder, provider_command_runner::ProviderCommandRunner,
+    provider_log, validate_review_output_file_for_diff,
 };
-
-const MAX_PROVIDER_LOG_BYTES: usize = 64 * 1024;
-
-struct ProviderCommandOutput {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-#[derive(Clone, Copy)]
-enum ProviderStream {
-    Stdout,
-    Stderr,
-}
-
-struct ProviderStreamChunk {
-    stream: ProviderStream,
-    bytes: Vec<u8>,
-}
-
-struct NoopProviderLogSink;
-
-impl ProviderLogSink for NoopProviderLogSink {
-    fn append_stdout(&self, _bytes: &[u8]) -> AgentResult<()> {
-        Ok(())
-    }
-
-    fn append_stderr(&self, _bytes: &[u8]) -> AgentResult<()> {
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSandboxConfig {
@@ -169,7 +136,7 @@ impl CommandAgentProvider {
     fn run_prompt_in_dir_with_sandbox(
         &self,
         session: &mut AgentSession,
-        log_sink: Option<&dyn ProviderLogSink>,
+        run_sink: &dyn ProviderRunSink,
         prompt: &str,
         args: &[String],
         current_dir: Option<&Path>,
@@ -191,48 +158,14 @@ impl CommandAgentProvider {
             sandbox = sandbox.enabled,
             "running provider command"
         );
-        let started = Instant::now();
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                AgentError::provider(format!(
-                    "failed to start {} provider command `{}`: {error}",
-                    self.kind,
-                    self.command.display()
-                ))
-            })?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AgentError::provider("provider command stdout unavailable"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| AgentError::provider("provider command stderr unavailable"))?;
-        let (stream_tx, stream_rx) = mpsc::channel();
-        let stdout_reader =
-            spawn_provider_stream_reader(ProviderStream::Stdout, stdout, stream_tx.clone());
-        let stderr_reader = spawn_provider_stream_reader(ProviderStream::Stderr, stderr, stream_tx);
-
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| AgentError::provider("provider command stdin unavailable"))?
-            .write_all(prompt.as_bytes())
-            .map_err(|error| AgentError::provider(format!("write provider prompt: {error}")))?;
-
-        let output = collect_provider_output(child, stream_rx, log_sink)?;
-        join_provider_stream_reader(stdout_reader)?;
-        join_provider_stream_reader(stderr_reader)?;
+        let command_display = self.command.display().to_string();
+        let output = ProviderCommandRunner::new(self.kind.as_str(), &command_display)
+            .run(command, prompt, run_sink)?;
         tracing::debug!(
             provider = %self.kind,
             command = %self.command.display(),
             status = %output.status,
-            duration_ms = started.elapsed().as_millis(),
+            duration_ms = output.duration_ms,
             "provider command finished"
         );
         record_provider_logs(session, &output.stdout, &output.stderr);
@@ -439,106 +372,8 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
 }
 
 fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]) {
-    push_provider_log(session, "provider.stdout", stdout);
-    push_provider_log(session, "provider.stderr", stderr);
-}
-
-fn spawn_provider_stream_reader<R>(
-    stream: ProviderStream,
-    mut reader: R,
-    tx: Sender<AgentResult<ProviderStreamChunk>>,
-) -> JoinHandle<()>
-where
-    R: Read + Send + 'static,
-{
-    std::thread::spawn(move || {
-        let mut buffer = [0; 4096];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => {
-                    let chunk = ProviderStreamChunk {
-                        stream,
-                        bytes: buffer[..count].to_vec(),
-                    };
-                    if tx.send(Ok(chunk)).is_err() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(AgentError::provider(format!(
-                        "read provider output: {error}"
-                    ))));
-                    break;
-                }
-            }
-        }
-    })
-}
-
-fn collect_provider_output(
-    mut child: std::process::Child,
-    rx: Receiver<AgentResult<ProviderStreamChunk>>,
-    log_sink: Option<&dyn ProviderLogSink>,
-) -> AgentResult<ProviderCommandOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let status = loop {
-        while let Ok(chunk) = rx.try_recv() {
-            append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, log_sink)?;
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| AgentError::provider(format!("wait for provider command: {error}")))?
-        {
-            break status;
-        }
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(chunk) => append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, log_sink)?,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {}
-        }
-    };
-    loop {
-        match rx.recv() {
-            Ok(chunk) => append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, log_sink)?,
-            Err(_) => break,
-        }
-    }
-    Ok(ProviderCommandOutput {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-fn append_provider_stream_chunk(
-    chunk: ProviderStreamChunk,
-    stdout: &mut Vec<u8>,
-    stderr: &mut Vec<u8>,
-    log_sink: Option<&dyn ProviderLogSink>,
-) -> AgentResult<()> {
-    match chunk.stream {
-        ProviderStream::Stdout => {
-            stdout.extend_from_slice(&chunk.bytes);
-            if let Some(log_sink) = log_sink {
-                log_sink.append_stdout(&chunk.bytes)?;
-            }
-        }
-        ProviderStream::Stderr => {
-            stderr.extend_from_slice(&chunk.bytes);
-            if let Some(log_sink) = log_sink {
-                log_sink.append_stderr(&chunk.bytes)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn join_provider_stream_reader(handle: JoinHandle<()>) -> AgentResult<()> {
-    handle
-        .join()
-        .map_err(|_| AgentError::provider("provider output reader thread panicked"))
+    provider_log::push_provider_log(session, "provider.stdout", stdout);
+    provider_log::push_provider_log(session, "provider.stderr", stderr);
 }
 
 fn record_provider_sandbox_diagnostic(
@@ -551,27 +386,6 @@ fn record_provider_sandbox_diagnostic(
         role: "provider.sandbox".into(),
         content: sandbox_diagnostic(status, stderr, violations),
     });
-}
-
-fn push_provider_log(session: &mut AgentSession, role: &str, bytes: &[u8]) {
-    let content = bounded_provider_log(bytes);
-    if content.is_empty() {
-        return;
-    }
-    session.messages.push(AgentMessage {
-        role: role.into(),
-        content,
-    });
-}
-
-fn bounded_provider_log(bytes: &[u8]) -> String {
-    let truncated = bytes.len() > MAX_PROVIDER_LOG_BYTES;
-    let start = bytes.len().saturating_sub(MAX_PROVIDER_LOG_BYTES);
-    let mut value = String::from_utf8_lossy(&bytes[start..]).trim().to_owned();
-    if truncated {
-        value = format!("[truncated to last {MAX_PROVIDER_LOG_BYTES} bytes]\n{value}");
-    }
-    value
 }
 
 fn sandbox_failure_hint(sandbox_enabled: bool) -> String {
@@ -630,7 +444,7 @@ fn recent_sandbox_violations(log_tag: &str) -> Vec<String> {
     if !output.status.success() {
         return Vec::new();
     }
-    sandbox_violation_lines(&bounded_provider_log(&output.stdout))
+    sandbox_violation_lines(&provider_log::bounded_provider_log(&output.stdout))
 }
 
 #[cfg(target_os = "macos")]
@@ -660,16 +474,11 @@ fn recent_sandbox_violations(_log_tag: &str) -> Vec<String> {
 
 impl AgentProvider for CommandAgentProvider {
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
-    fn review(&self, session: &mut AgentSession, input: &ReviewInput) -> AgentResult<ReviewOutput> {
-        self.review_with_log_sink(session, input, &NoopProviderLogSink)
-    }
-
-    #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
-    fn review_with_log_sink(
+    fn review(
         &self,
         session: &mut AgentSession,
         input: &ReviewInput,
-        log_sink: &dyn ProviderLogSink,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
@@ -679,91 +488,75 @@ impl AgentProvider for CommandAgentProvider {
                 input.repo_dir.display()
             ))
         })?;
-        let output_path = repo_dir.join(REVIEW_OUTPUT_RELATIVE_PATH);
-        fs_err::create_dir_all(output_path.parent().ok_or_else(|| {
-            AgentError::provider(format!(
-                "review output path has no parent: {}",
-                output_path.display()
-            ))
-        })?)
-        .map_err(|error| {
-            AgentError::provider(format!("create review output directory: {error}"))
-        })?;
-        if output_path.exists() {
-            fs_err::remove_file(&output_path).map_err(|error| {
-                AgentError::provider(format!("remove stale review output: {error}"))
-            })?;
+        match context.tools {
+            Some(tools) => {
+                let prompt = review_tool_prompt(self.model.as_deref(), input, &tools.instructions);
+                let args = self.review_tool_args(session, tools);
+                let sandbox = sandbox.with_review_tool_paths(tools);
+                self.run_prompt_in_dir_with_sandbox(
+                    session,
+                    context.run_sink,
+                    &prompt,
+                    &args,
+                    Some(&repo_dir),
+                    None,
+                    &sandbox,
+                )?;
+                Ok(ReviewOutput {
+                    comments: Vec::new(),
+                })
+            }
+            None => {
+                let output_path = repo_dir.join(REVIEW_OUTPUT_RELATIVE_PATH);
+                fs_err::create_dir_all(output_path.parent().ok_or_else(|| {
+                    AgentError::provider(format!(
+                        "review output path has no parent: {}",
+                        output_path.display()
+                    ))
+                })?)
+                .map_err(|error| {
+                    AgentError::provider(format!("create review output directory: {error}"))
+                })?;
+                if output_path.exists() {
+                    fs_err::remove_file(&output_path).map_err(|error| {
+                        AgentError::provider(format!("remove stale review output: {error}"))
+                    })?;
+                }
+                let prompt =
+                    review_prompt(self.model.as_deref(), input, REVIEW_OUTPUT_RELATIVE_PATH);
+                let args = self.review_args(session);
+                self.run_prompt_in_dir_with_sandbox(
+                    session,
+                    context.run_sink,
+                    &prompt,
+                    &args,
+                    Some(&repo_dir),
+                    Some(&output_path),
+                    &sandbox,
+                )?;
+                validate_review_output_file_for_diff(&repo_dir, &output_path, &input.diff)
+            }
         }
-        let prompt = review_prompt(self.model.as_deref(), input, REVIEW_OUTPUT_RELATIVE_PATH);
-        let args = self.review_args(session);
-        self.run_prompt_in_dir_with_sandbox(
-            session,
-            Some(log_sink),
-            &prompt,
-            &args,
-            Some(&repo_dir),
-            Some(&output_path),
-            &sandbox,
-        )?;
-        validate_review_output_file_for_diff(&repo_dir, &output_path, &input.diff)
     }
 
     fn supports_review_tools(&self) -> bool {
         true
     }
 
-    #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
-    fn review_with_tools(
-        &self,
-        session: &mut AgentSession,
-        input: &ReviewInput,
-        tools: &ReviewToolConfig,
-    ) -> AgentResult<ReviewOutput> {
-        self.review_with_tools_and_log_sink(session, input, tools, &NoopProviderLogSink)
-    }
-
-    #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
-    fn review_with_tools_and_log_sink(
-        &self,
-        session: &mut AgentSession,
-        input: &ReviewInput,
-        tools: &ReviewToolConfig,
-        log_sink: &dyn ProviderLogSink,
-    ) -> AgentResult<ReviewOutput> {
-        session.provider = Some(self.kind.clone());
-        let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
-        let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
-            AgentError::provider(format!(
-                "canonicalize review repository {}: {error}",
-                input.repo_dir.display()
-            ))
-        })?;
-        let prompt = review_tool_prompt(self.model.as_deref(), input, &tools.instructions);
-        let args = self.review_tool_args(session, tools);
-        let sandbox = sandbox.with_review_tool_paths(tools);
-        self.run_prompt_in_dir_with_sandbox(
-            session,
-            Some(log_sink),
-            &prompt,
-            &args,
-            Some(&repo_dir),
-            None,
-            &sandbox,
-        )?;
-        Ok(ReviewOutput {
-            comments: Vec::new(),
-        })
-    }
-
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repo_dir = %input.repo_dir.display()))]
-    fn chat(&self, session: &mut AgentSession, input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        session: &mut AgentSession,
+        input: &ChatInput,
+        context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
         let repo_dir = self.sandbox_repo_dir(&input.repo_dir, &sandbox)?;
         let args = self.prompt_args();
         self.run_prompt_in_dir_with_sandbox(
             session,
-            None,
+            context.run_sink,
             &chat_prompt(self.model.as_deref(), input),
             &args,
             repo_dir.as_deref(),

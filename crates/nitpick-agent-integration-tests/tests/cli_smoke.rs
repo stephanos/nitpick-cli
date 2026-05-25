@@ -11,7 +11,7 @@ use nitpick_agent_cli::{
 use nitpick_agent_core::{
     ActivityStatus, ActivityStore, AgentProvider, AgentResult, AgentSession, ArtifactContent,
     ArtifactKind, ArtifactSyncState, ChatInput, FsActivityStore, FsProcessedReviewStore,
-    ReviewInput, ReviewOutput, ReviewToolConfig,
+    ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput,
 };
 use nitpick_agent_host::{
     HostDaemon, api_router,
@@ -498,17 +498,10 @@ impl AgentProvider for McpSmokeProvider {
     fn review(
         &self,
         _session: &mut AgentSession,
-        _input: &ReviewInput,
-    ) -> AgentResult<ReviewOutput> {
-        panic!("MCP smoke provider should use review_with_tools");
-    }
-
-    fn review_with_tools(
-        &self,
-        _session: &mut AgentSession,
         input: &ReviewInput,
-        tools: &ReviewToolConfig,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
+        let tools = context.tools.expect("MCP smoke provider should use tools");
         let state_path = state_path_from_config(&tools.mcp_config_path);
         let state = load_review_mcp_session_state(&state_path)?;
         assert_eq!(state.repo_dir, input.repo_dir);
@@ -524,7 +517,12 @@ impl AgentProvider for McpSmokeProvider {
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok(String::new())
     }
 }

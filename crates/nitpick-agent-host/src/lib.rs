@@ -17,8 +17,8 @@ use nitpick_agent_core::{
     AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
     ArtifactId, ArtifactKind, ArtifactSyncDestination, ArtifactSyncState, ChatInput,
     CleanupCheckoutsResult, Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus,
-    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore, ProviderLogSink,
-    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource, ReviewToolConfig,
+    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore, ProviderReviewContext,
+    ProviderRunContext, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource,
     SessionStatus, SystemClock, default_data_dir,
 };
 use nitpick_agent_github::{
@@ -55,18 +55,10 @@ impl AgentProvider for HostReviewProvider {
         &self,
         session: &mut nitpick_agent_core::AgentSession,
         input: &ReviewInput,
-    ) -> AgentResult<ReviewOutput> {
-        self.review_with_log_sink(session, input, &NoopProviderLogSink)
-    }
-
-    fn review_with_log_sink(
-        &self,
-        session: &mut nitpick_agent_core::AgentSession,
-        input: &ReviewInput,
-        log_sink: &dyn ProviderLogSink,
+        context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         if !self.inner.supports_review_tools() {
-            return self.inner.review_with_log_sink(session, input, log_sink);
+            return self.inner.review(session, input, context);
         }
 
         let handle = review_mcp::ReviewMcpServerHandle::start(
@@ -75,8 +67,11 @@ impl AgentProvider for HostReviewProvider {
             self.review_mcp_github_target(input),
         )?;
         let tools = handle.tool_config();
-        self.inner
-            .review_with_tools_and_log_sink(session, input, &tools, log_sink)?;
+        self.inner.review(
+            session,
+            input,
+            ProviderReviewContext::new(context.run_sink).with_tools(&tools),
+        )?;
         let state = handle.session_state()?;
         if !state.finished {
             return Err(AgentError::provider(
@@ -93,37 +88,17 @@ impl AgentProvider for HostReviewProvider {
         self.inner.supports_review_tools()
     }
 
-    fn review_with_tools(
-        &self,
-        session: &mut nitpick_agent_core::AgentSession,
-        input: &ReviewInput,
-        tools: &ReviewToolConfig,
-    ) -> AgentResult<ReviewOutput> {
-        self.inner.review_with_tools(session, input, tools)
-    }
-
     fn chat(
         &self,
         session: &mut nitpick_agent_core::AgentSession,
         input: &ChatInput,
+        context: ProviderRunContext<'_>,
     ) -> AgentResult<String> {
-        self.inner.chat(session, input)
+        self.inner.chat(session, input, context)
     }
 
     fn attach_session(&self, session: &nitpick_agent_core::AgentSession) -> AgentResult<()> {
         self.inner.attach_session(session)
-    }
-}
-
-struct NoopProviderLogSink;
-
-impl ProviderLogSink for NoopProviderLogSink {
-    fn append_stdout(&self, _bytes: &[u8]) -> AgentResult<()> {
-        Ok(())
-    }
-
-    fn append_stderr(&self, _bytes: &[u8]) -> AgentResult<()> {
-        Ok(())
     }
 }
 

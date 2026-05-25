@@ -7,7 +7,8 @@ use nitpick_agent_core::{
     ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider, AgentProviderKind,
     AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput,
     FixedClock, FsActivityStore, HostStatus, MemoryActivityStore, MemoryProcessedReviewStore,
-    ReviewInput, ReviewOutput, ReviewRequest, ReviewSource, SessionStatus,
+    ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput, ReviewRequest,
+    ReviewSource, SessionStatus,
 };
 use nitpick_agent_github::PullRequestRef;
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon};
@@ -637,6 +638,7 @@ impl AgentProvider for BlockingProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         self.started.fetch_add(1, Ordering::SeqCst);
         let mut released = self.released.lock().expect("release lock");
@@ -646,7 +648,12 @@ impl AgentProvider for BlockingProvider {
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok("done".into())
     }
 }
@@ -677,6 +684,7 @@ impl AgentProvider for ErrorThenBlockingProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         let started = self.started.fetch_add(1, Ordering::SeqCst);
         if started == 0 {
@@ -700,7 +708,12 @@ impl AgentProvider for ErrorThenBlockingProvider {
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok("done".into())
     }
 }
@@ -712,11 +725,17 @@ impl AgentProvider for NoFindingsProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok("done".into())
     }
 }
@@ -731,12 +750,18 @@ impl AgentProvider for CountingNoFindingsProvider {
         &self,
         _session: &mut AgentSession,
         _input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         self.started.fetch_add(1, Ordering::SeqCst);
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok("done".into())
     }
 }

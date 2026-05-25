@@ -1,8 +1,8 @@
 use std::sync::Mutex;
 
 use nitpick_agent_core::{
-    AgentError, AgentProvider, AgentResult, AgentSession, ChatInput, ReviewComment, ReviewInput,
-    ReviewOutput,
+    AgentError, AgentProvider, AgentResult, AgentSession, ChatInput, ProviderReviewContext,
+    ProviderRunContext, ReviewComment, ReviewInput, ReviewOutput,
 };
 
 #[derive(Default)]
@@ -31,6 +31,7 @@ impl AgentProvider for RecordingProvider {
         &self,
         _session: &mut AgentSession,
         input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         if let Some(error) = self.review_error.lock().expect("lock").clone() {
             return Err(AgentError::new(error));
@@ -53,7 +54,12 @@ impl AgentProvider for RecordingProvider {
         })
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok("chat complete".into())
     }
 }

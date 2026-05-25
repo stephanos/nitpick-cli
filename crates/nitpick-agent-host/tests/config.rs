@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use nitpick_agent_core::{
     ActivityKind, ActivityStore, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
-    ChatInput, HostStatus, MemoryActivityStore, ReviewInput, ReviewMode, ReviewOutput,
-    ReviewRequest, ReviewSource,
+    ChatInput, HostStatus, MemoryActivityStore, ProviderReviewContext, ProviderRunContext,
+    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource,
 };
 use nitpick_agent_host::{
     AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon,
@@ -606,12 +606,18 @@ impl AgentProvider for RecordingReviewProvider {
         &self,
         _session: &mut AgentSession,
         input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         *self.review_prompt.lock().expect("prompt lock") = input.review_prompt.clone();
         Ok(ReviewOutput::default())
     }
 
-    fn chat(&self, _session: &mut AgentSession, _input: &ChatInput) -> AgentResult<String> {
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
         Ok(String::new())
     }
 }
