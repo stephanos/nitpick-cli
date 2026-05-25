@@ -208,6 +208,17 @@ pub fn ensure_resumable_activity(activity: &Activity) -> Result<(), String> {
     Ok(())
 }
 
+pub fn ensure_review_chat_available(activity: &Activity) -> Result<(), String> {
+    if is_active_review_status(&activity.status) {
+        return Err(format!(
+            "cannot open review chat for {} while the review is {}; the provider session is locked by the active review",
+            activity.id,
+            crate::style::status_plain_title(&activity.status)
+        ));
+    }
+    ensure_resumable_activity(activity)
+}
+
 fn is_active_review_status(status: &ActivityStatus) -> bool {
     matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
 }
@@ -594,6 +605,24 @@ mod tests {
         let error = super::ensure_resumable_activity(&activity).expect_err("missing session id");
 
         assert_eq!(error, "activity activity-1 has no provider session id");
+    }
+
+    #[test]
+    fn rejects_review_chat_for_active_review() {
+        let mut activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Review,
+        );
+        activity.status = nitpick_agent_core::ActivityStatus::Running;
+        activity.session.provider_session_id = Some("123e4567-e89b-12d3-a456-426614174000".into());
+
+        let error = super::ensure_review_chat_available(&activity)
+            .expect_err("running review rejects chat");
+
+        assert_eq!(
+            error,
+            "cannot open review chat for activity-1 while the review is Running; the provider session is locked by the active review"
+        );
     }
 
     #[test]

@@ -99,7 +99,7 @@ pub fn run(
             let activities = client.activities()?;
             let activity = crate::activity::resolve_log_activity(&activities, &target)
                 .map_err(CliError::from)?;
-            crate::activity::ensure_resumable_activity(activity).map_err(CliError::from)?;
+            crate::activity::ensure_review_chat_available(activity).map_err(CliError::from)?;
             let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
                 .map_err(CliError::from)?;
             crate::support::apply_sandbox_option(&mut config, &options);

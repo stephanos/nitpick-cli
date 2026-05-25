@@ -18,6 +18,10 @@ pub(crate) fn status_title(status: &ActivityStatus) -> String {
     colorize(format!("{status:?}"), status_style(status))
 }
 
+pub(crate) fn status_plain_title(status: &ActivityStatus) -> String {
+    format!("{status:?}")
+}
+
 pub(crate) fn success(value: impl std::fmt::Display) -> String {
     colorize(value, anstyle::AnsiColor::Green.on_default())
 }

@@ -328,6 +328,74 @@ async fn review_chat_clears_missing_provider_session_id() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn review_chat_fails_fast_for_active_review() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_claude = temp.path().join("claude");
+    let provider_log = temp.path().join("provider.log");
+    fs::write(
+        &fake_claude,
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nsleep 10\n",
+            provider_log.display()
+        ),
+    )
+    .expect("fake claude");
+    make_executable(&fake_claude);
+    let config_path = temp.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n",
+            fake_claude.display(),
+        ),
+    )
+    .expect("config");
+    let data_dir = temp.path().join("data");
+    let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
+    let processed = Arc::new(
+        FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
+    );
+    let mut activity = store
+        .create(nitpick_agent_core::ActivityKind::Review)
+        .expect("activity");
+    activity.label = Some("review on temporalio/temporal#10384".into());
+    activity.status = ActivityStatus::Running;
+    activity.session.provider = Some(nitpick_agent_core::AgentProviderKind::Claude);
+    activity.session.provider_session_id = Some("123e4567-e89b-12d3-a456-426614174000".into());
+    store.save(&activity).expect("save activity");
+    let daemon = HostDaemon::with_dependencies(
+        store,
+        github_auto_review_config(),
+        processed,
+        Arc::new(RecordingProvider::default()),
+        Arc::new(StubDiscovery::new(vec![])),
+        Arc::new(ManualClock::new(1_000)),
+    );
+    let host_addr = serve_host(daemon).await;
+
+    let started = Instant::now();
+    let error = run_cli_command(
+        CliCommand::Review(ReviewCommand::Chat {
+            target: "temporalio/temporal#10384".into(),
+        }),
+        &host_addr,
+        temp.path().to_path_buf(),
+        String::new(),
+        String::new(),
+        config_path,
+        data_dir,
+    )
+    .expect_err("review chat fails");
+
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(
+        error,
+        "cannot open review chat for activity-1 while the review is Running; the provider session is locked by the active review"
+    );
+    assert!(!provider_log.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn review_chat_resumes_with_activity_provider() {
     let temp = tempfile::tempdir().expect("tempdir");
     let fake_provider = temp.path().join("provider");
