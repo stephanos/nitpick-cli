@@ -155,6 +155,7 @@ mod tests {
             invocation.command,
             CliCommand::Review(crate::ReviewCommand::Start {
                 subject: "https://github.com/temporalio/temporal/pull/10384".into(),
+                force: false,
             })
         );
     }

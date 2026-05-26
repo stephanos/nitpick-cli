@@ -204,8 +204,16 @@ impl CommandAgentProvider {
                     .unwrap_or_else(|| "unknown duration".into())
             )));
         }
+        if output.cancelled {
+            return Err(AgentError::provider(format!(
+                "{} provider command cancelled",
+                self.kind
+            )));
+        }
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let session_already_in_use = provider_session_already_in_use(&stderr);
+            let failure_hint = provider_failure_hint(&stderr, sandbox.enabled);
             let sandbox_violations = if sandbox.enabled {
                 sandbox_log_tag
                     .as_deref()
@@ -214,7 +222,7 @@ impl CommandAgentProvider {
             } else {
                 Vec::new()
             };
-            if sandbox.enabled {
+            if sandbox.enabled && !session_already_in_use {
                 record_provider_sandbox_diagnostic(
                     session,
                     output.status,
@@ -231,7 +239,7 @@ impl CommandAgentProvider {
                 } else {
                     format!(": {stderr}")
                 },
-                sandbox_failure_hint(sandbox.enabled)
+                failure_hint
             )));
         }
 
@@ -527,6 +535,18 @@ fn sandbox_failure_hint(sandbox_enabled: bool) -> String {
     } else {
         String::new()
     }
+}
+
+fn provider_failure_hint(stderr: &str, sandbox_enabled: bool) -> String {
+    if provider_session_already_in_use(stderr) {
+        "; provider session is already in use, wait for the active Claude process to finish or stop the stale provider process before retrying".into()
+    } else {
+        sandbox_failure_hint(sandbox_enabled)
+    }
+}
+
+fn provider_session_already_in_use(stderr: &str) -> bool {
+    stderr.contains("Session ID") && stderr.contains("already in use")
 }
 
 fn sandbox_diagnostic(
@@ -1047,6 +1067,14 @@ mod tests {
 
         assert!(sandbox_failure_hint(true).contains("--no-sandbox"));
         assert_eq!(sandbox_failure_hint(false), "");
+        assert!(
+            provider_failure_hint("Error: Session ID 65cc7ced is already in use.", true)
+                .contains("provider session is already in use")
+        );
+        assert!(
+            !provider_failure_hint("Error: Session ID 65cc7ced is already in use.", true)
+                .contains("--no-sandbox")
+        );
         assert!(sandbox_diagnostic(status, "", &[]).contains("provider stderr was empty"));
         assert!(sandbox_diagnostic(status, "", &[]).contains("--no-sandbox"));
         assert!(

@@ -77,6 +77,10 @@ pub trait ProviderRunSink: Send + Sync {
     fn flush(&self) -> AgentResult<()> {
         Ok(())
     }
+
+    fn is_cancelled(&self) -> AgentResult<bool> {
+        Ok(false)
+    }
 }
 
 pub struct NoopProviderRunSink;

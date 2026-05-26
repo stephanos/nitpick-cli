@@ -10,6 +10,7 @@ use crate::{CliError, CliOptions, CliRunContext};
 pub enum ReviewCommand {
     Start {
         subject: String,
+        force: bool,
     },
     Chat {
         target: String,
@@ -36,6 +37,8 @@ pub struct ReviewArgs {
 #[command(rename_all = "kebab-case")]
 pub enum ReviewSubcommand {
     Start {
+        #[arg(long = "force")]
+        force: bool,
         subject: String,
     },
     Chat {
@@ -69,7 +72,7 @@ pub enum ReviewListStatus {
 impl From<ReviewSubcommand> for ReviewCommand {
     fn from(command: ReviewSubcommand) -> Self {
         match command {
-            ReviewSubcommand::Start { subject } => Self::Start { subject },
+            ReviewSubcommand::Start { subject, force } => Self::Start { subject, force },
             ReviewSubcommand::Chat { target } => Self::Chat { target },
             ReviewSubcommand::OpenEditor { target } => Self::OpenEditor { target },
             ReviewSubcommand::Show { target } => Self::Show { target },
@@ -85,9 +88,10 @@ pub fn run(
 ) -> Result<String, CliError> {
     let client = HostClient::new(&context.host_addr);
     match command {
-        ReviewCommand::Start { subject } => {
+        ReviewCommand::Start { subject, force } => {
             let mut input = review_input(subject.clone(), context.repo_dir, context.diff);
             input.disable_sandbox = options.disable_sandbox;
+            input.force = force;
             let activity = client.review(&input)?;
             let output = format_review_started(&activity, &subject);
             if let Some(error) = activity.error {
@@ -361,6 +365,26 @@ mod tests {
             command,
             CliCommand::Review(ReviewCommand::Start {
                 subject: "acme/platform#42".into(),
+                force: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_review_start_force_flag() {
+        let command = parse_command([
+            "review".to_owned(),
+            "start".to_owned(),
+            "--force".to_owned(),
+            "acme/platform#42".to_owned(),
+        ])
+        .expect("command parses");
+
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::Start {
+                subject: "acme/platform#42".into(),
+                force: true,
             })
         );
     }

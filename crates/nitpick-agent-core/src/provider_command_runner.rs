@@ -6,7 +6,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use crate::{AgentError, AgentResult, ProviderRunSink};
+
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+    fn setpgid(pid: i32, pgid: i32) -> i32;
+}
 
 pub struct ProviderCommandOutput {
     pub status: ExitStatus,
@@ -14,6 +26,7 @@ pub struct ProviderCommandOutput {
     pub stderr: Vec<u8>,
     pub duration_ms: u128,
     pub timed_out: bool,
+    pub cancelled: bool,
 }
 
 pub struct ProviderCommandRunner<'a> {
@@ -37,6 +50,7 @@ impl<'a> ProviderCommandRunner<'a> {
         timeout: Option<Duration>,
     ) -> AgentResult<ProviderCommandOutput> {
         let started = Instant::now();
+        configure_provider_command(&mut command);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -131,6 +145,7 @@ fn collect_provider_output(
     let mut stderr = Vec::new();
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let mut timed_out = false;
+    let mut cancelled = false;
     let status = loop {
         while let Ok(chunk) = rx.try_recv() {
             append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, run_sink)?;
@@ -143,11 +158,16 @@ fn collect_provider_output(
         }
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             timed_out = true;
-            child.kill().map_err(|error| {
-                AgentError::provider(format!("kill timed out provider command: {error}"))
-            })?;
+            kill_provider_child(&mut child, "timed out")?;
             break child.wait().map_err(|error| {
                 AgentError::provider(format!("wait for timed out provider command: {error}"))
+            })?;
+        }
+        if run_sink.is_cancelled()? {
+            cancelled = true;
+            kill_provider_child(&mut child, "cancelled")?;
+            break child.wait().map_err(|error| {
+                AgentError::provider(format!("wait for cancelled provider command: {error}"))
             })?;
         }
         let wait = deadline
@@ -173,7 +193,38 @@ fn collect_provider_output(
         stderr,
         duration_ms: 0,
         timed_out,
+        cancelled,
     })
+}
+
+fn configure_provider_command(command: &mut Command) {
+    #[cfg(unix)]
+    // Put the provider in its own process group so cancellation and timeout can
+    // terminate helper processes that inherit stdout/stderr pipes.
+    unsafe {
+        command.pre_exec(|| {
+            if setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+fn kill_provider_child(child: &mut std::process::Child, reason: &str) -> AgentResult<()> {
+    #[cfg(unix)]
+    {
+        let process_group = -(child.id() as i32);
+        // SAFETY: kill is called with a process-group id created for this child
+        // in configure_provider_command. On failure, fall back to Child::kill.
+        if unsafe { kill(process_group, SIGKILL) } == 0 {
+            return Ok(());
+        }
+    }
+    child
+        .kill()
+        .map_err(|error| AgentError::provider(format!("kill {reason} provider command: {error}")))
 }
 
 fn append_provider_stream_chunk(

@@ -311,6 +311,36 @@ fn enqueue_review_reuses_active_review_for_same_pr_head_sha() {
 }
 
 #[test]
+fn enqueue_review_force_supersedes_active_review_for_same_pr() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(BlockingProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(EmptyReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let first = daemon
+        .enqueue_review(review_input_for_head("sha-one"))
+        .expect("first review enqueued");
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 1);
+    let mut forced_input = review_input_for_head("sha-one");
+    forced_input.force = true;
+
+    let forced = daemon
+        .enqueue_review(forced_input)
+        .expect("forced review enqueued");
+
+    let first = store.get(&first.id).expect("first activity");
+    assert_eq!(first.status, ActivityStatus::Error);
+    assert_eq!(first.error.as_deref(), Some("superseded by forced review"));
+    assert_ne!(forced.id, first.id);
+    provider.release();
+}
+
+#[test]
 fn enqueue_review_queues_same_pr_when_head_sha_changes() {
     let store = Arc::new(MemoryActivityStore::default());
     let provider = Arc::new(BlockingProvider::default());

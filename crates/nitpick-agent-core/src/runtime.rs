@@ -196,6 +196,11 @@ impl ProviderRunSink for ActivityProviderRunSink {
         }
         self.save_provider_logs(&mut state)
     }
+
+    fn is_cancelled(&self) -> AgentResult<bool> {
+        let activity = self.store.get(&self.activity_id)?;
+        Ok(activity.status != ActivityStatus::Running)
+    }
 }
 
 impl ActivityProviderRunSink {

@@ -27,6 +27,9 @@ impl ReviewExecutionQueue {
         run_review: impl FnOnce(Activity, ReviewInput) -> AgentResult<Activity> + Send + 'static,
         after_slot_release: impl FnOnce(&AgentResult<Activity>, &ReviewInput) + Send + 'static,
     ) -> AgentResult<Activity> {
+        if input.force {
+            self.cancel_active_reviews_for_same_pr(&input)?;
+        }
         if let Some(activity) = self.active_review_for_input(&input)? {
             return Ok(activity);
         }
@@ -118,6 +121,25 @@ impl ReviewExecutionQueue {
             }
             thread::sleep(Duration::from_millis(250));
         }
+    }
+
+    fn cancel_active_reviews_for_same_pr(&self, input: &ReviewInput) -> AgentResult<()> {
+        let Some(label) = review_label(input) else {
+            return Ok(());
+        };
+        for mut activity in self.store.list()?.into_iter().filter(|activity| {
+            activity.kind == ActivityKind::Review
+                && active_review_status(&activity.status)
+                && activity.label.as_deref() == Some(label.as_str())
+        }) {
+            activity.status = ActivityStatus::Error;
+            activity.session.status =
+                nitpick_agent_core::SessionStatus::Error("superseded by forced review".into());
+            activity.error = Some("superseded by forced review".into());
+            activity.touch();
+            self.store.save(&activity)?;
+        }
+        Ok(())
     }
 }
 

@@ -18,6 +18,8 @@ pub struct ReviewInput {
     pub diff: String,
     #[serde(default)]
     pub disable_sandbox: bool,
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

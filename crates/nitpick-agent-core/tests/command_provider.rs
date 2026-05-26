@@ -6,10 +6,10 @@ use std::{
 };
 
 use nitpick_agent_core::{
-    AgentProvider, AgentProviderKind, AgentRuntime, AgentSession, ChatInput, CommandAgentProvider,
-    CommandSandboxConfig, MemoryActivityStore, NoopProviderRunSink, ProviderReviewContext,
-    ReviewInput, ReviewSubject, ReviewToolConfig, validate_review_output_file,
-    validate_review_output_file_for_diff,
+    ActivityStore, AgentProvider, AgentProviderKind, AgentRuntime, AgentSession, ChatInput,
+    CommandAgentProvider, CommandSandboxConfig, MemoryActivityStore, NoopProviderRunSink,
+    ProviderReviewContext, ReviewInput, ReviewSubject, ReviewToolConfig,
+    validate_review_output_file, validate_review_output_file_for_diff,
 };
 
 #[test]
@@ -373,6 +373,64 @@ fn command_provider_persists_run_diagnostic_while_command_is_running() {
         .expect("runtime thread")
         .expect("chat");
     assert_eq!(activity.error, None);
+}
+
+#[test]
+fn command_provider_cancels_running_command_when_activity_is_cancelled() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let command = dir.path().join("provider");
+    fs::write(
+        &command,
+        "#!/bin/sh\ncat >/dev/null\nprintf started\nsleep 30\nprintf done\n",
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(
+        CommandAgentProvider::new(
+            AgentProviderKind::Claude,
+            Some("test-model".into()),
+            &command,
+        )
+        .with_sandbox(CommandSandboxConfig::unsandboxed()),
+    );
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+    let input = ChatInput {
+        repo_dir: dir.path().to_path_buf(),
+        prompt: "hello".into(),
+        provider_timeout_ms: Some(60_000),
+        ..ChatInput::default()
+    };
+    let activity = runtime.create_chat_activity().expect("activity");
+    let activity_id = activity.id.clone();
+    let runtime_thread = std::thread::spawn(move || runtime.run_chat(activity, input));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let persisted = store.get(&activity_id).expect("persisted activity");
+        if provider_log(&persisted.session, "provider.stdout") == Some("started") {
+            let mut cancelled = persisted;
+            cancelled.status = nitpick_agent_core::ActivityStatus::Error;
+            cancelled.error = Some("cancelled by test".into());
+            store.save(&cancelled).expect("save cancelled activity");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "provider did not start before cancellation"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let activity = runtime_thread
+        .join()
+        .expect("runtime thread")
+        .expect("chat");
+    assert_eq!(
+        activity.error.as_deref(),
+        Some("claude provider command cancelled")
+    );
 }
 
 #[test]
