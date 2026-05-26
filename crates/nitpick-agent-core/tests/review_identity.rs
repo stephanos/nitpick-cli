@@ -1,6 +1,5 @@
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ReviewInput, ReviewRequest, ReviewSubject,
-    review_session_id,
 };
 
 #[test]
@@ -57,57 +56,5 @@ fn activity_labels_review_input() {
     assert_eq!(
         activity.label.as_deref(),
         Some("review on acme/platform#42")
-    );
-}
-
-#[test]
-fn review_session_id_matches_existing_behavior_for_pr_with_sha() {
-    let input = ReviewInput {
-        subject: ReviewSubject {
-            repository: "acme/platform".into(),
-            number: Some(42),
-            ..ReviewSubject::default()
-        },
-        head_sha: "abc123".into(),
-        ..ReviewInput::default()
-    };
-
-    assert_eq!(
-        review_session_id(&input),
-        "73d2591b-47c9-4092-b620-841717641589"
-    );
-}
-
-#[test]
-fn review_session_id_matches_existing_behavior_for_pr_without_sha() {
-    let input = ReviewInput {
-        subject: ReviewSubject {
-            repository: "acme/platform".into(),
-            number: Some(42),
-            ..ReviewSubject::default()
-        },
-        ..ReviewInput::default()
-    };
-
-    assert_eq!(
-        review_session_id(&input),
-        "e3a8e6e8-8dcb-4e4f-98ca-cef0a23a55fb"
-    );
-}
-
-#[test]
-fn review_session_id_matches_existing_behavior_for_no_pr_number() {
-    let input = ReviewInput {
-        subject: ReviewSubject {
-            repository: "acme/platform".into(),
-            ..ReviewSubject::default()
-        },
-        head_sha: "abc123".into(),
-        ..ReviewInput::default()
-    };
-
-    assert_eq!(
-        review_session_id(&input),
-        "7dd684d9-4132-47cb-84de-c666fced65e7"
     );
 }

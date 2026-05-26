@@ -320,7 +320,14 @@ fn enqueue_review_restarts_stale_running_review_for_same_pr_head_sha() {
     stale.label_review(&input);
     stale.status = ActivityStatus::Running;
     stale.session.status = SessionStatus::Running;
-    stale.session.provider_session_id = Some(nitpick_agent_core::review_session_id(&input));
+    stale.session.provider_session_id = Some("123e4567-e89b-42d3-a456-426614174000".into());
+    stale
+        .session
+        .messages
+        .push(nitpick_agent_core::AgentMessage {
+            role: "nitpick.review.head_sha".into(),
+            content: input.head_sha.clone(),
+        });
     let stale_id = stale.id.clone();
     store.save(&stale).expect("save stale activity");
 

@@ -7,7 +7,6 @@ use crate::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentProvider,
     AgentResult, ArtifactContent, ArtifactKind, ChatInput, ProviderReviewContext,
     ProviderRunContext, ProviderRunSink, ReviewInput, ReviewOutput, SessionStatus, provider_log,
-    review_identity::ReviewIdentity,
 };
 
 const PROVIDER_LOG_SAVE_INTERVAL: Duration = Duration::from_millis(250);
@@ -37,8 +36,9 @@ impl AgentRuntime {
     pub fn create_queued_review_activity(&self, input: &ReviewInput) -> AgentResult<Activity> {
         let mut activity = self.store.create(ActivityKind::Review)?;
         activity.label_review(input);
+        record_review_head_sha(&mut activity, input);
         if activity.session.provider_session_id.is_none() {
-            activity.session.provider_session_id = Some(review_session_id(input));
+            activity.session.provider_session_id = Some(new_provider_session_id());
         }
         activity.touch();
         self.store.save(&activity)?;
@@ -56,8 +56,9 @@ impl AgentRuntime {
     pub fn run_review(&self, mut activity: Activity, input: ReviewInput) -> AgentResult<Activity> {
         activity = self.mark_activity_running(activity)?;
         activity.label_review(&input);
+        record_review_head_sha(&mut activity, &input);
         if activity.session.provider_session_id.is_none() {
-            activity.session.provider_session_id = Some(review_session_id(&input));
+            activity.session.provider_session_id = Some(new_provider_session_id());
         }
         activity.touch();
         self.store.save(&activity)?;
@@ -284,38 +285,16 @@ fn merge_provider_logs_from_store(
     Ok(())
 }
 
-pub fn review_session_id(input: &ReviewInput) -> String {
-    uuid_from_key(&ReviewIdentity::from_input(input).session_key())
+pub fn new_provider_session_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
-fn uuid_from_key(key: &str) -> String {
-    let mut hash = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58du128;
-    for byte in key.as_bytes() {
-        hash ^= u128::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013bu128);
-    }
-    let mut bytes = hash.to_be_bytes();
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15]
-    )
+fn record_review_head_sha(activity: &mut Activity, input: &ReviewInput) {
+    provider_log::upsert_provider_log(
+        &mut activity.session,
+        "nitpick.review.head_sha",
+        &input.head_sha,
+    );
 }
 
 fn review_artifacts(

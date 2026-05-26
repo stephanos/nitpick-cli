@@ -49,7 +49,7 @@ pub use review_source::{
     FsProcessedReviewStore, MemoryProcessedReviewStore, ProcessedReview, ProcessedReviewStore,
     ReviewSource,
 };
-pub use runtime::{AgentRuntime, review_session_id};
+pub use runtime::{AgentRuntime, new_provider_session_id};
 pub use session::{AgentMessage, AgentProviderKind, AgentSession, SessionStatus};
 pub use store::{ActivityStore, ArtifactStore, FsActivityStore, MemoryActivityStore};
 pub use sync::{ArtifactSyncDestination, ArtifactSyncOutcome};

@@ -45,15 +45,6 @@ impl ReviewIdentity {
         format!("review on {}", self.display_reference())
     }
 
-    pub(crate) fn session_key(&self) -> String {
-        let mut key = format!("{}:{}", self.source, self.display_reference());
-        if self.number.is_some() && !self.head_sha.is_empty() {
-            key.push('@');
-            key.push_str(&self.head_sha);
-        }
-        key
-    }
-
     #[cfg(test)]
     pub(crate) fn version_key(&self) -> String {
         let mut key = format!("{}:{}", self.source, self.display_reference());

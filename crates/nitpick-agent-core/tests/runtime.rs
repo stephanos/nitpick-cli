@@ -264,6 +264,43 @@ fn review_activity_assigns_provider_compatible_session_id_before_provider_call()
 }
 
 #[test]
+fn review_activities_get_fresh_provider_session_ids_for_same_review() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+    let input = ReviewInput {
+        subject: ReviewSubject {
+            repository: "acme/platform".into(),
+            number: Some(42),
+            ..ReviewSubject::default()
+        },
+        head_sha: "abc123".into(),
+        ..ReviewInput::default()
+    };
+
+    let first = runtime
+        .create_queued_review_activity(&input)
+        .expect("first activity");
+    let second = runtime
+        .create_queued_review_activity(&input)
+        .expect("second activity");
+
+    let first_session = first
+        .session
+        .provider_session_id
+        .as_deref()
+        .expect("first session");
+    let second_session = second
+        .session
+        .provider_session_id
+        .as_deref()
+        .expect("second session");
+    assert!(is_uuid_like(first_session), "{first_session}");
+    assert!(is_uuid_like(second_session), "{second_session}");
+    assert_ne!(first_session, second_session);
+}
+
+#[test]
 fn review_activity_runs_provider_and_persists_completion() {
     let provider = Arc::new(RecordingProvider::default());
     let store = Arc::new(MemoryActivityStore::default());
@@ -293,7 +330,13 @@ fn review_activity_runs_provider_and_persists_completion() {
         activity.session.provider_session_id.as_deref(),
         Some("provider-review-session")
     );
-    assert_eq!(activity.session.messages.len(), 2);
+    assert!(
+        activity
+            .session
+            .messages
+            .iter()
+            .any(|message| message.role == "nitpick.review.head_sha")
+    );
     assert!(matches!(
         activity.output,
         Some(ActivityOutput::Review(ReviewOutput { ref comments }))

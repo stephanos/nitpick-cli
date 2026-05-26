@@ -96,7 +96,6 @@ impl ReviewExecutionQueue {
             return Ok(None);
         };
         let label = format!("review on {}#{number}", input.subject.repository);
-        let session_id = nitpick_agent_core::review_session_id(input);
         Ok(self
             .store
             .list()?
@@ -105,7 +104,7 @@ impl ReviewExecutionQueue {
             .filter(|activity| active_review_status(&activity.status))
             .filter(|activity| activity.label.as_deref() == Some(label.as_str()))
             .find(|activity| {
-                activity.session.provider_session_id.as_deref() == Some(session_id.as_str())
+                review_activity_head_sha(activity).as_deref() == Some(&input.head_sha)
             }))
     }
 
@@ -212,4 +211,13 @@ fn activity_started_before(candidate: &Activity, activity: &Activity) -> bool {
         .cmp(&activity.created_at_unix)
         .then_with(|| candidate.id.cmp(&activity.id))
         .is_lt()
+}
+
+fn review_activity_head_sha(activity: &Activity) -> Option<String> {
+    activity
+        .session
+        .messages
+        .iter()
+        .find(|message| message.role == "nitpick.review.head_sha")
+        .map(|message| message.content.clone())
 }
