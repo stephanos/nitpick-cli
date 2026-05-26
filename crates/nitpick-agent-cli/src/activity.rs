@@ -72,6 +72,9 @@ pub fn resolve_log_activity<'a>(
     {
         return Ok(activity);
     }
+    if looks_like_activity_id(target) {
+        return Err(format!("activity not found: {target}"));
+    }
 
     let label = review_label_for_target(target)?;
     activities
@@ -84,6 +87,12 @@ pub fn resolve_log_activity<'a>(
                 .then_with(|| lhs.id.cmp(&rhs.id))
         })
         .ok_or_else(|| format!("no review activity found for {target}"))
+}
+
+fn looks_like_activity_id(target: &str) -> bool {
+    target.strip_prefix("activity-").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+    })
 }
 
 pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> String {
@@ -646,6 +655,13 @@ mod tests {
                 .id,
             latest_review.id
         );
+    }
+
+    #[test]
+    fn missing_activity_id_reports_activity_not_found() {
+        let error = super::resolve_log_activity(&[], "activity-33").expect_err("missing activity");
+
+        assert_eq!(error, "activity not found: activity-33");
     }
 
     #[test]
