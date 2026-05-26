@@ -290,7 +290,9 @@ fn format_provider_diagnostic(activity: &Activity, display: &ProviderDiagnosticD
     } else if activity.status == ActivityStatus::Completed {
         sections.push(crate::activity::format_section("Output", "empty"));
     }
-    if let Some(debug_file) = crate::activity::provider_debug_file(activity) {
+    if activity.status != ActivityStatus::Completed
+        && let Some(debug_file) = crate::activity::provider_debug_file(activity)
+    {
         sections.push(crate::activity::format_section(
             "Provider debug file",
             crate::activity::format_provider_debug_file(&debug_file),
@@ -406,5 +408,38 @@ mod tests {
             super::format_provider_diagnostic(&activity, &display),
             "Diagnostic still running\n  \u{1b}[2mactivity\u{1b}[0m  activity-24\n  \u{1b}[2mprovider\u{1b}[0m  claude\n  \u{1b}[2mcommand\u{1b}[0m   /opt/homebrew/bin/claude\n  \u{1b}[2mmodel\u{1b}[0m     claude-opus-4-6\n  \u{1b}[2msandbox\u{1b}[0m   macos-seatbelt\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[34mRunning\u{1b}[0m\n\nStatus\n  provider diagnostic is still running after 60s\n  check logs: nitpick debug logs activity-24\n\nLogs\n  nitpick debug logs activity-24"
         );
+    }
+
+    #[test]
+    fn completed_provider_diagnostic_omits_debug_file_details() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let debug_file = dir.path().join("provider-debug.log");
+        std::fs::write(&debug_file, "debug noise").expect("debug file");
+        let mut activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-28"),
+            nitpick_agent_core::ActivityKind::Chat,
+        );
+        activity.status = nitpick_agent_core::ActivityStatus::Completed;
+        activity.output = Some(nitpick_agent_core::ActivityOutput::Chat("OK".into()));
+        activity.session.provider = Some(nitpick_agent_core::AgentProviderKind::Claude);
+        activity.session.messages = vec![nitpick_agent_core::AgentMessage {
+            role: "provider.run".into(),
+            content: format!(
+                "provider claude command completed\ncommand: claude\nmodel: claude-opus-4-6\nsandbox: enabled\ndebug_file: {}",
+                debug_file.display()
+            ),
+        }];
+        let display = super::ProviderDiagnosticDisplay {
+            provider: "claude".into(),
+            command: "claude".into(),
+            model: "claude-opus-4-6".into(),
+            sandbox: "macos-seatbelt".into(),
+        };
+
+        let output = super::format_provider_diagnostic(&activity, &display);
+
+        assert!(output.contains("Output\n  OK"));
+        assert!(!output.contains("Provider debug file"));
+        assert!(output.contains("nitpick debug logs activity-28"));
     }
 }

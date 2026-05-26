@@ -990,11 +990,15 @@ fn provider_runtime_read_write_paths() -> Vec<PathBuf> {
             home.join(".cache"),
             home.join(".config").join("claude"),
             home.join(".local").join("share").join("claude"),
+            home.join(".local").join("state").join("claude"),
             home.join("Library")
                 .join("Application Support")
                 .join("Claude"),
             home.join(".npm"),
             home.join("Library").join("Caches").join("Claude"),
+            home.join("Library")
+                .join("Caches")
+                .join("claude-cli-nodejs"),
         ]);
     }
     paths.push(std::env::temp_dir());
@@ -1131,6 +1135,9 @@ mod tests {
             r#"(allow file-read* file-write* (subpath "{home}/.local/share/claude"))"#
         )));
         assert!(profile.contains(&format!(
+            r#"(allow file-read* file-write* (subpath "{home}/.local/state/claude"))"#
+        )));
+        assert!(profile.contains(&format!(
             r#"(allow file-read* (subpath "{home}/Library/Keychains"))"#
         )));
         assert!(profile.contains(&format!(
@@ -1145,6 +1152,9 @@ mod tests {
         )));
         assert!(profile.contains(&format!(
             r#"(allow file-read* file-write* (subpath "{home}/.config/claude"))"#
+        )));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* file-write* (subpath "{home}/Library/Caches/claude-cli-nodejs"))"#
         )));
         assert!(profile.contains(&format!(
             r#"(subpath "{}")"#,
