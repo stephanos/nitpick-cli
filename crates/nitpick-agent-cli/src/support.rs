@@ -1,6 +1,6 @@
 use std::{path::Path, process::Command};
 
-use nitpick_agent_core::{Activity, ActivityStore, FsActivityStore};
+use nitpick_agent_core::{Activity, ActivityStore, FsActivityStore, ReviewInput};
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
 
 use crate::CliOptions;
@@ -59,6 +59,35 @@ fn ensure_cached_checkout_with_git_command(
         .review_input(&(&pull_request).into())
         .map_err(|error| error.to_string())?;
     Ok(review_input.repo_dir)
+}
+
+pub(crate) fn github_review_input(
+    target: &str,
+    config_path: &Path,
+    data_dir: &Path,
+) -> Result<ReviewInput, String> {
+    let pull_request = target
+        .parse::<PullRequestRef>()
+        .map_err(|error| format!("invalid GitHub pull request reference: {error}"))?;
+    let config =
+        nitpick_agent_host::AgentConfig::load_or_default(config_path).map_err(|error| {
+            format!(
+                "failed to load config {}: {error}",
+                config_path.display()
+            )
+        })?;
+    github_review_input_with_git_command(&pull_request, &config, data_dir, Path::new("git"))
+}
+
+fn github_review_input_with_git_command(
+    pull_request: &PullRequestRef,
+    config: &nitpick_agent_host::AgentConfig,
+    data_dir: &Path,
+    git_command: &Path,
+) -> Result<ReviewInput, String> {
+    configured_github_discovery_with_git_command(config, data_dir, git_command)
+        .review_input(&pull_request.into())
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn open_cached_checkout(
@@ -314,6 +343,69 @@ git -C {} checkout -B feature/watcher origin/feature/watcher --quiet\n",
                 checkout.display()
             )
         );
+    }
+
+    #[test]
+    fn github_review_input_uses_discovery_metadata_diff_and_checkout() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let checkout = data_dir.join("checkouts/acme/platform/pr-42");
+        let gh = dir.path().join("gh");
+        let git = dir.path().join("git");
+        let log = dir.path().join("commands.log");
+        std::fs::write(
+            &gh,
+            format!(
+                r#"#!/bin/sh
+printf 'gh %s\n' "$*" >> '{}'
+if [ "$1 $2" = "pr view" ]; then
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  exit 0
+fi
+if [ "$1 $2" = "pr diff" ]; then
+  printf 'diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n'
+  exit 0
+fi
+if [ "$1 $2" = "repo clone" ]; then
+  mkdir -p "$4/.git"
+  exit 0
+fi
+exit 1
+"#,
+                log.display()
+            ),
+        )
+        .expect("gh");
+        std::fs::write(
+            &git,
+            format!(
+                "#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        )
+        .expect("git");
+        make_executable(&gh);
+        make_executable(&git);
+        let config = nitpick_agent_host::AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            ..nitpick_agent_host::AgentConfig::default()
+        };
+        let pull_request = "https://github.com/acme/platform/pull/42"
+            .parse()
+            .expect("pull request ref");
+
+        let input =
+            super::github_review_input_with_git_command(&pull_request, &config, &data_dir, &git)
+                .expect("review input");
+
+        assert_eq!(input.repo_dir, checkout);
+        assert_eq!(input.review_mode, nitpick_agent_core::ReviewMode::Requested);
+        assert_eq!(input.subject.repository, "acme/platform");
+        assert_eq!(input.subject.number, Some(42));
+        assert_eq!(input.subject.title, "Add watcher");
+        assert_eq!(input.subject.author, "stephan");
+        assert_eq!(input.head_sha, "abc123");
+        assert_eq!(input.diff, "diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n");
     }
 
     fn make_executable(path: &std::path::Path) {

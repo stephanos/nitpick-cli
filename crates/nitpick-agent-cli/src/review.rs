@@ -89,7 +89,7 @@ pub fn run(
     let client = HostClient::new(&context.host_addr);
     match command {
         ReviewCommand::Start { subject, force } => {
-            let mut input = review_input(subject.clone(), context.repo_dir, context.diff);
+            let mut input = start_review_input(&subject, &context)?;
             input.disable_sandbox = options.disable_sandbox;
             input.force = force;
             let activity = client.review(&input)?;
@@ -160,6 +160,18 @@ pub fn run(
             Ok(format_review_list(&requests, &activities, status, limit))
         }
     }
+}
+
+fn start_review_input(subject: &str, context: &CliRunContext) -> Result<ReviewInput, CliError> {
+    if subject.parse::<nitpick_agent_github::PullRequestRef>().is_ok() {
+        return crate::support::github_review_input(subject, &context.config_path, &context.data_dir)
+            .map_err(CliError::from);
+    }
+    Ok(review_input(
+        subject.to_owned(),
+        context.repo_dir.clone(),
+        context.diff.clone(),
+    ))
 }
 
 pub fn format_review_requests(requests: &[ReviewRequest]) -> String {
