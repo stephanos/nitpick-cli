@@ -1,4 +1,9 @@
-use std::{sync::Arc, thread, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 use nitpick_agent_core::{
     Activity, ActivityKind, ActivityStatus, ActivityStore, AgentResult, AgentRuntime, ReviewInput,
@@ -10,6 +15,7 @@ use crate::review_slots::ReviewSlotManager;
 pub(crate) struct ReviewExecutionQueue {
     store: Arc<dyn ActivityStore>,
     slots: ReviewSlotManager,
+    running: Arc<Mutex<BTreeSet<nitpick_agent_core::ActivityId>>>,
 }
 
 impl ReviewExecutionQueue {
@@ -17,6 +23,7 @@ impl ReviewExecutionQueue {
         Self {
             store,
             slots: ReviewSlotManager::new(max_concurrent),
+            running: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
 
@@ -31,13 +38,19 @@ impl ReviewExecutionQueue {
             self.cancel_active_reviews_for_same_pr(&input)?;
         }
         if let Some(activity) = self.active_review_for_input(&input)? {
-            return Ok(activity);
+            if activity.status != ActivityStatus::Running
+                || self.activity_is_running_in_this_host(&activity)?
+            {
+                return Ok(activity);
+            }
+            self.mark_stale_running_activity(activity)?;
         }
         let same_pr_active = self.has_active_review_for_same_pr(&input)?;
         let mut activity = runtime.create_queued_review_activity(&input)?;
         let slot_acquired = !same_pr_active && self.slots.try_acquire()?;
         if slot_acquired {
             activity = runtime.mark_activity_running(activity)?;
+            self.register_running(&activity)?;
         }
         let queued = activity.clone();
         let queue = self.clone();
@@ -61,12 +74,15 @@ impl ReviewExecutionQueue {
         run_review: impl FnOnce(Activity, ReviewInput) -> AgentResult<Activity>,
         after_slot_release: impl FnOnce(&AgentResult<Activity>, &ReviewInput),
     ) -> AgentResult<Activity> {
+        let activity_id = activity.id.clone();
         let post_review_input = input.clone();
         if !slot_acquired {
             self.wait_for_prior_reviews_on_same_pr(&activity)?;
             self.slots.wait_and_acquire()?;
+            self.register_running(&activity)?;
         }
         let result = run_review(activity, input);
+        self.unregister_running(&activity_id)?;
         self.slots.release()?;
         after_slot_release(&result, &post_review_input);
         result
@@ -140,6 +156,42 @@ impl ReviewExecutionQueue {
             self.store.save(&activity)?;
         }
         Ok(())
+    }
+
+    fn register_running(&self, activity: &Activity) -> AgentResult<()> {
+        self.running
+            .lock()
+            .map_err(|_| nitpick_agent_core::AgentError::io("review queue lock", "poisoned"))?
+            .insert(activity.id.clone());
+        Ok(())
+    }
+
+    fn unregister_running(&self, activity_id: &nitpick_agent_core::ActivityId) -> AgentResult<()> {
+        self.running
+            .lock()
+            .map_err(|_| nitpick_agent_core::AgentError::io("review queue lock", "poisoned"))?
+            .remove(activity_id);
+        Ok(())
+    }
+
+    fn activity_is_running_in_this_host(&self, activity: &Activity) -> AgentResult<bool> {
+        Ok(self
+            .running
+            .lock()
+            .map_err(|_| nitpick_agent_core::AgentError::io("review queue lock", "poisoned"))?
+            .contains(&activity.id))
+    }
+
+    fn mark_stale_running_activity(&self, mut activity: Activity) -> AgentResult<()> {
+        if activity.status != ActivityStatus::Running {
+            return Ok(());
+        }
+        activity.status = ActivityStatus::Error;
+        activity.session.status =
+            nitpick_agent_core::SessionStatus::Error("stale running review recovered".into());
+        activity.error = Some("stale running review recovered".into());
+        activity.touch();
+        self.store.save(&activity)
     }
 }
 

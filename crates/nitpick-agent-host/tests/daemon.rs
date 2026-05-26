@@ -311,6 +311,35 @@ fn enqueue_review_reuses_active_review_for_same_pr_head_sha() {
 }
 
 #[test]
+fn enqueue_review_restarts_stale_running_review_for_same_pr_head_sha() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(BlockingProvider::default());
+    let daemon = HostDaemon::with_provider(store.clone(), provider.clone());
+    let input = review_input_for_head("sha-one");
+    let mut stale = store.create(ActivityKind::Review).expect("activity");
+    stale.label_review(&input);
+    stale.status = ActivityStatus::Running;
+    stale.session.status = SessionStatus::Running;
+    stale.session.provider_session_id = Some(nitpick_agent_core::review_session_id(&input));
+    let stale_id = stale.id.clone();
+    store.save(&stale).expect("save stale activity");
+
+    let restarted = daemon
+        .enqueue_review(input)
+        .expect("stale review restarted");
+
+    let stale = store.get(&stale_id).expect("stale activity");
+    assert_eq!(stale.status, ActivityStatus::Error);
+    assert_eq!(
+        stale.error.as_deref(),
+        Some("stale running review recovered")
+    );
+    assert_ne!(restarted.id, stale_id);
+    wait_until(|| provider.started.load(Ordering::SeqCst) == 1);
+    provider.release();
+}
+
+#[test]
 fn enqueue_review_force_supersedes_active_review_for_same_pr() {
     let store = Arc::new(MemoryActivityStore::default());
     let provider = Arc::new(BlockingProvider::default());
