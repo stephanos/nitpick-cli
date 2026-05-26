@@ -632,6 +632,7 @@ impl AgentProvider for CommandAgentProvider {
         input: &ReviewInput,
         context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
+        validate_review_input(input)?;
         session.provider = Some(self.kind.clone());
         let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
         let repo_dir = input.repo_dir.canonicalize().map_err(|error| {
@@ -738,6 +739,21 @@ impl AgentProvider for CommandAgentProvider {
             AgentProviderKind::Codex => self.run_interactive(&["resume".into(), session_id.into()]),
         }
     }
+}
+
+fn validate_review_input(input: &ReviewInput) -> AgentResult<()> {
+    if input.diff.trim().is_empty() {
+        return Err(AgentError::invalid_input(
+            "review input missing diff; cannot run review",
+        ));
+    }
+    if !input.repo_dir.is_dir() {
+        return Err(AgentError::invalid_input(format!(
+            "review input checkout not found: {}",
+            input.repo_dir.display()
+        )));
+    }
+    Ok(())
 }
 
 impl CommandAgentProvider {

@@ -538,6 +538,99 @@ fn command_provider_uses_configured_review_prompt() {
 }
 
 #[test]
+fn command_provider_rejects_review_without_diff_before_running_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    let command = dir.path().join("provider");
+    let marker = dir.path().join("command-ran");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf ran > '{}'\nmkdir -p .nitpick\nprintf '{{\"comments\":[]}}' > .nitpick/review-output.json\n",
+            marker.display()
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(
+        CommandAgentProvider::new(
+            AgentProviderKind::Claude,
+            Some("test-model".into()),
+            &command,
+        )
+        .with_sandbox(CommandSandboxConfig::unsandboxed()),
+    );
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+
+    let activity = runtime
+        .start_review(ReviewInput {
+            repo_dir,
+            diff: " \n\t".into(),
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                ..ReviewSubject::default()
+            },
+            ..ReviewInput::default()
+        })
+        .expect("activity saved");
+
+    assert_eq!(
+        activity.error.as_deref(),
+        Some("review input missing diff; cannot run review")
+    );
+    assert!(!marker.exists(), "provider command should not run");
+}
+
+#[test]
+fn command_provider_rejects_review_without_checkout_before_running_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("missing-repo");
+    let command = dir.path().join("provider");
+    let marker = dir.path().join("command-ran");
+    fs::write(
+        &command,
+        format!(
+            "#!/bin/sh\nprintf ran > '{}'\nmkdir -p .nitpick\nprintf '{{\"comments\":[]}}' > .nitpick/review-output.json\n",
+            marker.display()
+        ),
+    )
+    .expect("write command");
+    make_executable(&command);
+
+    let provider = Arc::new(
+        CommandAgentProvider::new(
+            AgentProviderKind::Claude,
+            Some("test-model".into()),
+            &command,
+        )
+        .with_sandbox(CommandSandboxConfig::unsandboxed()),
+    );
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+
+    let activity = runtime
+        .start_review(ReviewInput {
+            repo_dir: repo_dir.clone(),
+            diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                ..ReviewSubject::default()
+            },
+            ..ReviewInput::default()
+        })
+        .expect("activity saved");
+
+    let expected_error = format!("review input checkout not found: {}", repo_dir.display());
+    assert_eq!(activity.error.as_deref(), Some(expected_error.as_str()));
+    assert!(!marker.exists(), "provider command should not run");
+}
+
+#[test]
 fn command_provider_rejects_missing_review_output_json_file() {
     let dir = tempfile::tempdir().expect("temp dir");
     let repo_dir = dir.path().join("repo");
@@ -564,6 +657,7 @@ fn command_provider_rejects_missing_review_output_json_file() {
     let activity = runtime
         .start_review(ReviewInput {
             repo_dir,
+            diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
             subject: ReviewSubject {
                 repository: "acme/platform".into(),
                 number: Some(42),
