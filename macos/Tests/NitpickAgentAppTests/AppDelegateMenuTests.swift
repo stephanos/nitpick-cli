@@ -213,6 +213,10 @@ final class AppDelegateMenuTests: XCTestCase {
                         role: "provider.sandbox",
                         content: "retry with --no-sandbox"
                     ),
+                    ActivityMessageSnapshot(
+                        role: "provider.run",
+                        content: "provider claude command completed\nstatus: exit status: 1"
+                    ),
                 ]
             ),
             createdAtUnix: 1_000,
@@ -225,7 +229,7 @@ final class AppDelegateMenuTests: XCTestCase {
         )
         XCTAssertEqual(
             appDelegate.activityProviderLogDetailsForTesting(activity),
-            "stdout\n  review progress\n  no findings\nstderr\n  warning\nsandbox\n  retry with --no-sandbox"
+            "stdout\n  review progress\n  no findings\nstderr\n  warning\nsandbox\n  retry with --no-sandbox\nrun\n  provider claude command completed\n  status: exit status: 1"
         )
     }
 

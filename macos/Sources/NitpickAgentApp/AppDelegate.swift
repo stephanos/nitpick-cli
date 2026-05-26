@@ -471,6 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 message.role == "provider.stdout"
                     || message.role == "provider.stderr"
                     || message.role == "provider.sandbox"
+                    || message.role == "provider.run"
             }
             .map { message in
                 let label = message.role.replacingOccurrences(of: "provider.", with: "")
