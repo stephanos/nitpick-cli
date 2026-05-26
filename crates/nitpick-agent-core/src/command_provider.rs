@@ -8,7 +8,8 @@ use crate::{
     AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
     ChatInput, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
-    macos_sandbox::SandboxProfileBuilder, provider_command_runner::ProviderCommandRunner,
+    macos_sandbox::{SandboxProfileBuilder, regex_literal_path},
+    provider_command_runner::ProviderCommandRunner,
     provider_log, validate_review_output_file_for_diff,
 };
 
@@ -143,6 +144,7 @@ impl CommandAgentProvider {
         review_output_path: Option<&Path>,
         sandbox: &CommandSandboxConfig,
         timeout: Option<std::time::Duration>,
+        provider_debug_file: Option<&Path>,
     ) -> AgentResult<String> {
         let sandbox_log_tag = sandbox.enabled.then(new_sandbox_log_tag);
         let mut command =
@@ -165,6 +167,7 @@ impl CommandAgentProvider {
             &self.command,
             sandbox.enabled,
             timeout,
+            provider_debug_file,
         ))?;
         let command_display = self.command.display().to_string();
         let output = ProviderCommandRunner::new(self.kind.as_str(), &command_display)
@@ -183,6 +186,7 @@ impl CommandAgentProvider {
             &self.command,
             sandbox.enabled,
             timeout,
+            provider_debug_file,
             output.status,
             output.duration_ms,
             output.timed_out,
@@ -417,8 +421,9 @@ fn provider_run_start_diagnostic(
     command: &Path,
     sandbox_enabled: bool,
     timeout: Option<std::time::Duration>,
+    provider_debug_file: Option<&Path>,
 ) -> String {
-    [
+    let mut lines = vec![
         format!("provider {provider} command running"),
         format!("model: {}", model.unwrap_or("(default)")),
         format!("command: {}", command.display()),
@@ -437,8 +442,11 @@ fn provider_run_start_diagnostic(
                 .unwrap_or_else(|| "none".into())
         ),
         "status: running".into(),
-    ]
-    .join("\n")
+    ];
+    if let Some(provider_debug_file) = provider_debug_file {
+        lines.push(format!("debug_file: {}", provider_debug_file.display()));
+    }
+    lines.join("\n")
 }
 
 fn provider_run_diagnostic(
@@ -447,13 +455,14 @@ fn provider_run_diagnostic(
     command: &Path,
     sandbox_enabled: bool,
     timeout: Option<std::time::Duration>,
+    provider_debug_file: Option<&Path>,
     status: std::process::ExitStatus,
     duration_ms: u128,
     timed_out: bool,
     stdout: &[u8],
     stderr: &[u8],
 ) -> String {
-    [
+    let mut lines = vec![
         format!("provider {provider} command completed"),
         format!("model: {}", model.unwrap_or("(default)")),
         format!("command: {}", command.display()),
@@ -476,8 +485,11 @@ fn provider_run_diagnostic(
         format!("timed_out: {timed_out}"),
         format!("stdout: {}", provider_stream_state(stdout)),
         format!("stderr: {}", provider_stream_state(stderr)),
-    ]
-    .join("\n")
+    ];
+    if let Some(provider_debug_file) = provider_debug_file {
+        lines.push(format!("debug_file: {}", provider_debug_file.display()));
+    }
+    lines.join("\n")
 }
 
 fn provider_stream_state(bytes: &[u8]) -> &'static str {
@@ -622,6 +634,7 @@ impl AgentProvider for CommandAgentProvider {
                     None,
                     &sandbox,
                     None,
+                    None,
                 )?;
                 Ok(ReviewOutput {
                     comments: Vec::new(),
@@ -655,6 +668,7 @@ impl AgentProvider for CommandAgentProvider {
                     Some(&output_path),
                     &sandbox,
                     None,
+                    None,
                 )?;
                 validate_review_output_file_for_diff(&repo_dir, &output_path, &input.diff)
             }
@@ -673,9 +687,9 @@ impl AgentProvider for CommandAgentProvider {
         context: ProviderRunContext<'_>,
     ) -> AgentResult<String> {
         session.provider = Some(self.kind.clone());
-        let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
+        let sandbox = self.effective_chat_sandbox(input);
         let repo_dir = self.sandbox_repo_dir(&input.repo_dir, &sandbox)?;
-        let args = self.prompt_args();
+        let args = self.chat_args(input);
         self.run_prompt_in_dir_with_sandbox(
             session,
             context.run_sink,
@@ -687,6 +701,7 @@ impl AgentProvider for CommandAgentProvider {
             input
                 .provider_timeout_ms
                 .map(std::time::Duration::from_millis),
+            input.provider_debug_file.as_deref(),
         )
     }
 
@@ -726,6 +741,34 @@ impl CommandAgentProvider {
                 ]
             }
         }
+    }
+
+    fn chat_args(&self, input: &ChatInput) -> Vec<String> {
+        match (&self.kind, input.provider_debug_file.as_deref()) {
+            (AgentProviderKind::Claude, Some(debug_file)) => {
+                vec![
+                    "-p".into(),
+                    "--debug".into(),
+                    "--debug-file".into(),
+                    to_command_path(debug_file),
+                ]
+            }
+            _ => self.prompt_args(),
+        }
+    }
+
+    fn effective_chat_sandbox(&self, input: &ChatInput) -> CommandSandboxConfig {
+        let sandbox = self.effective_prompt_sandbox(input.disable_sandbox);
+        if !sandbox.enabled {
+            return sandbox;
+        }
+        let Some(debug_file) = input.provider_debug_file.as_deref() else {
+            return sandbox;
+        };
+        let Some(debug_dir) = debug_file.parent() else {
+            return sandbox;
+        };
+        sandbox.with_extra_read_write_paths([debug_dir.to_path_buf()])
     }
 
     fn review_tool_args(&self, session: &AgentSession, tools: &ReviewToolConfig) -> Vec<String> {
@@ -914,6 +957,8 @@ fn macos_sandbox_profile(
         .allow_read_write(&repo_dir)
         .allow_reads(&provider_runtime_read_paths())
         .allow_read_writes(&provider_runtime_read_write_paths())
+        .allow_literal_read_writes(&provider_runtime_literal_read_write_paths())
+        .allow_regex_read_writes(&provider_runtime_read_write_patterns())
         .allow_literal_reads(&sandbox.extra_read_paths)
         .allow_read_writes(&sandbox.extra_read_write_paths);
     Ok(match log_tag {
@@ -954,6 +999,25 @@ fn provider_runtime_read_write_paths() -> Vec<PathBuf> {
     }
     paths.push(std::env::temp_dir());
     paths
+}
+
+#[cfg(target_os = "macos")]
+fn provider_runtime_literal_read_write_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        paths.push(home.join(".claude.json"));
+    }
+    paths
+}
+
+#[cfg(target_os = "macos")]
+fn provider_runtime_read_write_patterns() -> Vec<String> {
+    let mut patterns = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let claude_json = regex_literal_path(&home.join(".claude.json"));
+        patterns.push(format!(r#"^{claude_json}\.tmp\..*$"#));
+    }
+    patterns
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -1072,6 +1136,10 @@ mod tests {
         assert!(profile.contains(&format!(
             r#"(allow file-read* file-write* (subpath "{home}/.claude"))"#
         )));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* file-write* (literal "{home}/.claude.json"))"#
+        )));
+        assert!(profile.contains(r#"\\.claude\\.json\\.tmp\\."#));
         assert!(profile.contains(&format!(
             r#"(allow file-read* file-write* (subpath "{home}/.cache"))"#
         )));

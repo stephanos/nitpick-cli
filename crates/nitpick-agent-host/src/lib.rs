@@ -845,6 +845,8 @@ impl HostDaemon {
         let mut activity = runtime.create_chat_activity()?;
         activity.label = Some("provider diagnostic".into());
         self.store.save(&activity)?;
+        let provider_debug_file =
+            provider_diagnostic_debug_file(&self.data_dir, &activity, &config.provider)?;
         let queued = activity.clone();
         thread::spawn(move || {
             let _ = runtime.run_chat(
@@ -855,6 +857,7 @@ impl HostDaemon {
                     context: "Nitpick provider diagnostic.".into(),
                     disable_sandbox: input.disable_sandbox,
                     provider_timeout_ms: Some(PROVIDER_DIAGNOSTIC_TIMEOUT_MS),
+                    provider_debug_file,
                 },
             );
         });
@@ -890,6 +893,24 @@ impl HostDaemon {
             );
         }
     }
+}
+
+fn provider_diagnostic_debug_file(
+    data_dir: &Path,
+    activity: &Activity,
+    provider: &AgentProviderKind,
+) -> AgentResult<Option<PathBuf>> {
+    if provider != &AgentProviderKind::Claude {
+        return Ok(None);
+    }
+    let dir = data_dir.join("logs").join("provider-debug");
+    fs::create_dir_all(&dir).map_err(|error| {
+        AgentError::io(
+            format!("create provider debug log directory {}", dir.display()),
+            error.to_string(),
+        )
+    })?;
+    Ok(Some(dir.join(format!("{}.log", activity.id))))
 }
 
 fn github_review_sync_target(input: &ReviewInput) -> Option<String> {

@@ -1,7 +1,12 @@
+use std::path::{Path, PathBuf};
+
 use nitpick_agent_core::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, Artifact, ArtifactContent,
 };
 use nitpick_agent_github::PullRequestRef;
+
+const PROVIDER_DEBUG_TAIL_LINES: usize = 40;
+const PROVIDER_DEBUG_DENIED_PATH_LIMIT: usize = 10;
 
 pub fn parse_activity_json(body: &str) -> Result<Activity, String> {
     serde_json::from_str(body).map_err(|error| format!("invalid host activity response: {error}"))
@@ -149,6 +154,12 @@ fn format_activity_logs_with_options(
             "Provider logs",
             format_provider_logs(activity),
         ));
+        if let Some(debug_file) = provider_debug_file(activity) {
+            sections.push(format_section(
+                "Provider debug file",
+                format_provider_debug_file(&debug_file),
+            ));
+        }
     }
     sections.push(format_section(
         "Artifacts",
@@ -181,6 +192,150 @@ fn format_provider_logs(activity: &Activity) -> String {
     } else {
         logs.join("\n")
     }
+}
+
+pub fn provider_debug_file(activity: &Activity) -> Option<PathBuf> {
+    provider_run_field(activity, "debug_file").map(PathBuf::from)
+}
+
+pub fn provider_run_field(activity: &Activity, field: &str) -> Option<String> {
+    let prefix = format!("{field}: ");
+    activity
+        .session
+        .messages
+        .iter()
+        .filter(|message| message.role == "provider.run")
+        .flat_map(|message| message.content.lines())
+        .find_map(|line| line.strip_prefix(&prefix).map(ToOwned::to_owned))
+}
+
+pub fn format_provider_debug_file(path: &Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => {
+            let mut sections = vec![format!(
+                "{} {}",
+                crate::style::label("path"),
+                path.display()
+            )];
+            let denied_paths = likely_permission_denied_paths(&contents);
+            if !denied_paths.is_empty() {
+                sections.push(format!(
+                    "{}\n{}",
+                    crate::style::label("permission-denied paths"),
+                    indent_block_by(
+                        &format_limited_lines(&denied_paths, PROVIDER_DEBUG_DENIED_PATH_LIMIT),
+                        "  "
+                    )
+                ));
+            }
+            sections.push(format!(
+                "{}\n{}",
+                crate::style::label("tail"),
+                indent_block_by(&tail_lines(&contents, PROVIDER_DEBUG_TAIL_LINES), "  ")
+            ));
+            sections.join("\n")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            format!(
+                "{} {}\n{} debug file not found",
+                crate::style::label("path"),
+                path.display(),
+                crate::style::label("status")
+            )
+        }
+        Err(error) => {
+            format!(
+                "{} {}\n{} read failed: {error}",
+                crate::style::label("path"),
+                path.display(),
+                crate::style::label("status")
+            )
+        }
+    }
+}
+
+fn likely_permission_denied_paths(contents: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in contents
+        .lines()
+        .filter(|line| is_permission_denied_line(line))
+    {
+        for path in absolute_paths_in_line(line) {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+fn is_permission_denied_line(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    line.contains("eperm")
+        || line.contains("operation not permitted")
+        || line.contains("permission denied")
+        || line.contains("failed to write")
+        || line.contains("failed to save")
+}
+
+fn absolute_paths_in_line(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'/' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len()
+            && !matches!(
+                bytes[index],
+                b'\'' | b'"' | b'`' | b' ' | b'\t' | b'\r' | b'\n' | b',' | b';'
+            )
+        {
+            index += 1;
+        }
+        let path = line[start..index]
+            .trim_end_matches([':', ')', ']'])
+            .to_owned();
+        if !path.is_empty() && !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths.sort_by_key(|path| permission_path_priority(path));
+    paths
+}
+
+fn permission_path_priority(path: &str) -> usize {
+    if path.contains(".claude.json") {
+        return 0;
+    }
+    if path.contains("/locks/") || path.contains(".lock") {
+        return 1;
+    }
+    if path.contains(".claude-marketplace") {
+        return 2;
+    }
+    if path.contains("/.claude/skills/") {
+        return 9;
+    }
+    3
+}
+
+fn tail_lines(contents: &str, limit: usize) -> String {
+    let lines = contents.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(limit);
+    lines[start..].join("\n")
+}
+
+fn format_limited_lines(lines: &[String], limit: usize) -> String {
+    if lines.len() <= limit {
+        return lines.join("\n");
+    }
+    let mut limited = lines[..limit].to_vec();
+    limited.push(format!("... {} more", lines.len() - limit));
+    limited.join("\n")
 }
 
 pub fn daemon_log_path(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -578,6 +733,45 @@ mod tests {
             super::format_activity_debug_logs(&activity, &[]),
             "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n  \u{1b}[2mrun\u{1b}[0m\n    provider claude command completed\n\nArtifacts\n  none"
         );
+    }
+
+    #[test]
+    fn debug_logs_include_provider_debug_file_tail_and_permission_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let debug_file = dir.path().join("provider-debug.log");
+        std::fs::write(
+            &debug_file,
+            [
+                "starting",
+                "Failed to save config with lock: Error: EPERM: operation not permitted, lstat '/Users/test/.claude.json'",
+                "Failed to write file atomically: Error: EPERM: operation not permitted, open '/Users/test/.claude.json.tmp.123.456'",
+                "done",
+            ]
+            .join("\n"),
+        )
+        .expect("debug file");
+        let mut activity = nitpick_agent_core::Activity::new(
+            nitpick_agent_core::ActivityId::new("activity-1"),
+            nitpick_agent_core::ActivityKind::Chat,
+        );
+        activity.status = nitpick_agent_core::ActivityStatus::Error;
+        activity.created_at_unix = 1_000;
+        activity.updated_at_unix = 1_200;
+        activity.session.messages = vec![nitpick_agent_core::AgentMessage {
+            role: "provider.run".into(),
+            content: format!(
+                "provider claude command completed\ndebug_file: {}",
+                debug_file.display()
+            ),
+        }];
+
+        let output = super::format_activity_debug_logs(&activity, &[]);
+
+        assert!(output.contains("Provider debug file"));
+        assert!(output.contains("/Users/test/.claude.json"));
+        assert!(output.contains("/Users/test/.claude.json.tmp.123.456"));
+        assert!(output.contains("Failed to save config with lock"));
+        assert!(output.contains("Failed to write file atomically"));
     }
 
     #[test]

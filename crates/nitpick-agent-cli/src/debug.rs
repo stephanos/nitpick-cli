@@ -244,15 +244,18 @@ fn format_provider_diagnostic(activity: &Activity, display: &ProviderDiagnosticD
         vec![crate::style::label("provider"), provider.into()],
         vec![
             crate::style::label("command"),
-            provider_run_field(activity, "command").unwrap_or_else(|| display.command.clone()),
+            crate::activity::provider_run_field(activity, "command")
+                .unwrap_or_else(|| display.command.clone()),
         ],
         vec![
             crate::style::label("model"),
-            provider_run_field(activity, "model").unwrap_or_else(|| display.model.clone()),
+            crate::activity::provider_run_field(activity, "model")
+                .unwrap_or_else(|| display.model.clone()),
         ],
         vec![
             crate::style::label("sandbox"),
-            provider_run_field(activity, "sandbox").unwrap_or_else(|| display.sandbox.clone()),
+            crate::activity::provider_run_field(activity, "sandbox")
+                .unwrap_or_else(|| display.sandbox.clone()),
         ],
         vec![
             crate::style::label("status"),
@@ -287,22 +290,17 @@ fn format_provider_diagnostic(activity: &Activity, display: &ProviderDiagnosticD
     } else if activity.status == ActivityStatus::Completed {
         sections.push(crate::activity::format_section("Output", "empty"));
     }
+    if let Some(debug_file) = crate::activity::provider_debug_file(activity) {
+        sections.push(crate::activity::format_section(
+            "Provider debug file",
+            crate::activity::format_provider_debug_file(&debug_file),
+        ));
+    }
     sections.push(crate::activity::format_section(
         "Logs",
         format!("nitpick debug logs {}", activity.id),
     ));
     sections.join("\n\n")
-}
-
-fn provider_run_field(activity: &Activity, field: &str) -> Option<String> {
-    let prefix = format!("{field}: ");
-    activity
-        .session
-        .messages
-        .iter()
-        .filter(|message| message.role == "provider.run")
-        .flat_map(|message| message.content.lines())
-        .find_map(|line| line.strip_prefix(&prefix).map(ToOwned::to_owned))
 }
 
 #[cfg(test)]

@@ -279,6 +279,20 @@ impl SandboxProfileBuilder {
         self
     }
 
+    pub(crate) fn allow_literal_read_writes(mut self, paths: &[PathBuf]) -> Self {
+        for path in paths {
+            self = self.allow_literal_read_write(path);
+        }
+        self
+    }
+
+    pub(crate) fn allow_regex_read_writes(mut self, patterns: &[String]) -> Self {
+        for pattern in patterns {
+            self = self.allow_regex_read_write(pattern);
+        }
+        self
+    }
+
     pub(crate) fn allow_literal_read(mut self, path: &Path) -> Self {
         self.rules.push(sandbox_literal_rule("file-read*", path));
         self
@@ -292,6 +306,18 @@ impl SandboxProfileBuilder {
     pub(crate) fn allow_read_write(mut self, path: &Path) -> Self {
         self.rules
             .push(sandbox_subpath_rule("file-read* file-write*", path));
+        self
+    }
+
+    pub(crate) fn allow_literal_read_write(mut self, path: &Path) -> Self {
+        self.rules
+            .push(sandbox_literal_rule("file-read* file-write*", path));
+        self
+    }
+
+    pub(crate) fn allow_regex_read_write(mut self, pattern: &str) -> Self {
+        self.rules
+            .push(sandbox_regex_rule("file-read* file-write*", pattern));
         self
     }
 
@@ -321,6 +347,30 @@ fn sandbox_subpath_rule(operation: &str, path: &Path) -> String {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let path = escape_sandbox_string(&path.to_string_lossy());
     format!(r#"(allow {operation} (subpath "{path}"))"#)
+}
+
+fn sandbox_regex_rule(operation: &str, pattern: &str) -> String {
+    let pattern = escape_sandbox_string(pattern);
+    format!(r#"(allow {operation} (regex "{pattern}"))"#)
+}
+
+pub(crate) fn regex_literal_path(path: &Path) -> String {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    escape_regex_literal(&path.to_string_lossy())
+}
+
+fn escape_regex_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 fn escape_sandbox_string(value: &str) -> String {
