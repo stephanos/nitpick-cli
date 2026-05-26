@@ -96,17 +96,23 @@ fn looks_like_activity_id(target: &str) -> bool {
 }
 
 pub fn format_activity_logs(activity: &Activity, artifacts: &[Artifact]) -> String {
-    format_activity_logs_with_options(activity, artifacts, false)
+    format_activity_logs_with_options(activity, artifacts, ActivityLogView::Review)
 }
 
 pub fn format_activity_debug_logs(activity: &Activity, artifacts: &[Artifact]) -> String {
-    format_activity_logs_with_options(activity, artifacts, true)
+    format_activity_logs_with_options(activity, artifacts, ActivityLogView::Debug)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActivityLogView {
+    Review,
+    Debug,
 }
 
 fn format_activity_logs_with_options(
     activity: &Activity,
     artifacts: &[Artifact],
-    include_provider_logs: bool,
+    view: ActivityLogView,
 ) -> String {
     let mut rows = vec![
         vec![crate::style::label("activity"), activity.id.to_string()],
@@ -156,9 +162,12 @@ fn format_activity_logs_with_options(
     };
     let mut sections = vec![format_section(title, crate::style::table(rows))];
     if let Some(output) = &activity.output {
-        sections.push(format_section("Output", format_activity_output(output)));
+        sections.push(format_section(
+            activity_output_section_title(activity, view),
+            format_activity_output(output),
+        ));
     }
-    if include_provider_logs {
+    if view == ActivityLogView::Debug {
         sections.push(format_section(
             "Provider logs",
             format_provider_logs(activity),
@@ -169,12 +178,20 @@ fn format_activity_logs_with_options(
                 format_provider_debug_file(&debug_file),
             ));
         }
+        sections.push(format_section(
+            "Sync artifacts",
+            format_artifacts_table(artifacts),
+        ));
     }
-    sections.push(format_section(
-        "Artifacts",
-        format_artifacts_table(artifacts),
-    ));
     sections.join("\n\n")
+}
+
+fn activity_output_section_title(activity: &Activity, view: ActivityLogView) -> &'static str {
+    if view == ActivityLogView::Review && activity.kind == ActivityKind::Review {
+        "Comments"
+    } else {
+        "Output"
+    }
 }
 
 fn format_provider_logs(activity: &Activity) -> String {
@@ -695,7 +712,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/acme/platform/pull/42\u{1b}\\https://github.com/acme/platform/pull/42\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nOutput\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body\n\nArtifacts\n  \u{1b}[2mid\u{1b}[0m          \u{1b}[2mkind\u{1b}[0m           \u{1b}[2mcontent\u{1b}[0m\n  \u{1b}[2martifact-1\u{1b}[0m  ReviewSummary  artifact summary"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/acme/platform/pull/42\u{1b}\\https://github.com/acme/platform/pull/42\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nComments\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body"
         );
     }
 
@@ -713,7 +730,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/stephanos/subvoc/pull/1\u{1b}\\https://github.com/stephanos/subvoc/pull/1\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nArtifacts\n  none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/stephanos/subvoc/pull/1\u{1b}\\https://github.com/stephanos/subvoc/pull/1\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z"
         );
     }
 
@@ -747,7 +764,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_debug_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n  \u{1b}[2mrun\u{1b}[0m\n    provider claude command completed\n\nArtifacts\n  none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n  \u{1b}[2mrun\u{1b}[0m\n    provider claude command completed\n\nSync artifacts\n  none"
         );
     }
 
@@ -802,7 +819,7 @@ mod tests {
 
         assert_eq!(
             super::format_activity_debug_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  no provider logs captured\n\nArtifacts\n  none"
+            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  no provider logs captured\n\nSync artifacts\n  none"
         );
     }
 
