@@ -1046,6 +1046,7 @@ fn provider_runtime_literal_read_write_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         paths.push(home.join(".claude.json"));
+        paths.push(home.join(".claude.lock"));
     }
     paths
 }
@@ -1189,6 +1190,9 @@ mod tests {
         )));
         assert!(profile.contains(&format!(
             r#"(allow file-read* file-write* (literal "{home}/.claude.json"))"#
+        )));
+        assert!(profile.contains(&format!(
+            r#"(allow file-read* file-write* (literal "{home}/.claude.lock"))"#
         )));
         assert!(profile.contains(r#"\\.claude\\.json\\.tmp\\."#));
         assert!(profile.contains(&format!(
