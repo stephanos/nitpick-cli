@@ -30,6 +30,8 @@ pub struct Activity {
     pub session: AgentSession,
     pub output: Option<ActivityOutput>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<ActivityRetryMetadata>,
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default = "unix_now")]
@@ -50,6 +52,7 @@ impl Activity {
             session: AgentSession::default(),
             output: None,
             error: None,
+            retry: None,
             label: None,
             created_at_unix: now,
             started_at_unix: None,
@@ -68,6 +71,48 @@ impl Activity {
 
     pub fn label_review(&mut self, input: &ReviewInput) {
         self.label = Some(ReviewIdentity::from_input(input).activity_label());
+    }
+
+    pub fn set_review_retry(&mut self, input: &ReviewInput, force: bool) {
+        self.retry = Some(ActivityRetryMetadata {
+            review: Some(ReviewRetryMetadata {
+                source: review_retry_source(input),
+                repository: input.subject.repository.clone(),
+                number: input.subject.number,
+                head_sha: input.head_sha.clone(),
+                review_mode: input.review_mode.clone(),
+                force,
+            }),
+            resolved_by_activity: None,
+        });
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityRetryMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewRetryMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by_activity: Option<ActivityId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRetryMetadata {
+    pub source: String,
+    pub repository: String,
+    pub number: Option<u64>,
+    pub head_sha: String,
+    pub review_mode: crate::ReviewMode,
+    pub force: bool,
+}
+
+fn review_retry_source(input: &ReviewInput) -> String {
+    if !input.source.is_empty() {
+        return input.source.clone();
+    }
+    match input.review_mode {
+        crate::ReviewMode::Requested => "github".into(),
+        crate::ReviewMode::SelfReview => "local".into(),
     }
 }
 

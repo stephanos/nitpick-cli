@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use crate::AgentProviderKind;
+use crate::{ActivityId, AgentProviderKind, ProviderFailureKind};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAttention {
+    pub kind: ProviderFailureKind,
+    pub title: String,
+    pub detail: String,
+    pub retryable_activity_count: usize,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostStatus {
@@ -23,6 +31,20 @@ pub struct HostStatus {
     pub review_source_enabled: bool,
     pub review_source_last_poll_unix: Option<u64>,
     pub review_source_last_poll_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention: Option<HostAttention>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryFailedActivitiesInput {
+    pub kind: ProviderFailureKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryFailedActivitiesResult {
+    pub queued: usize,
+    pub skipped: usize,
+    pub activities: Vec<ActivityId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ mod macos_sandbox;
 mod model;
 mod provider;
 mod provider_command_runner;
+mod provider_failure;
 mod provider_log;
 mod repo_path;
 mod review_identity;
@@ -21,7 +22,10 @@ mod session;
 mod store;
 mod sync;
 
-pub use activity::{Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus};
+pub use activity::{
+    Activity, ActivityId, ActivityKind, ActivityOutput, ActivityRetryMetadata, ActivityStatus,
+    ReviewRetryMetadata,
+};
 pub use app_paths::{
     checkout_root_from_env_values, config_path_from_env_value, data_dir_from_env_value,
     default_checkout_root, default_config_path, default_data_dir,
@@ -30,7 +34,10 @@ pub use artifact::{Artifact, ArtifactContent, ArtifactId, ArtifactKind, Artifact
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use command_provider::{CommandAgentProvider, CommandSandboxConfig};
 pub use error::{AgentError, AgentResult};
-pub use host::{CleanupCheckoutsResult, HostStatus, LocalStateResetResult};
+pub use host::{
+    CleanupCheckoutsResult, HostAttention, HostStatus, LocalStateResetResult,
+    RetryFailedActivitiesInput, RetryFailedActivitiesResult,
+};
 pub use json::{parse_json_bytes, parse_json_str, read_json, read_json_dir, write_json_atomic};
 pub use model::{
     ChatInput, ProviderDiagnosticInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
@@ -39,6 +46,9 @@ pub use model::{
 pub use provider::{
     AgentProvider, NoopProviderRunSink, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     ReviewToolConfig,
+};
+pub use provider_failure::{
+    ProviderFailureClassification, ProviderFailureKind, classify_provider_failure,
 };
 pub use repo_path::RepoPath;
 pub use review_output::{

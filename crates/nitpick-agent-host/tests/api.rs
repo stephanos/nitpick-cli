@@ -128,6 +128,28 @@ async fn activities_endpoint_filters_review_history_and_applies_limit() {
 }
 
 #[tokio::test]
+async fn retry_failed_activities_endpoint_returns_result() {
+    let app = api_router(HostDaemon::with_provider(
+        Arc::new(MemoryActivityStore::default()),
+        Arc::new(FakeProvider),
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            "/activities/retry-failed",
+            &serde_json::json!({ "kind": "auth_invalid_credentials" }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["queued"], 0);
+    assert_eq!(body["skipped"], 0);
+    assert_eq!(body["activities"].as_array().expect("activities").len(), 0);
+}
+
+#[tokio::test]
 async fn reset_endpoint_clears_local_state() {
     let data_dir = tempfile::tempdir().expect("data dir");
     let store = Arc::new(MemoryActivityStore::default());

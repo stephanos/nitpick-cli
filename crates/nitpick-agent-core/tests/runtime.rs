@@ -10,8 +10,8 @@ use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore,
     AgentProvider, AgentResult, AgentRuntime, AgentSession, Artifact, ArtifactContent, ArtifactId,
     ArtifactKind, ArtifactStore, ArtifactSyncState, ChatInput, MemoryActivityStore,
-    ProviderReviewContext, ProviderRunContext, ReviewComment, ReviewInput, ReviewOutput,
-    ReviewSubject,
+    ProviderReviewContext, ProviderRunContext, ReviewComment, ReviewInput, ReviewMode,
+    ReviewOutput, ReviewSubject,
 };
 
 #[derive(Default)]
@@ -364,6 +364,173 @@ fn review_activity_runs_provider_and_persists_completion() {
 }
 
 #[test]
+fn review_activity_persists_retry_metadata() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+    let input = ReviewInput {
+        repo_dir: temp_repo_dir(),
+        source: "github".into(),
+        review_mode: ReviewMode::Requested,
+        subject: ReviewSubject {
+            repository: "acme/platform".into(),
+            number: Some(42),
+            title: "Add watcher".into(),
+            author: "stephan".into(),
+        },
+        head_sha: "abc123".into(),
+        diff: "diff --git a/src.rs b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
+        ..ReviewInput::default()
+    };
+
+    let activity = runtime.start_review(input.clone()).expect("review");
+
+    let review_retry = activity
+        .retry
+        .as_ref()
+        .expect("retry")
+        .review
+        .as_ref()
+        .expect("review");
+    assert_eq!(review_retry.source, "github");
+    assert_eq!(review_retry.repository, "acme/platform");
+    assert_eq!(review_retry.number, Some(42));
+    assert_eq!(review_retry.head_sha, "abc123");
+    assert_eq!(review_retry.review_mode, ReviewMode::Requested);
+    assert!(!review_retry.force);
+    assert_eq!(
+        store.get(&activity.id).expect("stored").retry,
+        activity.retry
+    );
+}
+
+#[test]
+fn review_activity_persists_explicit_retry_source() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+    let input = ReviewInput {
+        repo_dir: temp_repo_dir(),
+        source: "manual-github".into(),
+        review_mode: ReviewMode::Requested,
+        subject: ReviewSubject {
+            repository: "acme/platform".into(),
+            number: Some(42),
+            ..ReviewSubject::default()
+        },
+        head_sha: "abc123".into(),
+        ..ReviewInput::default()
+    };
+
+    let activity = runtime.start_review(input).expect("review");
+
+    assert_eq!(
+        activity
+            .retry
+            .as_ref()
+            .expect("retry")
+            .review
+            .as_ref()
+            .expect("review")
+            .source,
+        "manual-github"
+    );
+}
+
+#[test]
+fn self_review_activity_retry_source_defaults_to_local() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store);
+    let input = ReviewInput {
+        repo_dir: temp_repo_dir(),
+        review_mode: ReviewMode::SelfReview,
+        subject: ReviewSubject {
+            repository: "local-repo".into(),
+            ..ReviewSubject::default()
+        },
+        head_sha: "abc123".into(),
+        ..ReviewInput::default()
+    };
+
+    let activity = runtime.start_review(input).expect("review");
+
+    assert_eq!(
+        activity
+            .retry
+            .as_ref()
+            .expect("retry")
+            .review
+            .as_ref()
+            .expect("review")
+            .source,
+        "local"
+    );
+}
+
+#[test]
+fn queued_review_activity_persists_retry_metadata() {
+    let provider = Arc::new(RecordingProvider::default());
+    let store = Arc::new(MemoryActivityStore::default());
+    let runtime = AgentRuntime::new(provider, store.clone());
+    let input = ReviewInput {
+        repo_dir: temp_repo_dir(),
+        source: "github".into(),
+        review_mode: ReviewMode::Requested,
+        subject: ReviewSubject {
+            repository: "acme/platform".into(),
+            number: Some(42),
+            ..ReviewSubject::default()
+        },
+        head_sha: "abc123".into(),
+        force: true,
+        ..ReviewInput::default()
+    };
+
+    let activity = runtime
+        .create_queued_review_activity(&input)
+        .expect("queued review");
+
+    let review_retry = activity
+        .retry
+        .as_ref()
+        .expect("retry")
+        .review
+        .as_ref()
+        .expect("review");
+    assert_eq!(review_retry.source, "github");
+    assert_eq!(review_retry.repository, "acme/platform");
+    assert_eq!(review_retry.number, Some(42));
+    assert_eq!(review_retry.head_sha, "abc123");
+    assert_eq!(review_retry.review_mode, ReviewMode::Requested);
+    assert!(review_retry.force);
+    assert_eq!(
+        store.get(&activity.id).expect("stored").retry,
+        activity.retry
+    );
+}
+
+#[test]
+fn activity_json_without_retry_deserializes_with_no_retry_metadata() {
+    let activity: Activity = serde_json::from_value(serde_json::json!({
+        "id": "activity-1",
+        "kind": "Review",
+        "status": "Queued",
+        "session": {
+            "provider": null,
+            "provider_session_id": null,
+            "status": "Ready",
+            "messages": []
+        },
+        "output": null,
+        "error": null
+    }))
+    .expect("activity");
+
+    assert_eq!(activity.retry, None);
+}
+
+#[test]
 fn review_activity_persists_provider_logs_while_provider_is_running() {
     let provider = Arc::new(StreamingProvider);
     let store = Arc::new(MemoryActivityStore::default());
@@ -530,4 +697,11 @@ fn is_uuid_like(value: &str) -> bool {
             .enumerate()
             .filter(|(index, _)| ![8, 13, 18, 23].contains(index))
             .all(|(_, byte)| byte.is_ascii_hexdigit())
+}
+
+fn temp_repo_dir() -> std::path::PathBuf {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.keep();
+    std::fs::write(path.join("src.rs"), "fn main() {}\n").expect("write source");
+    path
 }

@@ -586,6 +586,7 @@ fn host_status_reports_configured_agent() {
             review_source_enabled: false,
             review_source_last_poll_unix: None,
             review_source_last_poll_summary: None,
+            attention: None,
         }
     );
 }

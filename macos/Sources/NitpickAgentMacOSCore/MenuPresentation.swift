@@ -6,13 +6,13 @@ public struct MenuStatusPresentation: Equatable {
     public let details: String?
     public let agentErrorItem: ActivityMenuEntry
 
-    public init(openReviewsTitle: String, title: String, details: String?) {
+    public init(openReviewsTitle: String, title: String, details: String?, agentErrorTitle: String? = nil) {
         self.openReviewsTitle = openReviewsTitle
         self.title = title
         self.details = details
         agentErrorItem = ActivityMenuEntry(
             id: nil,
-            title: details == nil ? "" : title,
+            title: details == nil ? "" : agentErrorTitle ?? title,
             isEnabled: details != nil,
             isHidden: details == nil
         )
@@ -37,11 +37,13 @@ public struct MenuPresentation: Equatable {
 
     public init(snapshot: MenuSnapshot) {
         let statusTitle = Self.statusTitle(snapshot)
-        let statusDetails = snapshot.statusIssue?.details
+        let statusDetails = snapshot.attention?.detail ?? snapshot.statusIssue?.details
+        let agentErrorTitle = snapshot.attention == nil ? nil : "provider needs attention"
         status = MenuStatusPresentation(
             openReviewsTitle: Self.openReviewsTitle(snapshot),
             title: statusTitle,
-            details: statusDetails
+            details: statusDetails,
+            agentErrorTitle: agentErrorTitle
         )
         lastDiscoveryRefresh = Self.lastDiscoveryRefresh(snapshot)
         ongoingReviews = Self.ongoingReviewEntries(snapshot)
@@ -59,6 +61,9 @@ public struct MenuPresentation: Equatable {
     }
 
     private static func statusTitle(_ snapshot: MenuSnapshot) -> String {
+        if snapshot.attention != nil {
+            return "status: provider needs attention"
+        }
         if let statusIssue = snapshot.statusIssue {
             return statusIssue.title
         }

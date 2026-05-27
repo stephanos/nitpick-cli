@@ -8,6 +8,8 @@ use crate::review_identity::ReviewIdentity;
 pub struct ReviewInput {
     pub repo_dir: PathBuf,
     #[serde(default)]
+    pub source: String,
+    #[serde(default)]
     pub review_prompt: String,
     #[serde(default)]
     pub review_mode: ReviewMode,

@@ -121,6 +121,62 @@ final class AppDelegateMenuTests: XCTestCase {
     }
 
     @MainActor
+    func testProviderAttentionMenuItemShowsRetryAction() throws {
+        let appDelegate = AppDelegate()
+        let menu = appDelegate.makeMenuForTesting()
+
+        appDelegate.setStatusForTesting(hostStatus: hostStatusWithAttention(retryableActivityCount: 3))
+
+        let statusItem = try XCTUnwrap(menu.items.first { $0.title == "provider needs attention" })
+        XCTAssertEqual(statusItem.title, "provider needs attention")
+        XCTAssertTrue(statusItem.isEnabled)
+        XCTAssertEqual(NSStringFromSelector(statusItem.action!), "showStatusDetails:")
+        XCTAssertNotNil(statusItem.image)
+        XCTAssertEqual(appDelegate.statusDetailsForTesting(), "Claude authentication failed")
+        XCTAssertEqual(
+            appDelegate.statusDetailActionTitlesForTesting(),
+            ["OK", "Run Diagnostic", "Retry Failed Reviews", "Open Logs"]
+        )
+        XCTAssertEqual(
+            appDelegate.statusDetailActionForTesting(.alertFirstButtonReturn),
+            .dismiss
+        )
+        XCTAssertEqual(
+            appDelegate.statusDetailActionForTesting(.alertSecondButtonReturn),
+            .runDiagnostic
+        )
+        XCTAssertEqual(
+            appDelegate.statusDetailActionForTesting(.alertThirdButtonReturn),
+            .retryFailedReviews
+        )
+    }
+
+    @MainActor
+    func testProviderAttentionWithoutRetryableReviewsOmitsRetryAction() throws {
+        let appDelegate = AppDelegate()
+        _ = appDelegate.makeMenuForTesting()
+
+        appDelegate.setStatusForTesting(hostStatus: hostStatusWithAttention(retryableActivityCount: 0))
+
+        XCTAssertEqual(
+            appDelegate.statusDetailActionTitlesForTesting(),
+            ["OK", "Run Diagnostic", "Open Logs"]
+        )
+        XCTAssertEqual(
+            appDelegate.statusDetailActionForTesting(.alertFirstButtonReturn),
+            .dismiss
+        )
+        XCTAssertEqual(
+            appDelegate.statusDetailActionForTesting(.alertSecondButtonReturn),
+            .runDiagnostic
+        )
+        XCTAssertEqual(
+            appDelegate.statusDetailActionForTesting(.alertThirdButtonReturn),
+            .openLogs
+        )
+    }
+
+    @MainActor
     func testStoppedAgentShowsDaemonLogAsAgentError() throws {
         let appDelegate = AppDelegate()
         let menu = appDelegate.makeMenuForTesting()
@@ -256,5 +312,33 @@ final class AppDelegateMenuTests: XCTestCase {
         ) as? URL
         XCTAssertEqual(value?.absoluteString, "https://github.com/temporalio/temporal/pull/10384")
         XCTAssertEqual(effectiveRange, NSRange(location: 0, length: link.stringValue.count))
+    }
+
+    private func hostStatusWithAttention(retryableActivityCount: Int) -> HostStatus {
+        HostStatus(
+            activityCount: 1,
+            queuedActivityCount: 0,
+            runningActivityCount: 0,
+            completedActivityCount: 0,
+            errorActivityCount: 1,
+            openReviewCount: 1,
+            queuedReviewCount: 0,
+            runningReviewCount: 0,
+            artifactCount: 0,
+            localOnlyArtifactCount: 0,
+            pendingSyncArtifactCount: 0,
+            provider: "claude",
+            model: "claude-opus-4-6",
+            reviewSourceName: "github",
+            reviewSourceEnabled: true,
+            reviewSourceLastPollUnix: nil,
+            reviewSourceLastPollSummary: nil,
+            attention: HostAttentionSnapshot(
+                kind: "auth_invalid_credentials",
+                title: "provider needs attention",
+                detail: "Claude authentication failed",
+                retryableActivityCount: retryableActivityCount
+            )
+        )
     }
 }

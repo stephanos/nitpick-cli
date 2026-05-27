@@ -36,6 +36,7 @@ impl AgentRuntime {
     pub fn create_queued_review_activity(&self, input: &ReviewInput) -> AgentResult<Activity> {
         let mut activity = self.store.create(ActivityKind::Review)?;
         activity.label_review(input);
+        activity.set_review_retry(input, input.force);
         record_review_head_sha(&mut activity, input);
         if activity.session.provider_session_id.is_none() {
             activity.session.provider_session_id = Some(new_provider_session_id());
@@ -56,6 +57,7 @@ impl AgentRuntime {
     pub fn run_review(&self, mut activity: Activity, input: ReviewInput) -> AgentResult<Activity> {
         activity = self.mark_activity_running(activity)?;
         activity.label_review(&input);
+        activity.set_review_retry(&input, input.force);
         record_review_head_sha(&mut activity, &input);
         if activity.session.provider_session_id.is_none() {
             activity.session.provider_session_id = Some(new_provider_session_id());

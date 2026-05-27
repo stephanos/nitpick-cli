@@ -94,4 +94,28 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertTrue(presentation.recentActivities.isHidden)
         XCTAssertEqual(presentation.recentActivities.items, [])
     }
+
+    func testProviderAttentionRendersStatusAndRetryEntry() {
+        let snapshot = MenuSnapshot(
+            hostIsRunning: true,
+            activityCount: 2,
+            runningActivityCount: 0,
+            openReviewCount: 1,
+            reviewSourceEnabled: true,
+            attention: HostAttentionSnapshot(
+                kind: "auth_invalid_credentials",
+                title: "Claude authentication failed",
+                detail: "Claude returned 401 Invalid authentication credentials.",
+                retryableActivityCount: 2
+            )
+        )
+
+        let presentation = MenuPresentation(snapshot: snapshot)
+
+        XCTAssertEqual(presentation.status.title, "status: provider needs attention")
+        XCTAssertEqual(presentation.status.details, "Claude returned 401 Invalid authentication credentials.")
+        XCTAssertEqual(presentation.status.agentErrorItem.title, "provider needs attention")
+        XCTAssertTrue(presentation.status.agentErrorItem.isEnabled)
+        XCTAssertFalse(presentation.status.agentErrorItem.isHidden)
+    }
 }

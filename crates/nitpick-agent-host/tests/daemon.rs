@@ -7,8 +7,8 @@ use nitpick_agent_core::{
     ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider, AgentProviderKind,
     AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput,
     FixedClock, FsActivityStore, HostStatus, MemoryActivityStore, MemoryProcessedReviewStore,
-    ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput, ReviewRequest,
-    ReviewSource, SessionStatus,
+    ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewMode, ReviewOutput,
+    ReviewRequest, ReviewSource, SessionStatus,
 };
 use nitpick_agent_github::PullRequestRef;
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon};
@@ -70,8 +70,383 @@ fn host_status_reports_current_activity_count() {
             review_source_enabled: false,
             review_source_last_poll_unix: None,
             review_source_last_poll_summary: None,
+            attention: None,
         }
     );
+}
+
+#[test]
+fn host_status_reports_provider_auth_attention_for_failed_review() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut activity = store.create(ActivityKind::Review).expect("activity");
+    activity.status = ActivityStatus::Error;
+    activity.error = Some("claude provider command failed with status exit status: 1".into());
+    activity
+        .session
+        .messages
+        .push(nitpick_agent_core::AgentMessage {
+            role: "provider.stdout".into(),
+            content: "Failed to authenticate. API Error: 401 Invalid authentication credentials"
+                .into(),
+        });
+    store.save(&activity).expect("save activity");
+    let daemon = HostDaemon::with_provider(store, Arc::new(NoFindingsProvider));
+
+    let status = daemon.status().expect("status");
+
+    let attention = status.attention.expect("attention");
+    assert_eq!(
+        attention.kind,
+        nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials
+    );
+    assert_eq!(attention.title, "provider needs attention");
+    assert!(attention.detail.contains("Claude authentication failed"));
+    assert!(
+        attention
+            .detail
+            .contains("Invalid authentication credentials")
+    );
+    assert!(attention.detail.contains("claude auth logout"));
+    assert_eq!(attention.retryable_activity_count, 0);
+}
+
+#[test]
+fn host_status_counts_retryable_provider_auth_reviews() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut activity = provider_auth_failed_review(&store);
+    activity.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&activity).expect("save activity");
+    let daemon = HostDaemon::with_provider(store, Arc::new(NoFindingsProvider));
+
+    let attention = daemon
+        .status()
+        .expect("status")
+        .attention
+        .expect("attention");
+
+    assert_eq!(attention.retryable_activity_count, 1);
+}
+
+#[test]
+fn host_status_retryable_count_excludes_invalid_retry_metadata() {
+    let store = Arc::new(MemoryActivityStore::default());
+    for retry in [
+        review_retry_metadata("github", "acme/platform", Some(42), "abc123"),
+        review_retry_metadata("local", "acme/platform", Some(43), "def456"),
+        review_retry_metadata("github", "acme/platform", None, "ghi789"),
+        review_retry_metadata("github", "not-a-repository", Some(44), "jkl012"),
+    ] {
+        let mut activity = provider_auth_failed_review(&store);
+        activity.retry = Some(retry);
+        store.save(&activity).expect("save activity");
+    }
+    let daemon = HostDaemon::with_provider(store, Arc::new(NoFindingsProvider));
+
+    let attention = daemon
+        .status()
+        .expect("status")
+        .attention
+        .expect("attention");
+
+    assert_eq!(attention.retryable_activity_count, 1);
+}
+
+#[test]
+fn retry_failed_activities_requeues_retryable_provider_auth_review() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(RecordingRetryProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(RetryReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let mut failed = provider_auth_failed_review(&store);
+    failed.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&failed).expect("save");
+
+    let result = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("retry");
+
+    assert_eq!(result.queued, 1);
+    assert_eq!(result.skipped, 0);
+    assert_eq!(result.activities.len(), 1);
+    wait_until(|| {
+        provider
+            .reviewed
+            .lock()
+            .expect("reviewed lock")
+            .contains(&"acme/platform".to_string())
+    });
+    let resolved = store.get(&failed.id).expect("resolved activity");
+    assert_eq!(
+        resolved.retry.expect("retry metadata").resolved_by_activity,
+        Some(result.activities[0].clone())
+    );
+}
+
+#[test]
+fn provider_attention_clears_after_retry_succeeds() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(RecordingRetryProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(RetryReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let mut failed = provider_auth_failed_review(&store);
+    failed.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&failed).expect("save");
+
+    let result = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("retry");
+
+    assert_eq!(result.queued, 1);
+    let retry_activity_id = result.activities[0].clone();
+    wait_until(|| {
+        store
+            .get(&retry_activity_id)
+            .expect("retry activity")
+            .status
+            == ActivityStatus::Completed
+    });
+
+    assert!(daemon.status().expect("status").attention.is_none());
+    let second_retry = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("second retry");
+    assert_eq!(second_retry.queued, 0);
+    assert_eq!(second_retry.skipped, 0);
+    assert!(second_retry.activities.is_empty());
+}
+
+#[test]
+fn retry_failed_activities_skips_bad_metadata_and_queues_valid_activity() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let provider = Arc::new(RecordingRetryProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(RetryReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let mut invalid = provider_auth_failed_review(&store);
+    invalid.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        None,
+        "abc123",
+    ));
+    store.save(&invalid).expect("save invalid");
+    let mut valid = provider_auth_failed_review(&store);
+    valid.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&valid).expect("save valid");
+
+    let result = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("retry");
+
+    assert_eq!(result.queued, 1);
+    assert_eq!(result.skipped, 1);
+    assert_eq!(result.activities.len(), 1);
+    wait_until(|| {
+        provider
+            .reviewed
+            .lock()
+            .expect("reviewed lock")
+            .contains(&"acme/platform".to_string())
+    });
+}
+
+#[test]
+fn retry_failed_activities_skips_unsupported_retry_source() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        Arc::new(RecordingRetryProvider::default()),
+        Arc::new(RetryReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let mut failed = provider_auth_failed_review(&store);
+    failed.retry = Some(review_retry_metadata(
+        "local",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&failed).expect("save");
+
+    let result = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("retry");
+
+    assert_eq!(result.queued, 0);
+    assert_eq!(result.skipped, 1);
+    assert!(result.activities.is_empty());
+}
+
+#[test]
+fn retry_failed_activities_skips_when_same_review_is_already_active() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        Arc::new(RecordingRetryProvider::default()),
+        Arc::new(RetryReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let mut failed = provider_auth_failed_review(&store);
+    failed.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&failed).expect("save failed");
+    let mut active = store.create(ActivityKind::Review).expect("active");
+    active.status = ActivityStatus::Queued;
+    active.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&active).expect("save active");
+
+    let result = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("retry");
+
+    assert_eq!(result.queued, 0);
+    assert_eq!(result.skipped, 1);
+    assert!(result.activities.is_empty());
+}
+
+#[test]
+fn retry_failed_activities_force_supersedes_active_same_pr_review() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        Arc::new(RecordingRetryProvider::default()),
+        Arc::new(RetryReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let mut failed = provider_auth_failed_review(&store);
+    failed.retry = Some(review_retry_metadata_with_force(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+        true,
+    ));
+    store.save(&failed).expect("save failed");
+    let mut active = store.create(ActivityKind::Review).expect("active");
+    active.status = ActivityStatus::Queued;
+    active.label = Some("review on acme/platform#42".into());
+    let active_id = active.id.clone();
+    store.save(&active).expect("save active");
+
+    let result = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("retry");
+
+    assert_eq!(result.queued, 1);
+    assert_eq!(result.skipped, 0);
+    assert_eq!(result.activities.len(), 1);
+    let active = store.get(&active_id).expect("active activity");
+    assert_eq!(active.status, ActivityStatus::Error);
+    assert_eq!(active.error.as_deref(), Some("superseded by forced review"));
+    let retry_activity = store
+        .get(&result.activities[0])
+        .expect("retry activity")
+        .retry
+        .expect("retry metadata")
+        .review
+        .expect("review retry metadata");
+    assert!(retry_activity.force);
+}
+
+#[test]
+fn retry_failed_activities_skips_when_same_review_is_active_without_retry_metadata() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let daemon = HostDaemon::with_dependencies(
+        store.clone(),
+        AgentConfig::default(),
+        Arc::new(MemoryProcessedReviewStore::default()),
+        Arc::new(RecordingRetryProvider::default()),
+        Arc::new(RetryReviewSource),
+        Arc::new(FixedClock(1)),
+    );
+    let mut failed = provider_auth_failed_review(&store);
+    failed.retry = Some(review_retry_metadata(
+        "github",
+        "acme/platform",
+        Some(42),
+        "abc123",
+    ));
+    store.save(&failed).expect("save failed");
+    let mut active = store.create(ActivityKind::Review).expect("active");
+    active.status = ActivityStatus::Running;
+    active.label = Some("review on acme/platform#42".into());
+    store.save(&active).expect("save active");
+
+    let result = daemon
+        .retry_failed_activities(nitpick_agent_core::RetryFailedActivitiesInput {
+            kind: nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials,
+        })
+        .expect("retry");
+
+    assert_eq!(result.queued, 0);
+    assert_eq!(result.skipped, 1);
+    assert!(result.activities.is_empty());
 }
 
 #[test]
@@ -666,6 +1041,50 @@ fn review_input_for_pr(number: u64, head_sha: &str) -> ReviewInput {
     }
 }
 
+fn provider_auth_failed_review(store: &MemoryActivityStore) -> nitpick_agent_core::Activity {
+    let mut activity = store.create(ActivityKind::Review).expect("activity");
+    activity.status = ActivityStatus::Error;
+    activity.error = Some("claude provider command failed with status exit status: 1".into());
+    activity
+        .session
+        .messages
+        .push(nitpick_agent_core::AgentMessage {
+            role: "provider.stdout".into(),
+            content: "Failed to authenticate. API Error: 401 Invalid authentication credentials"
+                .into(),
+        });
+    activity
+}
+
+fn review_retry_metadata(
+    source: &str,
+    repository: &str,
+    number: Option<u64>,
+    head_sha: &str,
+) -> nitpick_agent_core::ActivityRetryMetadata {
+    review_retry_metadata_with_force(source, repository, number, head_sha, false)
+}
+
+fn review_retry_metadata_with_force(
+    source: &str,
+    repository: &str,
+    number: Option<u64>,
+    head_sha: &str,
+    force: bool,
+) -> nitpick_agent_core::ActivityRetryMetadata {
+    nitpick_agent_core::ActivityRetryMetadata {
+        review: Some(nitpick_agent_core::ReviewRetryMetadata {
+            source: source.into(),
+            repository: repository.into(),
+            number,
+            head_sha: head_sha.into(),
+            review_mode: ReviewMode::Requested,
+            force,
+        }),
+        resolved_by_activity: None,
+    }
+}
+
 fn make_executable(path: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -682,6 +1101,55 @@ fn wait_until(condition: impl Fn() -> bool) {
         }
         assert!(std::time::Instant::now() < deadline, "condition timed out");
         std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[derive(Default)]
+struct RecordingRetryProvider {
+    reviewed: Mutex<Vec<String>>,
+}
+
+impl AgentProvider for RecordingRetryProvider {
+    fn review(
+        &self,
+        session: &mut AgentSession,
+        input: &ReviewInput,
+        _context: ProviderReviewContext<'_>,
+    ) -> AgentResult<ReviewOutput> {
+        session.provider = Some(AgentProviderKind::Claude);
+        self.reviewed
+            .lock()
+            .expect("reviewed lock")
+            .push(input.subject.repository.clone());
+        Ok(ReviewOutput::default())
+    }
+
+    fn chat(
+        &self,
+        _session: &mut AgentSession,
+        _input: &ChatInput,
+        _context: ProviderRunContext<'_>,
+    ) -> AgentResult<String> {
+        Ok("done".into())
+    }
+}
+
+struct RetryReviewSource;
+
+impl ReviewSource for RetryReviewSource {
+    fn name(&self) -> &'static str {
+        "github"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        Ok(Vec::new())
+    }
+
+    fn review_input(&self, request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        Ok(review_input_for_pr(
+            request.number.expect("pull request number"),
+            &request.head_sha,
+        ))
     }
 }
 

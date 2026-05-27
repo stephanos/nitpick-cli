@@ -6,6 +6,18 @@ private let agentErrorLogLineLimit = 20
 private let agentErrorLogCharacterLimit = 12_000
 private let agentErrorDetailsViewSize = NSSize(width: 640, height: 320)
 
+enum StatusDetailAction: Equatable {
+    case dismiss
+    case runDiagnostic
+    case retryFailedReviews
+    case openLogs
+}
+
+struct StatusDetailAlertButton: Equatable {
+    var title: String
+    var action: StatusDetailAction
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let identity = MenuBarIdentity()
@@ -30,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var latestStatusIssue: MenuStatusIssue?
     private var openAtLoginState = OpenAtLoginViewState.make(status: .notRegistered)
     private var currentStatusDetails: String?
+    private var currentAttention: HostAttentionSnapshot?
     private var daemonLogContentsOverride: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -211,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateMenu() {
+        currentAttention = latestHostStatus?.attention
         let snapshot = MenuSnapshot(
             hostIsRunning: host.isRunning,
             activityCount: latestHostStatus?.activityCount ?? 0,
@@ -225,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reviewSourceLastPollUnix: latestHostStatus?.reviewSourceLastPollUnix,
             reviewSourceLastPollSummary: latestHostStatus?.reviewSourceLastPollSummary,
             statusIssue: latestStatusIssue,
+            attention: latestHostStatus?.attention,
             activities: latestActivities
         )
         let presentation = MenuPresentation(snapshot: snapshot)
@@ -335,12 +350,111 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let alert = NSAlert()
-        alert.messageText = "Agent error"
+        alert.messageText = currentAttention?.title ?? "Agent error"
         alert.informativeText = "Review the details below."
         alert.accessoryView = makeScrollableDetailsView(currentStatusDetails)
-        alert.addButton(withTitle: "OK")
+        for title in statusDetailActionTitles() {
+            alert.addButton(withTitle: title)
+        }
         alert.alertStyle = .warning
-        alert.runModal()
+        handleStatusDetailsResponse(alert.runModal())
+    }
+
+    private func statusDetailActionTitles() -> [String] {
+        statusDetailAlertButtons().map(\.title)
+    }
+
+    private func statusDetailAlertButtons() -> [StatusDetailAlertButton] {
+        guard let currentAttention else {
+            return [StatusDetailAlertButton(title: "OK", action: .dismiss)]
+        }
+        var buttons = [
+            StatusDetailAlertButton(title: "OK", action: .dismiss),
+            StatusDetailAlertButton(title: "Run Diagnostic", action: .runDiagnostic),
+        ]
+        if currentAttention.retryableActivityCount > 0 {
+            buttons.append(StatusDetailAlertButton(
+                title: "Retry Failed Reviews",
+                action: .retryFailedReviews
+            ))
+        }
+        buttons.append(StatusDetailAlertButton(title: "Open Logs", action: .openLogs))
+        return buttons
+    }
+
+    private func statusDetailAction(for response: NSApplication.ModalResponse) -> StatusDetailAction {
+        let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let buttons = statusDetailAlertButtons()
+        guard buttons.indices.contains(index) else {
+            return .dismiss
+        }
+        return buttons[index].action
+    }
+
+    private func handleStatusDetailsResponse(_ response: NSApplication.ModalResponse) {
+        switch statusDetailAction(for: response) {
+        case .runDiagnostic:
+            runProviderDiagnosticFromMenu()
+        case .retryFailedReviews:
+            retryFailedReviewsFromMenu()
+        case .openLogs:
+            openDaemonLogFromMenu()
+        case .dismiss:
+            break
+        }
+    }
+
+    private func runProviderDiagnosticFromMenu() {
+        let provider = latestHostStatus?.provider
+        let model = latestHostStatus?.model
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.hostClient.runProviderDiagnostic(
+                    repoDir: self.providerDiagnosticRepoDirectory().path,
+                    provider: provider,
+                    model: model
+            )
+                await self.refreshHostStatus()
+            } catch {
+                self.showActionFailure("Failed to start provider diagnostic: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func retryFailedReviewsFromMenu() {
+        guard let currentAttention else {
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.hostClient.retryFailedActivities(kind: currentAttention.kind)
+                await self.refreshHostStatus()
+            } catch {
+                self.showActionFailure("Failed to retry failed reviews: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func openDaemonLogFromMenu() {
+        NSWorkspace.shared.open(DaemonLogFile().url)
+    }
+
+    private func showActionFailure(_ details: String) {
+        latestHostStatus = nil
+        latestActivities = []
+        latestStatusIssue = MenuStatusIssue(
+            title: "status: agent error",
+            details: details
+        )
+        updateMenu()
+    }
+
+    private func providerDiagnosticRepoDirectory() throws -> URL {
+        let url = DataDirectory().url
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     private func makeScrollableDetailsView(_ details: String) -> NSScrollView {
@@ -670,6 +784,14 @@ extension AppDelegate {
 
     func statusDetailsForTesting() -> String? {
         currentStatusDetails
+    }
+
+    func statusDetailActionTitlesForTesting() -> [String] {
+        statusDetailActionTitles()
+    }
+
+    func statusDetailActionForTesting(_ response: NSApplication.ModalResponse) -> StatusDetailAction {
+        statusDetailAction(for: response)
     }
 
     func activityDetailTextForTesting(_ activity: ActivitySnapshot) -> String {

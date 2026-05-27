@@ -1,3 +1,24 @@
+public struct HostAttentionSnapshot: Decodable, Equatable {
+    public var kind: String
+    public var title: String
+    public var detail: String
+    public var retryableActivityCount: Int
+
+    public init(kind: String, title: String, detail: String, retryableActivityCount: Int) {
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.retryableActivityCount = retryableActivityCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case title
+        case detail
+        case retryableActivityCount = "retryable_activity_count"
+    }
+}
+
 public struct HostStatus: Decodable, Equatable {
     public var activityCount: Int
     public var queuedActivityCount: Int
@@ -16,6 +37,7 @@ public struct HostStatus: Decodable, Equatable {
     public var reviewSourceEnabled: Bool
     public var reviewSourceLastPollUnix: UInt64?
     public var reviewSourceLastPollSummary: String?
+    public var attention: HostAttentionSnapshot?
 
     private enum CodingKeys: String, CodingKey {
         case activityCount = "activity_count"
@@ -35,5 +57,6 @@ public struct HostStatus: Decodable, Equatable {
         case reviewSourceEnabled = "review_source_enabled"
         case reviewSourceLastPollUnix = "review_source_last_poll_unix"
         case reviewSourceLastPollSummary = "review_source_last_poll_summary"
+        case attention
     }
 }

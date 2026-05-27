@@ -312,6 +312,7 @@ impl HostDaemon {
     pub fn status(&self) -> AgentResult<HostStatus> {
         let artifacts = self.store.list_artifacts()?;
         let activities = self.store.list()?;
+        let attention = provider_attention(&activities, &self.config.provider);
         let reviews: Vec<_> = activities
             .iter()
             .filter(|activity| activity.kind == ActivityKind::Review)
@@ -366,6 +367,7 @@ impl HostDaemon {
             review_source_enabled: self.config.github_discovery.enabled,
             review_source_last_poll_unix: self.polling_state.last_poll_unix()?,
             review_source_last_poll_summary: self.polling_state.last_poll_summary()?,
+            attention,
         })
     }
 
@@ -811,6 +813,63 @@ impl HostDaemon {
         )
     }
 
+    pub fn retry_failed_activities(
+        &self,
+        input: nitpick_agent_core::RetryFailedActivitiesInput,
+    ) -> AgentResult<nitpick_agent_core::RetryFailedActivitiesResult> {
+        let activities = self.list_activities()?;
+        let mut queued = Vec::new();
+        let mut skipped = 0;
+        for activity in activities {
+            if activity.status != ActivityStatus::Error || activity.kind != ActivityKind::Review {
+                continue;
+            }
+            if provider_failure_resolved(&activity) {
+                continue;
+            }
+            let Some(classification) = nitpick_agent_core::classify_provider_failure(&activity)
+            else {
+                continue;
+            };
+            if classification.kind != input.kind {
+                continue;
+            }
+            let Some(review) = activity
+                .retry
+                .as_ref()
+                .and_then(|retry| retry.review.as_ref())
+            else {
+                skipped += 1;
+                continue;
+            };
+            if !is_retryable_review_metadata(review) {
+                skipped += 1;
+                continue;
+            }
+            if !review.force && self.has_active_review_for(&review.repository, review.number)? {
+                skipped += 1;
+                continue;
+            }
+            let Ok(review_input) = self.retry_review_input(review) else {
+                skipped += 1;
+                continue;
+            };
+            let new_activity = self.enqueue_review(review_input)?;
+            let new_activity_id = new_activity.id.clone();
+            let mut resolved_activity = activity;
+            if let Some(retry) = resolved_activity.retry.as_mut() {
+                retry.resolved_by_activity = Some(new_activity_id.clone());
+            }
+            self.store.save(&resolved_activity)?;
+            queued.push(new_activity_id);
+        }
+        Ok(nitpick_agent_core::RetryFailedActivitiesResult {
+            queued: queued.len(),
+            skipped,
+            activities: queued,
+        })
+    }
+
     pub fn start_chat(&self, input: ChatInput) -> AgentResult<Activity> {
         self.runtime().start_chat(input)
     }
@@ -892,6 +951,146 @@ impl HostDaemon {
                 "sync completed review artifacts failed"
             );
         }
+    }
+
+    fn has_active_review_for(&self, repository: &str, number: Option<u64>) -> AgentResult<bool> {
+        Ok(self.list_activities()?.into_iter().any(|activity| {
+            activity.kind == ActivityKind::Review
+                && matches!(
+                    activity.status,
+                    ActivityStatus::Queued | ActivityStatus::Running
+                )
+                && active_review_matches(&activity, repository, number)
+        }))
+    }
+
+    fn retry_review_input(
+        &self,
+        retry: &nitpick_agent_core::ReviewRetryMetadata,
+    ) -> AgentResult<ReviewInput> {
+        let number = retry.number.ok_or_else(|| {
+            AgentError::invalid_input("retryable GitHub review is missing pull request number")
+        })?;
+        if retry.repository.split_once('/').is_none() {
+            return Err(AgentError::invalid_input(format!(
+                "invalid retry repository `{}`",
+                retry.repository
+            )));
+        }
+        let request = ReviewRequest {
+            source: "github".into(),
+            repository: retry.repository.clone(),
+            number: Some(number),
+            id: number.to_string(),
+            head_sha: retry.head_sha.clone(),
+        };
+        let mut input = self.review_source.review_input(&request)?;
+        input.source = retry.source.clone();
+        input.review_mode = retry.review_mode.clone();
+        input.force = retry.force;
+        Ok(input)
+    }
+}
+
+fn active_review_matches(activity: &Activity, repository: &str, number: Option<u64>) -> bool {
+    activity
+        .retry
+        .as_ref()
+        .and_then(|retry| retry.review.as_ref())
+        .is_some_and(|review| review.repository == repository && review.number == number)
+        || activity.label.as_deref().is_some_and(|label| {
+            label
+                == match number {
+                    Some(number) => format!("review on {repository}#{number}"),
+                    None => format!("review on {repository}"),
+                }
+        })
+}
+
+fn is_retryable_review_metadata(retry: &nitpick_agent_core::ReviewRetryMetadata) -> bool {
+    retry.source == "github"
+        && retry.number.is_some()
+        && retry
+            .repository
+            .split_once('/')
+            .is_some_and(|(owner, repo)| !owner.is_empty() && !repo.is_empty())
+}
+
+fn provider_attention(
+    activities: &[Activity],
+    provider: &AgentProviderKind,
+) -> Option<nitpick_agent_core::HostAttention> {
+    let mut classified = activities
+        .iter()
+        .filter_map(|activity| {
+            let mut classified_activity = activity.clone();
+            classified_activity
+                .session
+                .provider
+                .get_or_insert_with(|| provider.clone());
+            if provider_failure_resolved(&classified_activity) {
+                return None;
+            }
+            nitpick_agent_core::classify_provider_failure(&classified_activity)
+                .map(|classification| (activity.updated_at_unix, classification))
+        })
+        .collect::<Vec<_>>();
+    classified.sort_by_key(|(updated_at_unix, classification)| {
+        (
+            provider_failure_priority(&classification.kind),
+            std::cmp::Reverse(*updated_at_unix),
+        )
+    });
+    let (_, classification) = classified.first()?;
+    let retryable_activity_count = activities
+        .iter()
+        .filter(|activity| {
+            activity.kind == ActivityKind::Review
+                && activity.status == ActivityStatus::Error
+                && activity
+                    .retry
+                    .as_ref()
+                    .and_then(|retry| retry.review.as_ref())
+                    .is_some_and(is_retryable_review_metadata)
+                && !provider_failure_resolved(activity)
+                && nitpick_agent_core::classify_provider_failure(activity)
+                    .is_some_and(|candidate| candidate.kind == classification.kind)
+        })
+        .count();
+    Some(nitpick_agent_core::HostAttention {
+        kind: classification.kind.clone(),
+        title: "provider needs attention".into(),
+        detail: provider_attention_detail(&classification),
+        retryable_activity_count,
+    })
+}
+
+fn provider_failure_resolved(activity: &Activity) -> bool {
+    activity
+        .retry
+        .as_ref()
+        .and_then(|retry| retry.resolved_by_activity.as_ref())
+        .is_some()
+}
+
+fn provider_attention_detail(
+    classification: &nitpick_agent_core::ProviderFailureClassification,
+) -> String {
+    match classification.suggested_action.as_deref() {
+        Some(action) => format!(
+            "{}: {} {}",
+            classification.title, classification.detail, action
+        ),
+        None => format!("{}: {}", classification.title, classification.detail),
+    }
+}
+
+fn provider_failure_priority(kind: &nitpick_agent_core::ProviderFailureKind) -> u8 {
+    match kind {
+        nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials => 0,
+        nitpick_agent_core::ProviderFailureKind::SandboxPermissionDenied => 1,
+        nitpick_agent_core::ProviderFailureKind::ProviderUnavailable => 2,
+        nitpick_agent_core::ProviderFailureKind::UnknownProviderFailure => 3,
     }
 }
 

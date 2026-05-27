@@ -8,7 +8,8 @@ use axum::{
 use nitpick_agent_core::{
     Activity, ActivityId, ActivityKind, ActivityStatus, AgentError, AgentResult, Artifact,
     ArtifactId, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, HostStatus,
-    LocalStateResetResult, ProviderDiagnosticInput, ReviewInput, ReviewRequest,
+    LocalStateResetResult, ProviderDiagnosticInput, RetryFailedActivitiesInput,
+    RetryFailedActivitiesResult, ReviewInput, ReviewRequest,
 };
 use nitpick_agent_github::DiscoveredPullRequest;
 use serde::Deserialize;
@@ -19,6 +20,7 @@ pub fn api_router(daemon: HostDaemon) -> Router {
     Router::new()
         .route("/status", get(status))
         .route("/activities", get(activities))
+        .route("/activities/retry-failed", post(retry_failed_activities))
         .route("/activities/{id}", get(activity))
         .route("/activities/{id}/artifacts", get(activity_artifacts))
         .route(
@@ -75,6 +77,13 @@ async fn activity(
         Some(activity) => Ok(Json(activity).into_response()),
         None => Ok(StatusCode::NOT_FOUND.into_response()),
     }
+}
+
+async fn retry_failed_activities(
+    State(daemon): State<HostDaemon>,
+    Json(input): Json<RetryFailedActivitiesInput>,
+) -> Result<Json<RetryFailedActivitiesResult>, ApiError> {
+    Ok(Json(daemon.retry_failed_activities(input)?))
 }
 
 async fn activity_artifacts(

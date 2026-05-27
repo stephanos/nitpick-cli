@@ -517,6 +517,7 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
         let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
         Ok(ReviewInput {
             repo_dir,
+            source: "github".into(),
             review_mode: ReviewMode::Requested,
             instructions: format!(
                 "Review GitHub pull request {repository}#{}.\n\nURL: {}\nState: {}\nHead SHA: {}\nHead ref: {}.",

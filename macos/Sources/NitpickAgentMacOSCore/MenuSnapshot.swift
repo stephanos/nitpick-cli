@@ -14,6 +14,7 @@ public struct MenuSnapshot: Equatable {
     public var reviewSourceLastPollUnix: UInt64?
     public var reviewSourceLastPollSummary: String?
     public var statusIssue: MenuStatusIssue?
+    public var attention: HostAttentionSnapshot?
     public var activities: [ActivitySnapshot]
     public var currentUnix: UInt64
 
@@ -31,6 +32,7 @@ public struct MenuSnapshot: Equatable {
         reviewSourceLastPollUnix: UInt64? = nil,
         reviewSourceLastPollSummary: String? = nil,
         statusIssue: MenuStatusIssue? = nil,
+        attention: HostAttentionSnapshot? = nil,
         activities: [ActivitySnapshot] = [],
         currentUnix: UInt64 = UInt64(Date().timeIntervalSince1970)
     ) {
@@ -47,6 +49,7 @@ public struct MenuSnapshot: Equatable {
         self.reviewSourceLastPollUnix = reviewSourceLastPollUnix
         self.reviewSourceLastPollSummary = reviewSourceLastPollSummary
         self.statusIssue = statusIssue
+        self.attention = attention
         self.activities = activities
         self.currentUnix = currentUnix
     }

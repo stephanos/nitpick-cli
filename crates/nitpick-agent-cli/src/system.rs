@@ -435,6 +435,7 @@ mod tests {
             review_source_enabled: false,
             review_source_last_poll_unix: None,
             review_source_last_poll_summary: None,
+            attention: None,
         };
 
         assert_eq!(
@@ -465,6 +466,7 @@ mod tests {
             review_source_enabled: true,
             review_source_last_poll_unix: None,
             review_source_last_poll_summary: None,
+            attention: None,
         };
 
         let output = super::format_host_status_at(&status, 1_000);
@@ -515,6 +517,7 @@ mod tests {
                 review_source_enabled: true,
                 review_source_last_poll_unix: Some(1_000),
                 review_source_last_poll_summary: Some("reviewed 1 of 1 PRs".into()),
+                attention: None,
             }
         );
     }

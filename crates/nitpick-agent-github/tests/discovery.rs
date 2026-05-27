@@ -226,6 +226,7 @@ exit 0
     assert_eq!(input.subject.title, "Add watcher");
     assert_eq!(input.subject.author, "stephan");
     assert_eq!(input.repo_dir, checkout_dir);
+    assert_eq!(input.source, "github");
     assert_eq!(
         input.diff,
         "diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n"
