@@ -645,7 +645,7 @@ fn ensure_checkout(
             repo_dir.to_string_lossy().as_ref(),
             "fetch",
             "origin",
-            head_ref,
+            &format!("refs/pull/{}/head", pull_request.number),
             "--quiet",
         ],
     )?;
@@ -657,7 +657,7 @@ fn ensure_checkout(
             "checkout",
             "-B",
             head_ref,
-            &format!("origin/{head_ref}"),
+            "FETCH_HEAD",
             "--quiet",
         ],
     )?;

@@ -265,8 +265,8 @@ exit 1
                 "gh pr view 42 --repo acme/platform --json title,author,url,headRefOid,headRefName,state,mergedAt\n\
 gh pr diff 42 --repo acme/platform\n\
 gh repo clone acme/platform {} -- --quiet\n\
-git -C {} fetch origin feature/watcher --quiet\n\
-git -C {} checkout -B feature/watcher origin/feature/watcher --quiet\n\
+git -C {} fetch origin refs/pull/42/head --quiet\n\
+git -C {} checkout -B feature/watcher FETCH_HEAD --quiet\n\
 editor {}\n",
                 checkout.display(),
                 checkout.display(),
@@ -336,8 +336,8 @@ exit 1
                 "gh pr view 42 --repo acme/platform --json title,author,url,headRefOid,headRefName,state,mergedAt\n\
 gh pr diff 42 --repo acme/platform\n\
 gh repo clone acme/platform {} -- --quiet\n\
-git -C {} fetch origin feature/watcher --quiet\n\
-git -C {} checkout -B feature/watcher origin/feature/watcher --quiet\n",
+git -C {} fetch origin refs/pull/42/head --quiet\n\
+git -C {} checkout -B feature/watcher FETCH_HEAD --quiet\n",
                 checkout.display(),
                 checkout.display(),
                 checkout.display()
