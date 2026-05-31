@@ -8,6 +8,7 @@ mod host;
 mod json;
 mod macos_sandbox;
 mod model;
+mod nono_profile;
 mod nono_sandbox;
 mod provider;
 mod provider_command_runner;

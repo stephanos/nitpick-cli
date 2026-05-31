@@ -850,7 +850,11 @@ fn nono_sandboxed_provider_command_uses_current_executable_helper() {
     fs::write(&helper_command, "#!/bin/sh\n").expect("write helper command");
     make_executable(&helper_command);
     let provider = CommandAgentProvider::new(AgentProviderKind::Claude, None, &provider_command)
-        .with_sandbox(CommandSandboxConfig::nono().with_helper_command(&helper_command));
+        .with_sandbox(
+            CommandSandboxConfig::nono()
+                .with_helper_command(&helper_command)
+                .without_nono_profile_updates(),
+        );
 
     let command = provider
         .command_for_testing(Some(&repo_dir), &["--version".into()])
@@ -877,6 +881,60 @@ fn nono_sandboxed_provider_command_uses_current_executable_helper() {
         command
             .get_envs()
             .any(|(key, value)| { key == "NITPICK_NONO_SANDBOX_SPEC" && value.is_some() })
+    );
+}
+
+#[test]
+fn nono_sandbox_spec_allows_node_package_root_for_provider_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    let package_root = dir.path().join("lib/node_modules/@openai/codex");
+    let provider_bin = package_root.join("bin");
+    fs::create_dir_all(&provider_bin).expect("provider bin dir");
+    let provider_command = provider_bin.join("codex.js");
+    fs::write(&provider_command, "#!/usr/bin/env node\n").expect("write provider command");
+    make_executable(&provider_command);
+    let helper_command = dir.path().join("nitpick");
+    fs::write(&helper_command, "#!/bin/sh\n").expect("write helper command");
+    make_executable(&helper_command);
+    let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &provider_command)
+        .with_sandbox(
+            CommandSandboxConfig::nono()
+                .with_helper_command(&helper_command)
+                .without_nono_profile_updates(),
+        );
+
+    let command = provider
+        .command_for_testing(Some(&repo_dir), &[])
+        .expect("command");
+    let spec = command
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == "NITPICK_NONO_SANDBOX_SPEC").then(|| {
+                value
+                    .expect("spec env value")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .expect("nono spec env");
+    let spec: serde_json::Value = serde_json::from_str(&spec).expect("spec json");
+    let read_paths = spec["read_paths"]
+        .as_array()
+        .expect("read paths")
+        .iter()
+        .map(|path| path.as_str().expect("path").to_owned())
+        .collect::<Vec<_>>();
+
+    assert!(
+        read_paths.contains(
+            &package_root
+                .canonicalize()
+                .expect("canonical package root")
+                .to_string_lossy()
+                .into_owned()
+        )
     );
 }
 

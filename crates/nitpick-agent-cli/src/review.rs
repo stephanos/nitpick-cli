@@ -114,7 +114,7 @@ pub fn run(
                 crate::support::ensure_cached_checkout(&target, &config, &context.data_dir)
                     .map_err(CliError::from)?;
             config
-                .command_provider()
+                .command_provider_with_data_dir(&context.data_dir)
                 .attach_session_in_repo(&activity.session, &checkout)
                 .map_err(|error| {
                     CliError::from(crate::support::handle_resume_error(

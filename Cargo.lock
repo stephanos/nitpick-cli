@@ -1491,10 +1491,12 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "tracing",
  "unidiff",
+ "ureq",
  "uuid",
  "which",
 ]
@@ -3266,10 +3268,13 @@ dependencies = [
  "cookie_store",
  "log",
  "percent-encoding",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "ureq-proto",
  "utf8-zero",
+ "webpki-roots",
 ]
 
 [[package]]

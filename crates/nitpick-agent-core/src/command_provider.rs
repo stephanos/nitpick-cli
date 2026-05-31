@@ -10,6 +10,7 @@ use crate::{
     REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
     app_paths::default_data_dir,
     macos_sandbox::SandboxProfileBuilder,
+    nono_profile::NonoProfileManager,
     nono_sandbox::{NONO_SANDBOX_HELPER_ARG, NONO_SANDBOX_SPEC_ENV, NonoSandboxSpec},
     provider_command_runner::ProviderCommandRunner,
     provider_log, validate_review_output_file_for_diff,
@@ -20,6 +21,8 @@ pub struct CommandSandboxConfig {
     pub enabled: bool,
     backend: CommandSandboxBackend,
     nono_helper_command: Option<PathBuf>,
+    nono_profile_cache_dir: Option<PathBuf>,
+    nono_profile_updates_enabled: bool,
     provider_runtime_dir: Option<PathBuf>,
     extra_read_paths: Vec<PathBuf>,
     extra_read_write_paths: Vec<PathBuf>,
@@ -38,6 +41,8 @@ impl CommandSandboxConfig {
             enabled: true,
             backend: CommandSandboxBackend::MacosSeatbelt,
             nono_helper_command: None,
+            nono_profile_cache_dir: None,
+            nono_profile_updates_enabled: false,
             provider_runtime_dir: None,
             extra_read_paths: Vec::new(),
             extra_read_write_paths: Vec::new(),
@@ -49,6 +54,8 @@ impl CommandSandboxConfig {
             enabled: true,
             backend: CommandSandboxBackend::Nono,
             nono_helper_command: None,
+            nono_profile_cache_dir: None,
+            nono_profile_updates_enabled: true,
             provider_runtime_dir: None,
             extra_read_paths: Vec::new(),
             extra_read_write_paths: Vec::new(),
@@ -60,6 +67,8 @@ impl CommandSandboxConfig {
             enabled: false,
             backend: CommandSandboxBackend::None,
             nono_helper_command: None,
+            nono_profile_cache_dir: None,
+            nono_profile_updates_enabled: false,
             provider_runtime_dir: None,
             extra_read_paths: Vec::new(),
             extra_read_write_paths: Vec::new(),
@@ -77,6 +86,16 @@ impl CommandSandboxConfig {
 
     pub fn with_helper_command(mut self, command: impl Into<PathBuf>) -> Self {
         self.nono_helper_command = Some(command.into());
+        self
+    }
+
+    pub fn with_nono_profile_cache_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.nono_profile_cache_dir = Some(path.into());
+        self
+    }
+
+    pub fn without_nono_profile_updates(mut self) -> Self {
+        self.nono_profile_updates_enabled = false;
         self
     }
 
@@ -352,7 +371,8 @@ impl CommandAgentProvider {
             command.envs(provider_runtime_env);
             command.env(
                 NONO_SANDBOX_SPEC_ENV,
-                nono_sandbox_spec(repo_dir, &provider_command, sandbox)?.to_env_value()?,
+                nono_sandbox_spec(&self.kind, repo_dir, &provider_command, sandbox)?
+                    .to_env_value()?,
             );
             return Ok(command);
         }
@@ -519,12 +539,14 @@ fn nono_helper_command(sandbox: &CommandSandboxConfig) -> AgentResult<PathBuf> {
 }
 
 fn nono_sandbox_spec(
+    provider: &AgentProviderKind,
     repo_dir: &Path,
     provider_command: &Path,
     sandbox: &CommandSandboxConfig,
 ) -> AgentResult<NonoSandboxSpec> {
     let mut read_paths = vec![repo_dir.to_path_buf(), provider_command.to_path_buf()];
     read_paths.extend(nono_system_read_paths());
+    read_paths.extend(provider_dependency_read_paths(provider_command));
     read_paths.extend(provider_runtime_read_paths());
     read_paths.extend(provider_config_read_paths());
     read_paths.extend(sandbox.extra_read_paths.iter().cloned());
@@ -535,10 +557,20 @@ fn nono_sandbox_spec(
     read_write_paths.extend(provider_config_literal_read_write_paths.iter().cloned());
     read_write_paths.extend(sandbox.extra_read_write_paths.iter().cloned());
 
+    let mut platform_rules =
+        nono_literal_read_write_rules(&provider_config_literal_read_write_paths);
+    if sandbox.nono_profile_updates_enabled {
+        let profile_spec = NonoProfileManager::new(nono_profile_cache_dir(sandbox))
+            .resolve_for_provider(provider, repo_dir, SystemTime::now())?;
+        read_paths.extend(profile_spec.read_paths);
+        read_write_paths.extend(profile_spec.read_write_paths);
+        platform_rules.extend(profile_spec.platform_rules);
+    }
+
     Ok(NonoSandboxSpec::new(
         read_paths,
         read_write_paths,
-        nono_literal_read_write_rules(&provider_config_literal_read_write_paths),
+        platform_rules,
     ))
 }
 
@@ -570,6 +602,34 @@ fn nono_system_read_paths() -> Vec<PathBuf> {
     .map(PathBuf::from)
     .filter(|path| path.exists())
     .collect()
+}
+
+fn provider_dependency_read_paths(provider_command: &Path) -> Vec<PathBuf> {
+    provider_command
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| is_node_package_root(ancestor))
+        .map(|path| vec![path.to_path_buf()])
+        .unwrap_or_default()
+}
+
+fn is_node_package_root(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if parent.file_name().and_then(|name| name.to_str()) == Some("node_modules") {
+        return true;
+    }
+    parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('@'))
+        && parent.parent().and_then(|grandparent| {
+            grandparent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name == "node_modules")
+        }) == Some(true)
 }
 
 fn nono_literal_read_write_rules(paths: &[PathBuf]) -> Vec<String> {
@@ -1241,6 +1301,13 @@ fn provider_config_literal_read_write_paths() -> Vec<PathBuf> {
 
 fn provider_runtime_root_dir() -> PathBuf {
     default_data_dir().join("provider-runtime")
+}
+
+fn nono_profile_cache_dir(sandbox: &CommandSandboxConfig) -> PathBuf {
+    sandbox
+        .nono_profile_cache_dir
+        .clone()
+        .unwrap_or_else(|| default_data_dir().join("nono"))
 }
 
 fn provider_runtime_root_dir_for_sandbox(sandbox: &CommandSandboxConfig) -> PathBuf {

@@ -350,7 +350,9 @@ impl HostDaemon {
     }
 
     pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
-        self.data_dir = data_dir.into();
+        let data_dir = data_dir.into();
+        self.provider = Arc::new(self.config.command_provider_with_data_dir(&data_dir));
+        self.data_dir = data_dir;
         self
     }
 
@@ -945,7 +947,10 @@ impl HostDaemon {
                 mode: "none".into(),
             };
         }
-        let runtime = AgentRuntime::new(Arc::new(config.command_provider()), self.store.clone());
+        let runtime = AgentRuntime::new(
+            Arc::new(config.command_provider_with_data_dir(&self.data_dir)),
+            self.store.clone(),
+        );
         let mut activity = runtime.create_chat_activity()?;
         activity.label = Some("provider diagnostic".into());
         self.store.save(&activity)?;
@@ -1407,6 +1412,10 @@ impl AgentConfig {
     }
 
     pub fn command_provider(&self) -> CommandAgentProvider {
+        self.command_provider_with_data_dir(&default_data_dir())
+    }
+
+    pub fn command_provider_with_data_dir(&self, data_dir: &Path) -> CommandAgentProvider {
         let provider = match &self.command {
             Some(command) => {
                 CommandAgentProvider::new(self.provider.clone(), self.model.clone(), command)
@@ -1416,6 +1425,7 @@ impl AgentConfig {
         provider.with_sandbox(
             self.sandbox
                 .command_sandbox_config()
+                .with_nono_profile_cache_dir(data_dir.join("nono"))
                 .with_read_paths(self.review_prompt_sandbox_read_paths()),
         )
     }
