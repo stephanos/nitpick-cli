@@ -47,6 +47,19 @@ sandbox = "nono"
 }
 
 #[test]
+fn rejects_macos_seatbelt_agent_sandbox_mode() {
+    let error = AgentConfig::from_toml(
+        r#"
+[agent]
+sandbox = "macos-seatbelt"
+"#,
+    )
+    .expect_err("macos-seatbelt sandbox mode is rejected");
+
+    assert!(error.to_string().contains("unsupported agent sandbox mode"));
+}
+
+#[test]
 fn config_template_parses() {
     let config = AgentConfig::from_toml(CONFIG_TEMPLATE).expect("template parses");
 
@@ -417,7 +430,6 @@ command = "/tmp/fake-claude"
     assert_eq!(provider.command().to_string_lossy(), "/tmp/fake-claude");
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn command_provider_sandbox_includes_configured_prompt_files() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -456,9 +468,11 @@ requested_review_extra_prompt_path = "{}"
     let config = AgentConfig::load(&config_path).expect("config");
 
     let provider = config.command_provider();
-    let profile = provider
-        .macos_sandbox_profile_for_testing(dir.path(), std::path::Path::new("/bin/sh"))
-        .expect("profile");
+    let spec = provider
+        .nono_sandbox_spec_for_testing(dir.path(), std::path::Path::new("/bin/sh"))
+        .expect("spec");
+    let spec: serde_json::Value = serde_json::from_str(&spec).expect("spec json");
+    let read_paths = spec["read_paths"].as_array().expect("read paths");
 
     for path in [
         &prompt_path,
@@ -466,10 +480,11 @@ requested_review_extra_prompt_path = "{}"
         &self_prompt_path,
         &requested_prompt_path,
     ] {
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* (literal "{}"))"#,
-            path.canonicalize().expect("canonical prompt").display()
-        )));
+        assert!(
+            read_paths
+                .iter()
+                .any(|read_path| read_path.as_str() == Some(path.to_string_lossy().as_ref()))
+        );
     }
 }
 

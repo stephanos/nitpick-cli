@@ -6,7 +6,6 @@ mod command_provider;
 mod error;
 mod host;
 mod json;
-mod macos_sandbox;
 mod model;
 mod nono_profile;
 mod nono_sandbox;

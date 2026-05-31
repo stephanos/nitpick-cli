@@ -1702,7 +1702,7 @@ impl AgentSandboxConfig {
             .map(|mode| mode.trim().to_owned())
             .filter(|mode| !mode.is_empty())
             .unwrap_or(default.mode);
-        if !matches!(mode.as_str(), "nono" | "macos-seatbelt" | "none") {
+        if !matches!(mode.as_str(), "nono" | "none") {
             return Err(AgentError::config(format!(
                 "unsupported agent sandbox mode `{mode}`"
             )));
@@ -1713,7 +1713,6 @@ impl AgentSandboxConfig {
     fn command_sandbox_config(&self) -> CommandSandboxConfig {
         match self.mode.as_str() {
             "nono" => CommandSandboxConfig::nono(),
-            "macos-seatbelt" => CommandSandboxConfig::macos_seatbelt(),
             _ => CommandSandboxConfig::unsandboxed(),
         }
     }

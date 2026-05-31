@@ -1,7 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime},
 };
 
 use crate::{
@@ -9,7 +9,6 @@ use crate::{
     ChatInput, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
     app_paths::default_data_dir,
-    macos_sandbox::SandboxProfileBuilder,
     nono_profile::NonoProfileManager,
     nono_sandbox::{NONO_SANDBOX_HELPER_ARG, NONO_SANDBOX_SPEC_ENV, NonoSandboxSpec},
     provider_command_runner::ProviderCommandRunner,
@@ -19,7 +18,6 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSandboxConfig {
     pub enabled: bool,
-    backend: CommandSandboxBackend,
     nono_helper_command: Option<PathBuf>,
     nono_profile_cache_dir: Option<PathBuf>,
     nono_profile_updates_enabled: bool,
@@ -28,31 +26,10 @@ pub struct CommandSandboxConfig {
     extra_read_write_paths: Vec<PathBuf>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum CommandSandboxBackend {
-    None,
-    MacosSeatbelt,
-    Nono,
-}
-
 impl CommandSandboxConfig {
-    pub fn macos_seatbelt() -> Self {
-        Self {
-            enabled: true,
-            backend: CommandSandboxBackend::MacosSeatbelt,
-            nono_helper_command: None,
-            nono_profile_cache_dir: None,
-            nono_profile_updates_enabled: false,
-            provider_runtime_dir: None,
-            extra_read_paths: Vec::new(),
-            extra_read_write_paths: Vec::new(),
-        }
-    }
-
     pub fn nono() -> Self {
         Self {
             enabled: true,
-            backend: CommandSandboxBackend::Nono,
             nono_helper_command: None,
             nono_profile_cache_dir: None,
             nono_profile_updates_enabled: true,
@@ -65,7 +42,6 @@ impl CommandSandboxConfig {
     pub fn unsandboxed() -> Self {
         Self {
             enabled: false,
-            backend: CommandSandboxBackend::None,
             nono_helper_command: None,
             nono_profile_cache_dir: None,
             nono_profile_updates_enabled: false,
@@ -223,13 +199,8 @@ impl CommandAgentProvider {
     }
 
     fn run_prompt_in_dir_with_sandbox(&self, request: PromptRunRequest<'_>) -> AgentResult<String> {
-        let sandbox_log_tag = request.sandbox.enabled.then(new_sandbox_log_tag);
-        let mut command = self.command_for_with_sandbox(
-            request.current_dir,
-            request.args,
-            request.sandbox,
-            sandbox_log_tag.as_deref(),
-        )?;
+        let mut command =
+            self.command_for_with_sandbox(request.current_dir, request.args, request.sandbox)?;
         if let Some(current_dir) = request.current_dir {
             command.current_dir(current_dir);
         }
@@ -300,21 +271,8 @@ impl CommandAgentProvider {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             let session_already_in_use = provider_session_already_in_use(&stderr);
             let failure_hint = provider_failure_hint(&stderr, request.sandbox.enabled);
-            let sandbox_violations = if request.sandbox.enabled {
-                sandbox_log_tag
-                    .as_deref()
-                    .map(recent_sandbox_violations)
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
             if request.sandbox.enabled && !session_already_in_use {
-                record_provider_sandbox_diagnostic(
-                    request.session,
-                    output.status,
-                    &stderr,
-                    &sandbox_violations,
-                );
+                record_provider_sandbox_diagnostic(request.session, output.status, &stderr);
             }
             return Err(AgentError::provider(format!(
                 "{} provider command failed with status {}{}{}",
@@ -333,7 +291,7 @@ impl CommandAgentProvider {
     }
 
     fn command_for(&self, repo_dir: Option<&Path>, args: &[String]) -> AgentResult<Command> {
-        self.command_for_with_sandbox(repo_dir, args, &self.sandbox, None)
+        self.command_for_with_sandbox(repo_dir, args, &self.sandbox)
     }
 
     pub fn command_for_testing(
@@ -349,7 +307,6 @@ impl CommandAgentProvider {
         repo_dir: Option<&Path>,
         args: &[String],
         sandbox: &CommandSandboxConfig,
-        sandbox_log_tag: Option<&str>,
     ) -> AgentResult<Command> {
         if !sandbox.enabled {
             let mut command = Command::new(self.resolved_command()?);
@@ -358,53 +315,21 @@ impl CommandAgentProvider {
         }
         let provider_runtime_env = self.prepare_provider_runtime_env(sandbox)?;
 
-        if sandbox.backend == CommandSandboxBackend::Nono {
-            let repo_dir = repo_dir.ok_or_else(|| {
-                AgentError::sandbox("sandboxed provider execution requires a repository directory")
-            })?;
-            let provider_command = self.resolved_command()?;
-            let mut command = Command::new(nono_helper_command(sandbox)?);
-            command.arg(NONO_SANDBOX_HELPER_ARG);
-            command.arg("--");
-            command.arg(&provider_command);
-            command.args(args);
-            command.envs(provider_runtime_env);
-            command.env(
-                NONO_SANDBOX_SPEC_ENV,
-                nono_sandbox_spec(&self.kind, repo_dir, &provider_command, sandbox)?
-                    .to_env_value()?,
-            );
-            return Ok(command);
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            let repo_dir = repo_dir.ok_or_else(|| {
-                AgentError::sandbox("sandboxed provider execution requires a repository directory")
-            })?;
-            let provider_command = self.resolved_command()?;
-            let mut command = Command::new("sandbox-exec");
-            command.arg("-p").arg(macos_sandbox_profile(
-                repo_dir,
-                &provider_command,
-                sandbox,
-                sandbox_log_tag,
-            )?);
-            command.arg(&provider_command);
-            command.args(args);
-            command.envs(provider_runtime_env);
-            Ok(command)
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = repo_dir;
-            let _ = args;
-            let _ = provider_runtime_env;
-            Err(AgentError::sandbox(
-                "sandboxed provider execution is only implemented on macOS",
-            ))
-        }
+        let repo_dir = repo_dir.ok_or_else(|| {
+            AgentError::sandbox("sandboxed provider execution requires a repository directory")
+        })?;
+        let provider_command = self.resolved_command()?;
+        let mut command = Command::new(nono_helper_command(sandbox)?);
+        command.arg(NONO_SANDBOX_HELPER_ARG);
+        command.arg("--");
+        command.arg(&provider_command);
+        command.args(args);
+        command.envs(provider_runtime_env);
+        command.env(
+            NONO_SANDBOX_SPEC_ENV,
+            nono_sandbox_spec(&self.kind, repo_dir, &provider_command, sandbox)?.to_env_value()?,
+        );
+        Ok(command)
     }
 
     fn run_interactive(&self, args: &[String]) -> AgentResult<()> {
@@ -491,13 +416,18 @@ impl CommandAgentProvider {
         self.effective_sandbox(disable_sandbox)
     }
 
-    #[cfg(target_os = "macos")]
-    pub fn macos_sandbox_profile_for_testing(
+    pub fn nono_sandbox_spec_for_testing(
         &self,
         repo_dir: &Path,
         provider_command: &Path,
     ) -> AgentResult<String> {
-        macos_sandbox_profile(repo_dir, provider_command, &self.sandbox, None)
+        nono_sandbox_spec(
+            &self.kind,
+            repo_dir,
+            provider_command,
+            &self.sandbox.clone().without_nono_profile_updates(),
+        )?
+        .to_env_value()
     }
 }
 
@@ -552,6 +482,7 @@ fn nono_sandbox_spec(
     read_paths.extend(sandbox.extra_read_paths.iter().cloned());
 
     let mut read_write_paths = provider_runtime_read_write_paths(sandbox);
+    read_write_paths.extend(nono_system_read_write_paths());
     read_write_paths.extend(provider_config_read_write_paths());
     let provider_config_literal_read_write_paths = provider_config_literal_read_write_paths();
     read_write_paths.extend(provider_config_literal_read_write_paths.iter().cloned());
@@ -565,6 +496,12 @@ fn nono_sandbox_spec(
         read_paths.extend(profile_spec.read_paths);
         read_write_paths.extend(profile_spec.read_write_paths);
         platform_rules.extend(profile_spec.platform_rules);
+    }
+    if platform_rules
+        .iter()
+        .any(|rule| rule == "(deny file-write-unlink)")
+    {
+        platform_rules.extend(nono_unlink_override_rules(&read_write_paths));
     }
 
     Ok(NonoSandboxSpec::new(
@@ -602,6 +539,14 @@ fn nono_system_read_paths() -> Vec<PathBuf> {
     .map(PathBuf::from)
     .filter(|path| path.exists())
     .collect()
+}
+
+fn nono_system_read_write_paths() -> Vec<PathBuf> {
+    ["/dev/null"]
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .collect()
 }
 
 fn provider_dependency_read_paths(provider_command: &Path) -> Vec<PathBuf> {
@@ -642,6 +587,35 @@ fn nono_literal_read_write_rules(paths: &[PathBuf]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn nono_unlink_override_rules(paths: &[PathBuf]) -> Vec<String> {
+    let mut rules = paths
+        .iter()
+        .flat_map(|path| {
+            let mut variants = vec![path.clone()];
+            if let Ok(canonical) = path.canonicalize()
+                && canonical != *path
+            {
+                variants.push(canonical);
+            }
+            variants.into_iter().map(|path| {
+                let filter = if fs_err::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+                    "subpath"
+                } else {
+                    "literal"
+                };
+                format!(
+                    r#"(allow file-write-unlink ({} "{}"))"#,
+                    filter,
+                    escape_nono_platform_rule_string(&path.to_string_lossy())
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    rules.sort();
+    rules.dedup();
+    rules
 }
 
 fn escape_nono_platform_rule_string(value: &str) -> String {
@@ -740,11 +714,10 @@ fn record_provider_sandbox_diagnostic(
     session: &mut AgentSession,
     status: std::process::ExitStatus,
     stderr: &str,
-    violations: &[String],
 ) {
     session.messages.push(AgentMessage {
         role: "provider.sandbox".into(),
-        content: sandbox_diagnostic(status, stderr, violations),
+        content: sandbox_diagnostic(status, stderr),
     });
 }
 
@@ -769,11 +742,7 @@ fn provider_session_already_in_use(stderr: &str) -> bool {
     stderr.contains("Session ID") && stderr.contains("already in use")
 }
 
-fn sandbox_diagnostic(
-    status: std::process::ExitStatus,
-    stderr: &str,
-    violations: &[String],
-) -> String {
+fn sandbox_diagnostic(status: std::process::ExitStatus, stderr: &str) -> String {
     let mut lines = vec![
         "sandbox was enabled for this provider run".into(),
         format!("provider exited with status {status}"),
@@ -785,63 +754,7 @@ fn sandbox_diagnostic(
         lines.push("provider stderr:".into());
         lines.push(stderr.trim().into());
     }
-    if violations.is_empty() {
-        lines.push("no matching macOS sandbox violations were found in recent system logs".into());
-    } else {
-        lines.push("matching macOS sandbox violations:".into());
-        lines.extend(violations.iter().cloned());
-    }
     lines.join("\n")
-}
-
-fn new_sandbox_log_tag() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("NITPICK_SANDBOX_{nanos}")
-}
-
-#[cfg(target_os = "macos")]
-fn recent_sandbox_violations(log_tag: &str) -> Vec<String> {
-    std::thread::sleep(std::time::Duration::from_millis(150));
-    let predicate = format!(r#"eventMessage CONTAINS "{log_tag}" AND process != "log""#);
-    let output = Command::new("/usr/bin/log")
-        .args(["show", "--last", "2m", "--style", "compact", "--predicate"])
-        .arg(predicate)
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    sandbox_violation_lines(&provider_log::bounded_provider_log(&output.stdout))
-}
-
-#[cfg(target_os = "macos")]
-fn sandbox_violation_lines(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|line| {
-            !line.is_empty()
-                && !line.starts_with("Timestamp ")
-                && !line.contains(" log[")
-                && !line.contains("log run noninteractively")
-                && (line.contains("Sandbox:")
-                    || line.contains("deny(")
-                    || line.contains(" deny ")
-                    || line.contains("Violation:"))
-        })
-        .take(20)
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn recent_sandbox_violations(_log_tag: &str) -> Vec<String> {
-    Vec::new()
 }
 
 impl AgentProvider for CommandAgentProvider {
@@ -1209,42 +1122,6 @@ fn review_tool_sandbox_paths(config_path: &Path) -> ReviewToolSandboxPaths {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn macos_sandbox_profile(
-    repo_dir: &Path,
-    provider_command: &Path,
-    sandbox: &CommandSandboxConfig,
-    log_tag: Option<&str>,
-) -> AgentResult<String> {
-    let repo_dir = repo_dir
-        .canonicalize()
-        .map_err(|error| AgentError::sandbox(format!("canonicalize sandbox repo dir: {error}")))?;
-    let command = provider_command
-        .canonicalize()
-        .unwrap_or_else(|_| provider_command.to_path_buf());
-    let builder = SandboxProfileBuilder::new()
-        .allow_processes()
-        .allow_mach_lookup()
-        .allow_network()
-        .allow_sysctl_read()
-        .allow_file_read_metadata()
-        .allow_device_runtime()
-        .allow_macos_runtime()
-        .allow_literal_read(&command)
-        .allow_read(&repo_dir)
-        .allow_reads(&provider_runtime_read_paths())
-        .allow_reads(&provider_config_read_paths())
-        .allow_read_writes(&provider_runtime_read_write_paths(sandbox))
-        .allow_read_writes(&provider_config_read_write_paths())
-        .allow_literal_read_writes(&provider_config_literal_read_write_paths())
-        .allow_literal_reads(&sandbox.extra_read_paths)
-        .allow_read_writes(&sandbox.extra_read_write_paths);
-    Ok(match log_tag {
-        Some(log_tag) => builder.render_with_deny_message(log_tag),
-        None => builder.render(),
-    })
-}
-
 fn provider_runtime_read_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for path in [Path::new("/opt/homebrew"), Path::new("/usr/local")] {
@@ -1317,7 +1194,7 @@ fn provider_runtime_root_dir_for_sandbox(sandbox: &CommandSandboxConfig) -> Path
         .unwrap_or_else(provider_runtime_root_dir)
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1348,82 +1225,51 @@ mod tests {
             !provider_failure_hint("Error: Session ID 65cc7ced is already in use.", true)
                 .contains("--no-sandbox")
         );
-        assert!(sandbox_diagnostic(status, "", &[]).contains("provider stderr was empty"));
-        assert!(sandbox_diagnostic(status, "", &[]).contains("--no-sandbox"));
-        assert!(
-            sandbox_diagnostic(status, "", &["Sandbox: deny file-read-data".into()])
-                .contains("matching macOS sandbox violations")
-        );
+        assert!(sandbox_diagnostic(status, "").contains("provider stderr was empty"));
+        assert!(sandbox_diagnostic(status, "").contains("--no-sandbox"));
     }
 
     #[test]
-    fn sandbox_violation_lines_ignores_log_query_output() {
-        let output = r#"Timestamp               Ty Process[PID:TID]
-2026-05-25 14:25:36.543 Df log[78270:22db5d] [com.apple.log:] log run noninteractively, parent: 75368 (nitpick-agent-host), args: '/usr/bin/log' 'show' '--last' '2m' '--style' 'compact' '--predicate' 'eventMessage CONTAINS "NITPICK_SANDBOX_1"'
-2026-05-25 14:25:36.544 Df kernel[0:0] Sandbox: claude(123) deny(1) file-read-data /private/var/db/mds NITPICK_SANDBOX_1
-"#;
+    fn nono_unlink_overrides_allow_read_write_dirs_to_remove_lock_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let read_write_dir = dir.path().join("nitpick-review-mcp");
+        fs_err::create_dir(&read_write_dir).expect("read write dir");
 
-        assert_eq!(
-            sandbox_violation_lines(output),
-            vec![
-                "2026-05-25 14:25:36.544 Df kernel[0:0] Sandbox: claude(123) deny(1) file-read-data /private/var/db/mds NITPICK_SANDBOX_1"
-            ]
-        );
+        let rules = nono_unlink_override_rules(std::slice::from_ref(&read_write_dir));
+
+        assert!(rules.contains(&format!(
+            r#"(allow file-write-unlink (subpath "{}"))"#,
+            read_write_dir.display()
+        )));
+        if let Ok(canonical) = read_write_dir.canonicalize()
+            && canonical != read_write_dir
+        {
+            assert!(rules.contains(&format!(
+                r#"(allow file-write-unlink (subpath "{}"))"#,
+                canonical.display()
+            )));
+        }
     }
 
     #[test]
-    fn macos_sandbox_profile_includes_review_tool_paths() {
+    fn nono_sandbox_spec_allows_dev_null_read_write() {
         let dir = tempfile::tempdir().expect("temp dir");
         let repo_dir = dir.path().join("repo");
         fs_err::create_dir(&repo_dir).expect("repo dir");
         let provider_command = dir.path().join("provider");
         fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
-        let mcp_command = dir.path().join("nitpick-agent-host");
-        fs_err::write(&mcp_command, "#!/bin/sh\n").expect("mcp command");
-        let state_path = dir.path().join("session.json");
-        let mcp_config_path = dir.path().join("mcp.json");
-        fs_err::write(
-            &mcp_config_path,
-            serde_json::json!({
-                "mcpServers": {
-                    "nitpick-review": {
-                        "command": mcp_command,
-                        "args": ["review-mcp", state_path]
-                    }
-                }
-            })
-            .to_string(),
+
+        let spec = nono_sandbox_spec(
+            &AgentProviderKind::Codex,
+            &repo_dir,
+            &provider_command,
+            &CommandSandboxConfig::nono().without_nono_profile_updates(),
         )
-        .expect("mcp config");
-        let sandbox =
-            CommandSandboxConfig::macos_seatbelt().with_review_tool_paths(&ReviewToolConfig {
-                mcp_config_path: mcp_config_path.clone(),
-                instructions: String::new(),
-            });
+        .expect("spec");
 
-        let profile =
-            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox, None).expect("profile");
-
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* (subpath "{}"))"#,
-            repo_dir.canonicalize().expect("repo dir").display()
-        )));
-        assert!(!profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{}"))"#,
-            repo_dir.canonicalize().expect("repo dir").display()
-        )));
-        assert!(profile.contains(&format!(
-            r#"(literal "{}")"#,
-            mcp_config_path.canonicalize().expect("config path").display()
-        )));
-        assert!(profile.contains(&format!(
-            r#"(literal "{}")"#,
-            mcp_command.canonicalize().expect("mcp command").display()
-        )));
-        assert!(profile.contains(&format!(
-            r#"(subpath "{}")"#,
-            dir.path().canonicalize().expect("temp dir").display()
-        )));
+        if Path::new("/dev/null").exists() {
+            assert!(spec.read_write_paths.contains(&PathBuf::from("/dev/null")));
+        }
     }
 
     #[test]
@@ -1433,14 +1279,15 @@ mod tests {
         fs_err::create_dir(&repo_dir).expect("repo dir");
         let provider_command = dir.path().join("claude");
         fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
-        let sandbox = CommandSandboxConfig::macos_seatbelt()
-            .with_provider_runtime_dir(dir.path().join("runtime"));
+        let sandbox = CommandSandboxConfig::nono()
+            .with_provider_runtime_dir(dir.path().join("runtime"))
+            .without_nono_profile_updates();
         let provider =
             CommandAgentProvider::new(AgentProviderKind::Claude, None, &provider_command)
                 .with_sandbox(sandbox);
 
         let command = provider
-            .command_for_with_sandbox(Some(repo_dir.as_path()), &[], &provider.sandbox, None)
+            .command_for_with_sandbox(Some(repo_dir.as_path()), &[], &provider.sandbox)
             .expect("command");
 
         let envs = command
@@ -1475,13 +1322,14 @@ mod tests {
         fs_err::create_dir(&repo_dir).expect("repo dir");
         let provider_command = dir.path().join("codex");
         fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
-        let sandbox = CommandSandboxConfig::macos_seatbelt()
-            .with_provider_runtime_dir(dir.path().join("runtime"));
+        let sandbox = CommandSandboxConfig::nono()
+            .with_provider_runtime_dir(dir.path().join("runtime"))
+            .without_nono_profile_updates();
         let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &provider_command)
             .with_sandbox(sandbox);
 
         let command = provider
-            .command_for_with_sandbox(Some(repo_dir.as_path()), &[], &provider.sandbox, None)
+            .command_for_with_sandbox(Some(repo_dir.as_path()), &[], &provider.sandbox)
             .expect("command");
 
         let envs = command
@@ -1503,117 +1351,5 @@ mod tests {
             Some(&tmp.to_string_lossy().into_owned())
         );
         assert!(tmp.is_dir());
-    }
-
-    #[test]
-    fn sandboxed_provider_can_read_repo_and_write_only_runtime_dir() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let repo_dir = dir.path().join("repo");
-        fs_err::create_dir(&repo_dir).expect("repo dir");
-        fs_err::write(repo_dir.join("readable.txt"), "repo").expect("repo file");
-        let blocked_file = dir.path().join("blocked.txt");
-        fs_err::write(&blocked_file, "blocked").expect("blocked file");
-        let provider_command = dir.path().join("provider");
-        fs_err::write(
-            &provider_command,
-            r#"#!/bin/sh
-set -eu
-repo_dir="$1"
-blocked_file="$2"
-cat "$repo_dir/readable.txt" >/dev/null
-if (echo blocked > "$repo_dir/write-blocked.txt") 2>/dev/null; then
-  echo "repo write unexpectedly succeeded" >&2
-  exit 10
-fi
-echo ok > "$TMPDIR/runtime-write.txt"
-if cat "$blocked_file" >/dev/null 2>&1; then
-  echo "outside read unexpectedly succeeded" >&2
-  exit 11
-fi
-printf done
-"#,
-        )
-        .expect("provider command");
-        make_test_command_executable(&provider_command);
-        let sandbox = CommandSandboxConfig::macos_seatbelt()
-            .with_provider_runtime_dir(dir.path().join("runtime"));
-        let provider =
-            CommandAgentProvider::new(AgentProviderKind::Claude, None, &provider_command)
-                .with_sandbox(sandbox);
-        let args = vec![
-            repo_dir.to_string_lossy().into_owned(),
-            blocked_file.to_string_lossy().into_owned(),
-        ];
-        let mut command = provider
-            .command_for_with_sandbox(Some(repo_dir.as_path()), &args, &provider.sandbox, None)
-            .expect("command");
-
-        let output = command.output().expect("provider output");
-
-        assert!(output.status.success(), "stderr: {:?}", output.stderr);
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "done");
-        assert!(!repo_dir.join("write-blocked.txt").exists());
-        assert!(
-            provider_runtime_root_dir_for_sandbox(&provider.sandbox)
-                .join("tmp")
-                .join("claude")
-                .join("runtime-write.txt")
-                .is_file()
-        );
-    }
-
-    #[test]
-    fn macos_sandbox_profile_uses_provider_config_and_owned_runtime_dirs() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let repo_dir = dir.path().join("repo");
-        fs_err::create_dir(&repo_dir).expect("repo dir");
-        let provider_command = dir.path().join("claude");
-        fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
-        let sandbox = CommandSandboxConfig::macos_seatbelt();
-
-        let profile =
-            macos_sandbox_profile(&repo_dir, &provider_command, &sandbox, Some("NITPICK_TEST"))
-                .expect("profile");
-
-        let home = std::env::var("HOME").expect("home");
-        let provider_runtime_dir = provider_runtime_root_dir();
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{}"))"#,
-            provider_runtime_dir
-                .canonicalize()
-                .unwrap_or(provider_runtime_dir)
-                .display()
-        )));
-        assert!(profile.contains(&format!(r#"(subpath "{home}/.claude")"#)));
-        assert!(profile.contains(&format!(r#"(literal "{home}/.claude.json")"#)));
-        assert!(profile.contains(&format!(r#"(literal "{home}/.claude.lock")"#)));
-        assert!(profile.contains(&format!(r#"(subpath "{home}/.codex")"#)));
-        assert!(profile.contains(&format!(r#"(subpath "{home}/.agents/skills")"#)));
-        assert!(!profile.contains(&format!(r#"(subpath "{home}/.cache")"#)));
-        assert!(!profile.contains(&format!(r#"(subpath "{home}/Library/Keychains")"#)));
-        assert!(!profile.contains(&format!(
-            r#"(subpath "{}")"#,
-            std::env::temp_dir().canonicalize().expect("temp dir").display()
-        )));
-        assert!(profile.contains(r#"(allow mach-lookup)"#));
-        assert!(profile.contains(r#"(deny default (with message "NITPICK_TEST"))"#));
-        assert!(profile.contains(r#"(allow process*)"#));
-        assert!(profile.contains(r#"(allow ipc*)"#));
-        assert!(profile.contains(r#"(allow pseudo-tty)"#));
-        assert!(profile.contains(r#"(allow file-map-executable"#));
-        assert!(profile.contains(r#"(allow system-mac-syscall (mac-policy-name "vnguard"))"#));
-        assert!(profile.contains(r#"(literal "/dev/tty")"#));
-        assert!(profile.contains(r#"(literal "/dev/urandom")"#));
-        assert!(profile.contains(r#"(subpath "/private/etc")"#));
-        assert!(profile.contains(r#"(subpath "/opt/homebrew")"#));
-        assert!(profile.contains(r#"(subpath "/usr/local")"#));
-    }
-
-    fn make_test_command_executable(command: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = fs_err::metadata(command).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs_err::set_permissions(command, permissions).expect("chmod");
     }
 }

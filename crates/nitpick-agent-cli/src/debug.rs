@@ -401,12 +401,12 @@ mod tests {
             provider: "claude".into(),
             command: "/opt/homebrew/bin/claude".into(),
             model: "claude-opus-4-6".into(),
-            sandbox: "macos-seatbelt".into(),
+            sandbox: "nono".into(),
         };
 
         assert_eq!(
             super::format_provider_diagnostic(&activity, &display),
-            "Diagnostic still running\n  \u{1b}[2mactivity\u{1b}[0m  activity-24\n  \u{1b}[2mprovider\u{1b}[0m  claude\n  \u{1b}[2mcommand\u{1b}[0m   /opt/homebrew/bin/claude\n  \u{1b}[2mmodel\u{1b}[0m     claude-opus-4-6\n  \u{1b}[2msandbox\u{1b}[0m   macos-seatbelt\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[34mRunning\u{1b}[0m\n\nStatus\n  provider diagnostic is still running after 60s\n  check logs: nitpick debug logs activity-24\n\nLogs\n  nitpick debug logs activity-24"
+            "Diagnostic still running\n  \u{1b}[2mactivity\u{1b}[0m  activity-24\n  \u{1b}[2mprovider\u{1b}[0m  claude\n  \u{1b}[2mcommand\u{1b}[0m   /opt/homebrew/bin/claude\n  \u{1b}[2mmodel\u{1b}[0m     claude-opus-4-6\n  \u{1b}[2msandbox\u{1b}[0m   nono\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[34mRunning\u{1b}[0m\n\nStatus\n  provider diagnostic is still running after 60s\n  check logs: nitpick debug logs activity-24\n\nLogs\n  nitpick debug logs activity-24"
         );
     }
 
@@ -433,7 +433,7 @@ mod tests {
             provider: "claude".into(),
             command: "claude".into(),
             model: "claude-opus-4-6".into(),
-            sandbox: "macos-seatbelt".into(),
+            sandbox: "nono".into(),
         };
 
         let output = super::format_provider_diagnostic(&activity, &display);
