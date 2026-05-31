@@ -8,14 +8,15 @@ use crate::{
     AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
     ChatInput, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
-    macos_sandbox::{SandboxProfileBuilder, regex_literal_path},
-    provider_command_runner::ProviderCommandRunner,
-    provider_log, validate_review_output_file_for_diff,
+    app_paths::default_data_dir, macos_sandbox::SandboxProfileBuilder,
+    provider_command_runner::ProviderCommandRunner, provider_log,
+    validate_review_output_file_for_diff,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSandboxConfig {
     pub enabled: bool,
+    provider_runtime_dir: Option<PathBuf>,
     extra_read_paths: Vec<PathBuf>,
     extra_read_write_paths: Vec<PathBuf>,
 }
@@ -24,6 +25,7 @@ impl CommandSandboxConfig {
     pub fn macos_seatbelt() -> Self {
         Self {
             enabled: true,
+            provider_runtime_dir: None,
             extra_read_paths: Vec::new(),
             extra_read_write_paths: Vec::new(),
         }
@@ -32,6 +34,7 @@ impl CommandSandboxConfig {
     pub fn unsandboxed() -> Self {
         Self {
             enabled: false,
+            provider_runtime_dir: None,
             extra_read_paths: Vec::new(),
             extra_read_write_paths: Vec::new(),
         }
@@ -48,6 +51,12 @@ impl CommandSandboxConfig {
 
     fn with_extra_read_write_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
         self.extra_read_write_paths.extend(paths);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_provider_runtime_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.provider_runtime_dir = Some(path.into());
         self
     }
 }
@@ -262,6 +271,7 @@ impl CommandAgentProvider {
             command.args(args);
             return Ok(command);
         }
+        let provider_runtime_env = self.prepare_provider_runtime_env(sandbox)?;
 
         #[cfg(target_os = "macos")]
         {
@@ -278,6 +288,7 @@ impl CommandAgentProvider {
             )?);
             command.arg(&provider_command);
             command.args(args);
+            command.envs(provider_runtime_env);
             Ok(command)
         }
 
@@ -285,6 +296,7 @@ impl CommandAgentProvider {
         {
             let _ = repo_dir;
             let _ = args;
+            let _ = provider_runtime_env;
             Err(AgentError::sandbox(
                 "sandboxed provider execution is only implemented on macOS",
             ))
@@ -372,10 +384,7 @@ impl CommandAgentProvider {
     }
 
     fn effective_prompt_sandbox(&self, disable_sandbox: bool) -> CommandSandboxConfig {
-        match self.kind {
-            AgentProviderKind::Claude => self.effective_sandbox(disable_sandbox),
-            AgentProviderKind::Codex => CommandSandboxConfig::unsandboxed(),
-        }
+        self.effective_sandbox(disable_sandbox)
     }
 
     #[cfg(target_os = "macos")]
@@ -807,6 +816,27 @@ impl CommandAgentProvider {
         sandbox.with_extra_read_write_paths([debug_dir.to_path_buf()])
     }
 
+    fn prepare_provider_runtime_env(
+        &self,
+        sandbox: &CommandSandboxConfig,
+    ) -> AgentResult<Vec<(&'static str, PathBuf)>> {
+        let root = provider_runtime_root_dir_for_sandbox(sandbox);
+        let tmp = root.join("tmp").join(self.kind.as_str());
+        let env = match self.kind {
+            AgentProviderKind::Claude => vec![("CLAUDE_CODE_TMPDIR", tmp.clone()), ("TMPDIR", tmp)],
+            AgentProviderKind::Codex => vec![("TMPDIR", tmp)],
+        };
+        for (_, path) in &env {
+            fs_err::create_dir_all(path).map_err(|error| {
+                AgentError::sandbox(format!(
+                    "create provider runtime directory {}: {error}",
+                    path.display()
+                ))
+            })?;
+        }
+        Ok(env)
+    }
+
     fn review_tool_args(&self, session: &AgentSession, tools: &ReviewToolConfig) -> Vec<String> {
         let mut args = self.review_args(session);
         match self.kind {
@@ -990,11 +1020,12 @@ fn macos_sandbox_profile(
         .allow_device_runtime()
         .allow_macos_runtime()
         .allow_literal_read(&command)
-        .allow_read_write(&repo_dir)
+        .allow_read(&repo_dir)
         .allow_reads(&provider_runtime_read_paths())
-        .allow_read_writes(&provider_runtime_read_write_paths())
-        .allow_literal_read_writes(&provider_runtime_literal_read_write_paths())
-        .allow_regex_read_writes(&provider_runtime_read_write_patterns())
+        .allow_reads(&provider_config_read_paths())
+        .allow_read_writes(&provider_runtime_read_write_paths(sandbox))
+        .allow_read_writes(&provider_config_read_write_paths())
+        .allow_literal_read_writes(&provider_config_literal_read_write_paths())
         .allow_literal_reads(&sandbox.extra_read_paths)
         .allow_read_writes(&sandbox.extra_read_write_paths);
     Ok(match log_tag {
@@ -1011,38 +1042,49 @@ fn provider_runtime_read_paths() -> Vec<PathBuf> {
             paths.push(path.to_path_buf());
         }
     }
+    paths
+}
+
+#[cfg(target_os = "macos")]
+fn provider_runtime_read_write_paths(sandbox: &CommandSandboxConfig) -> Vec<PathBuf> {
+    vec![provider_runtime_root_dir_for_sandbox(sandbox)]
+}
+
+#[cfg(target_os = "macos")]
+fn provider_config_read_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        paths.extend([home.join("Library").join("Keychains")]);
+        paths.push(home.join(".agents").join("skills"));
     }
     paths
 }
 
 #[cfg(target_os = "macos")]
-fn provider_runtime_read_write_paths() -> Vec<PathBuf> {
+fn provider_config_read_write_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         paths.extend([
             home.join(".claude"),
-            home.join(".cache"),
-            home.join(".config").join("claude"),
+            home.join(".codex"),
             home.join(".local").join("share").join("claude"),
             home.join(".local").join("state").join("claude"),
             home.join("Library")
                 .join("Application Support")
                 .join("Claude"),
-            home.join(".npm"),
+            home.join("Library")
+                .join("Application Support")
+                .join("ClaudeCode"),
             home.join("Library").join("Caches").join("Claude"),
             home.join("Library")
                 .join("Caches")
                 .join("claude-cli-nodejs"),
         ]);
     }
-    paths.push(std::env::temp_dir());
     paths
 }
 
 #[cfg(target_os = "macos")]
-fn provider_runtime_literal_read_write_paths() -> Vec<PathBuf> {
+fn provider_config_literal_read_write_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         paths.push(home.join(".claude.json"));
@@ -1051,14 +1093,15 @@ fn provider_runtime_literal_read_write_paths() -> Vec<PathBuf> {
     paths
 }
 
-#[cfg(target_os = "macos")]
-fn provider_runtime_read_write_patterns() -> Vec<String> {
-    let mut patterns = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let claude_json = regex_literal_path(&home.join(".claude.json"));
-        patterns.push(format!(r#"^{claude_json}\.tmp\..*$"#));
-    }
-    patterns
+fn provider_runtime_root_dir() -> PathBuf {
+    default_data_dir().join("provider-runtime")
+}
+
+fn provider_runtime_root_dir_for_sandbox(sandbox: &CommandSandboxConfig) -> PathBuf {
+    sandbox
+        .provider_runtime_dir
+        .clone()
+        .unwrap_or_else(provider_runtime_root_dir)
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -1149,6 +1192,14 @@ mod tests {
             macos_sandbox_profile(&repo_dir, &provider_command, &sandbox, None).expect("profile");
 
         assert!(profile.contains(&format!(
+            r#"(allow file-read* (subpath "{}"))"#,
+            repo_dir.canonicalize().expect("repo dir").display()
+        )));
+        assert!(!profile.contains(&format!(
+            r#"(allow file-read* file-write* (subpath "{}"))"#,
+            repo_dir.canonicalize().expect("repo dir").display()
+        )));
+        assert!(profile.contains(&format!(
             r#"(literal "{}")"#,
             mcp_config_path.canonicalize().expect("config path").display()
         )));
@@ -1163,7 +1214,143 @@ mod tests {
     }
 
     #[test]
-    fn macos_sandbox_profile_includes_claude_runtime_paths() {
+    fn sandboxed_provider_command_sets_owned_runtime_env() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_dir = dir.path().join("repo");
+        fs_err::create_dir(&repo_dir).expect("repo dir");
+        let provider_command = dir.path().join("claude");
+        fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let sandbox = CommandSandboxConfig::macos_seatbelt()
+            .with_provider_runtime_dir(dir.path().join("runtime"));
+        let provider =
+            CommandAgentProvider::new(AgentProviderKind::Claude, None, &provider_command)
+                .with_sandbox(sandbox);
+
+        let command = provider
+            .command_for_with_sandbox(Some(repo_dir.as_path()), &[], &provider.sandbox, None)
+            .expect("command");
+
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let root = provider_runtime_root_dir_for_sandbox(&provider.sandbox);
+        let tmp = root.join("tmp").join("claude");
+        assert!(!envs.contains_key("CLAUDE_CONFIG_DIR"));
+        assert_eq!(
+            envs.get("CLAUDE_CODE_TMPDIR"),
+            Some(&tmp.to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            envs.get("TMPDIR"),
+            Some(&tmp.to_string_lossy().into_owned())
+        );
+        assert!(tmp.is_dir());
+    }
+
+    #[test]
+    fn sandboxed_codex_provider_command_sets_owned_runtime_env() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_dir = dir.path().join("repo");
+        fs_err::create_dir(&repo_dir).expect("repo dir");
+        let provider_command = dir.path().join("codex");
+        fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let sandbox = CommandSandboxConfig::macos_seatbelt()
+            .with_provider_runtime_dir(dir.path().join("runtime"));
+        let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &provider_command)
+            .with_sandbox(sandbox);
+
+        let command = provider
+            .command_for_with_sandbox(Some(repo_dir.as_path()), &[], &provider.sandbox, None)
+            .expect("command");
+
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let root = provider_runtime_root_dir_for_sandbox(&provider.sandbox);
+        let tmp = root.join("tmp").join("codex");
+        assert!(!envs.contains_key("CODEX_HOME"));
+        assert_eq!(
+            envs.get("TMPDIR"),
+            Some(&tmp.to_string_lossy().into_owned())
+        );
+        assert!(tmp.is_dir());
+    }
+
+    #[test]
+    fn sandboxed_provider_can_read_repo_and_write_only_runtime_dir() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_dir = dir.path().join("repo");
+        fs_err::create_dir(&repo_dir).expect("repo dir");
+        fs_err::write(repo_dir.join("readable.txt"), "repo").expect("repo file");
+        let blocked_file = dir.path().join("blocked.txt");
+        fs_err::write(&blocked_file, "blocked").expect("blocked file");
+        let provider_command = dir.path().join("provider");
+        fs_err::write(
+            &provider_command,
+            r#"#!/bin/sh
+set -eu
+repo_dir="$1"
+blocked_file="$2"
+cat "$repo_dir/readable.txt" >/dev/null
+if (echo blocked > "$repo_dir/write-blocked.txt") 2>/dev/null; then
+  echo "repo write unexpectedly succeeded" >&2
+  exit 10
+fi
+echo ok > "$TMPDIR/runtime-write.txt"
+if cat "$blocked_file" >/dev/null 2>&1; then
+  echo "outside read unexpectedly succeeded" >&2
+  exit 11
+fi
+printf done
+"#,
+        )
+        .expect("provider command");
+        make_test_command_executable(&provider_command);
+        let sandbox = CommandSandboxConfig::macos_seatbelt()
+            .with_provider_runtime_dir(dir.path().join("runtime"));
+        let provider =
+            CommandAgentProvider::new(AgentProviderKind::Claude, None, &provider_command)
+                .with_sandbox(sandbox);
+        let args = vec![
+            repo_dir.to_string_lossy().into_owned(),
+            blocked_file.to_string_lossy().into_owned(),
+        ];
+        let mut command = provider
+            .command_for_with_sandbox(Some(repo_dir.as_path()), &args, &provider.sandbox, None)
+            .expect("command");
+
+        let output = command.output().expect("provider output");
+
+        assert!(output.status.success(), "stderr: {:?}", output.stderr);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "done");
+        assert!(!repo_dir.join("write-blocked.txt").exists());
+        assert!(
+            provider_runtime_root_dir_for_sandbox(&provider.sandbox)
+                .join("tmp")
+                .join("claude")
+                .join("runtime-write.txt")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn macos_sandbox_profile_uses_provider_config_and_owned_runtime_dirs() {
         let dir = tempfile::tempdir().expect("temp dir");
         let repo_dir = dir.path().join("repo");
         fs_err::create_dir(&repo_dir).expect("repo dir");
@@ -1176,50 +1363,44 @@ mod tests {
                 .expect("profile");
 
         let home = std::env::var("HOME").expect("home");
+        let provider_runtime_dir = provider_runtime_root_dir();
         assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{home}/.local/share/claude"))"#
+            r#"(allow file-read* file-write* (subpath "{}"))"#,
+            provider_runtime_dir
+                .canonicalize()
+                .unwrap_or(provider_runtime_dir)
+                .display()
         )));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{home}/.local/state/claude"))"#
-        )));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* (subpath "{home}/Library/Keychains"))"#
-        )));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{home}/.claude"))"#
-        )));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (literal "{home}/.claude.json"))"#
-        )));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (literal "{home}/.claude.lock"))"#
-        )));
-        assert!(profile.contains(r#"\\.claude\\.json\\.tmp\\."#));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{home}/.cache"))"#
-        )));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{home}/.config/claude"))"#
-        )));
-        assert!(profile.contains(&format!(
-            r#"(allow file-read* file-write* (subpath "{home}/Library/Caches/claude-cli-nodejs"))"#
-        )));
-        assert!(profile.contains(&format!(
+        assert!(profile.contains(&format!(r#"(subpath "{home}/.claude")"#)));
+        assert!(profile.contains(&format!(r#"(literal "{home}/.claude.json")"#)));
+        assert!(profile.contains(&format!(r#"(literal "{home}/.claude.lock")"#)));
+        assert!(profile.contains(&format!(r#"(subpath "{home}/.codex")"#)));
+        assert!(profile.contains(&format!(r#"(subpath "{home}/.agents/skills")"#)));
+        assert!(!profile.contains(&format!(r#"(subpath "{home}/.cache")"#)));
+        assert!(!profile.contains(&format!(r#"(subpath "{home}/Library/Keychains")"#)));
+        assert!(!profile.contains(&format!(
             r#"(subpath "{}")"#,
             std::env::temp_dir().canonicalize().expect("temp dir").display()
         )));
         assert!(profile.contains(r#"(allow mach-lookup)"#));
         assert!(profile.contains(r#"(deny default (with message "NITPICK_TEST"))"#));
-        assert!(profile.contains(r#"(allow process-exec)"#));
-        assert!(profile.contains(r#"(allow ipc-posix-sem)"#));
+        assert!(profile.contains(r#"(allow process*)"#));
+        assert!(profile.contains(r#"(allow ipc*)"#));
         assert!(profile.contains(r#"(allow pseudo-tty)"#));
         assert!(profile.contains(r#"(allow file-map-executable"#));
         assert!(profile.contains(r#"(allow system-mac-syscall (mac-policy-name "vnguard"))"#));
-        assert!(profile.contains(r#"(global-name "com.apple.trustd.agent")"#));
         assert!(profile.contains(r#"(literal "/dev/tty")"#));
         assert!(profile.contains(r#"(literal "/dev/urandom")"#));
         assert!(profile.contains(r#"(subpath "/private/etc")"#));
         assert!(profile.contains(r#"(subpath "/opt/homebrew")"#));
         assert!(profile.contains(r#"(subpath "/usr/local")"#));
+    }
+
+    fn make_test_command_executable(command: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs_err::metadata(command).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs_err::set_permissions(command, permissions).expect("chmod");
     }
 }
