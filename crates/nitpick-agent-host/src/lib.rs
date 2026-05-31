@@ -2,6 +2,8 @@ mod api;
 mod polling_state;
 mod review_intake;
 pub mod review_mcp;
+mod review_mcp_session_store;
+mod review_poll_cycle;
 mod review_queue;
 mod review_slots;
 
@@ -18,8 +20,9 @@ use nitpick_agent_core::{
     ArtifactId, ArtifactKind, ArtifactSyncDestination, ArtifactSyncState, ChatInput,
     CleanupCheckoutsResult, Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus,
     LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore,
-    ProviderDiagnosticInput, ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewMode,
-    ReviewOutput, ReviewRequest, ReviewSource, SessionStatus, SystemClock, default_data_dir,
+    ProviderDiagnosticInput, ProviderReviewContext, ProviderRunContext, ReviewActivityIdentity,
+    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
+    default_data_dir,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
@@ -29,6 +32,7 @@ use nitpick_agent_github::{
 };
 use polling_state::PollingState;
 use review_intake::ReviewRequestIntake;
+use review_poll_cycle::ReviewPollCycle;
 use review_queue::ReviewExecutionQueue;
 use serde::Deserialize;
 
@@ -793,7 +797,7 @@ impl HostDaemon {
 
     #[tracing::instrument(skip_all)]
     pub fn poll_review_requests(&self) -> AgentResult<ReviewSourcePollResult> {
-        let mut result = self.review_intake().poll(
+        self.review_poll_cycle().run(
             |request| {
                 self.record_review_request_detected_activity(request)
                     .map(|activity| activity.id.to_string())
@@ -806,23 +810,8 @@ impl HostDaemon {
                     Ok(None)
                 }
             },
-        )?;
-        if result.skipped_reason.is_none() && self.automatic_checkout_cleanup {
-            match self.cleanup_checkouts() {
-                Ok(cleanup) => {
-                    result.cleanup_removed_count = cleanup.removed_count;
-                }
-                Err(error) => {
-                    tracing::warn!(error = %error, "automatic checkout cleanup failed");
-                    result.cleanup_error = Some(error.to_string());
-                }
-            }
-        }
-        if result.skipped_reason.is_none() {
-            let now = self.clock.now_unix();
-            self.polling_state.record_result(now, &result)?;
-        }
-        Ok(result)
+            || self.cleanup_checkouts(),
+        )
     }
 
     fn review_intake(&self) -> ReviewRequestIntake {
@@ -833,6 +822,15 @@ impl HostDaemon {
             self.review_source.clone(),
             self.clock.clone(),
             self.polling_state.clone(),
+        )
+    }
+
+    fn review_poll_cycle(&self) -> ReviewPollCycle {
+        ReviewPollCycle::new(
+            self.review_intake(),
+            self.clock.clone(),
+            self.polling_state.clone(),
+            self.automatic_checkout_cleanup,
         )
     }
 
@@ -1005,12 +1003,8 @@ impl HostDaemon {
 
     fn has_active_review_for(&self, repository: &str, number: Option<u64>) -> AgentResult<bool> {
         Ok(self.list_activities()?.into_iter().any(|activity| {
-            activity.kind == ActivityKind::Review
-                && matches!(
-                    activity.status,
-                    ActivityStatus::Queued | ActivityStatus::Running
-                )
-                && active_review_matches(&activity, repository, number)
+            let identity = ReviewActivityIdentity::new(&activity);
+            identity.is_active_review() && identity.matches_target(repository, number)
         }))
     }
 
@@ -1040,21 +1034,6 @@ impl HostDaemon {
         input.force = retry.force;
         Ok(input)
     }
-}
-
-fn active_review_matches(activity: &Activity, repository: &str, number: Option<u64>) -> bool {
-    activity
-        .retry
-        .as_ref()
-        .and_then(|retry| retry.review.as_ref())
-        .is_some_and(|review| review.repository == repository && review.number == number)
-        || activity.label.as_deref().is_some_and(|label| {
-            label
-                == match number {
-                    Some(number) => format!("review on {repository}#{number}"),
-                    None => format!("review on {repository}"),
-                }
-        })
 }
 
 fn is_retryable_review_metadata(retry: &nitpick_agent_core::ReviewRetryMetadata) -> bool {

@@ -13,6 +13,7 @@ mod provider;
 mod provider_command_runner;
 mod provider_failure;
 mod provider_log;
+mod provider_sandbox;
 mod repo_path;
 mod review_identity;
 mod review_output;
@@ -33,7 +34,7 @@ pub use app_paths::{
 };
 pub use artifact::{Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState};
 pub use clock::{Clock, FixedClock, SystemClock};
-pub use command_provider::{CommandAgentProvider, CommandSandboxConfig};
+pub use command_provider::CommandAgentProvider;
 pub use error::{AgentError, AgentResult};
 pub use host::{
     CleanupCheckoutsResult, HostAttention, HostStatus, LocalStateResetResult,
@@ -52,7 +53,9 @@ pub use provider::{
 pub use provider_failure::{
     ProviderFailureClassification, ProviderFailureKind, classify_provider_failure,
 };
+pub use provider_sandbox::CommandSandboxConfig;
 pub use repo_path::RepoPath;
+pub use review_identity::ReviewActivityIdentity;
 pub use review_output::{
     REVIEW_OUTPUT_RELATIVE_PATH, validate_review_output_file, validate_review_output_file_for_diff,
 };

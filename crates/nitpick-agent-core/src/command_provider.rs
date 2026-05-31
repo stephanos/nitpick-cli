@@ -1,105 +1,19 @@
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Instant, SystemTime},
+    time::Instant,
 };
 
 use crate::{
     AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
     ChatInput, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
-    app_paths::default_data_dir,
-    nono_profile::NonoProfileManager,
-    nono_sandbox::{NONO_SANDBOX_HELPER_ARG, NONO_SANDBOX_SPEC_ENV, NonoSandboxSpec},
+    nono_sandbox::{NONO_SANDBOX_HELPER_ARG, NONO_SANDBOX_SPEC_ENV},
     provider_command_runner::ProviderCommandRunner,
-    provider_log, validate_review_output_file_for_diff,
+    provider_log,
+    provider_sandbox::{CommandSandboxConfig, ProviderSandboxPlan},
+    validate_review_output_file_for_diff,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommandSandboxConfig {
-    pub enabled: bool,
-    nono_helper_command: Option<PathBuf>,
-    nono_profile_cache_dir: Option<PathBuf>,
-    nono_profile_updates_enabled: bool,
-    provider_runtime_dir: Option<PathBuf>,
-    extra_read_paths: Vec<PathBuf>,
-    extra_read_write_paths: Vec<PathBuf>,
-}
-
-impl CommandSandboxConfig {
-    pub fn nono() -> Self {
-        Self {
-            enabled: true,
-            nono_helper_command: None,
-            nono_profile_cache_dir: None,
-            nono_profile_updates_enabled: true,
-            provider_runtime_dir: None,
-            extra_read_paths: Vec::new(),
-            extra_read_write_paths: Vec::new(),
-        }
-    }
-
-    pub fn unsandboxed() -> Self {
-        Self {
-            enabled: false,
-            nono_helper_command: None,
-            nono_profile_cache_dir: None,
-            nono_profile_updates_enabled: false,
-            provider_runtime_dir: None,
-            extra_read_paths: Vec::new(),
-            extra_read_write_paths: Vec::new(),
-        }
-    }
-
-    fn with_extra_read_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
-        self.extra_read_paths.extend(paths);
-        self
-    }
-
-    pub fn with_read_paths(self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
-        self.with_extra_read_paths(paths)
-    }
-
-    pub fn with_helper_command(mut self, command: impl Into<PathBuf>) -> Self {
-        self.nono_helper_command = Some(command.into());
-        self
-    }
-
-    pub fn with_nono_profile_cache_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.nono_profile_cache_dir = Some(path.into());
-        self
-    }
-
-    pub fn without_nono_profile_updates(mut self) -> Self {
-        self.nono_profile_updates_enabled = false;
-        self
-    }
-
-    fn with_extra_read_write_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
-        self.extra_read_write_paths.extend(paths);
-        self
-    }
-
-    #[cfg(test)]
-    fn with_provider_runtime_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.provider_runtime_dir = Some(path.into());
-        self
-    }
-}
-
-impl Default for CommandSandboxConfig {
-    fn default() -> Self {
-        Self::nono()
-    }
-}
-
-impl CommandSandboxConfig {
-    fn with_review_tool_paths(self, tools: &ReviewToolConfig) -> Self {
-        let paths = review_tool_sandbox_paths(&tools.mcp_config_path);
-        self.with_extra_read_paths(paths.read_paths)
-            .with_extra_read_write_paths(paths.read_write_paths)
-    }
-}
 
 pub struct CommandAgentProvider {
     kind: AgentProviderKind,
@@ -313,22 +227,18 @@ impl CommandAgentProvider {
             command.args(args);
             return Ok(command);
         }
-        let provider_runtime_env = self.prepare_provider_runtime_env(sandbox)?;
-
         let repo_dir = repo_dir.ok_or_else(|| {
             AgentError::sandbox("sandboxed provider execution requires a repository directory")
         })?;
         let provider_command = self.resolved_command()?;
-        let mut command = Command::new(nono_helper_command(sandbox)?);
+        let plan = ProviderSandboxPlan::prepare(&self.kind, repo_dir, &provider_command, sandbox)?;
+        let mut command = Command::new(sandbox.helper_command()?);
         command.arg(NONO_SANDBOX_HELPER_ARG);
         command.arg("--");
         command.arg(&provider_command);
         command.args(args);
-        command.envs(provider_runtime_env);
-        command.env(
-            NONO_SANDBOX_SPEC_ENV,
-            nono_sandbox_spec(&self.kind, repo_dir, &provider_command, sandbox)?.to_env_value()?,
-        );
+        command.envs(plan.env);
+        command.env(NONO_SANDBOX_SPEC_ENV, plan.spec.to_env_value()?);
         Ok(command)
     }
 
@@ -421,12 +331,13 @@ impl CommandAgentProvider {
         repo_dir: &Path,
         provider_command: &Path,
     ) -> AgentResult<String> {
-        nono_sandbox_spec(
+        ProviderSandboxPlan::prepare(
             &self.kind,
             repo_dir,
             provider_command,
             &self.sandbox.clone().without_nono_profile_updates(),
         )?
+        .spec
         .to_env_value()
     }
 }
@@ -455,171 +366,6 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
                 command.display()
             ))
         })
-}
-
-fn nono_helper_command(sandbox: &CommandSandboxConfig) -> AgentResult<PathBuf> {
-    match &sandbox.nono_helper_command {
-        Some(command) => Ok(command.clone()),
-        None => std::env::current_exe().map_err(|error| {
-            AgentError::sandbox(format!(
-                "resolve current executable for nono helper: {error}"
-            ))
-        }),
-    }
-}
-
-fn nono_sandbox_spec(
-    provider: &AgentProviderKind,
-    repo_dir: &Path,
-    provider_command: &Path,
-    sandbox: &CommandSandboxConfig,
-) -> AgentResult<NonoSandboxSpec> {
-    let mut read_paths = vec![repo_dir.to_path_buf(), provider_command.to_path_buf()];
-    read_paths.extend(nono_system_read_paths());
-    read_paths.extend(provider_dependency_read_paths(provider_command));
-    read_paths.extend(provider_runtime_read_paths());
-    read_paths.extend(provider_config_read_paths());
-    read_paths.extend(sandbox.extra_read_paths.iter().cloned());
-
-    let mut read_write_paths = provider_runtime_read_write_paths(sandbox);
-    read_write_paths.extend(nono_system_read_write_paths());
-    read_write_paths.extend(provider_config_read_write_paths());
-    let provider_config_literal_read_write_paths = provider_config_literal_read_write_paths();
-    read_write_paths.extend(provider_config_literal_read_write_paths.iter().cloned());
-    read_write_paths.extend(sandbox.extra_read_write_paths.iter().cloned());
-
-    let mut platform_rules =
-        nono_literal_read_write_rules(&provider_config_literal_read_write_paths);
-    if sandbox.nono_profile_updates_enabled {
-        let profile_spec = NonoProfileManager::new(nono_profile_cache_dir(sandbox))
-            .resolve_for_provider(provider, repo_dir, SystemTime::now())?;
-        read_paths.extend(profile_spec.read_paths);
-        read_write_paths.extend(profile_spec.read_write_paths);
-        platform_rules.extend(profile_spec.platform_rules);
-    }
-    if platform_rules
-        .iter()
-        .any(|rule| rule == "(deny file-write-unlink)")
-    {
-        platform_rules.extend(nono_unlink_override_rules(&read_write_paths));
-    }
-
-    Ok(NonoSandboxSpec::new(
-        read_paths,
-        read_write_paths,
-        platform_rules,
-    ))
-}
-
-fn nono_system_read_paths() -> Vec<PathBuf> {
-    [
-        "/bin",
-        "/sbin",
-        "/usr/bin",
-        "/usr/sbin",
-        "/usr/lib",
-        "/usr/share",
-        "/lib",
-        "/lib64",
-        "/etc",
-        "/private/etc",
-        "/System",
-        "/Library",
-        "/Applications",
-        "/dev",
-        "/var",
-        "/private/var",
-        "/tmp",
-        "/private/tmp",
-        "/opt",
-        "/run",
-        "/nix",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .filter(|path| path.exists())
-    .collect()
-}
-
-fn nono_system_read_write_paths() -> Vec<PathBuf> {
-    ["/dev/null"]
-        .into_iter()
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .collect()
-}
-
-fn provider_dependency_read_paths(provider_command: &Path) -> Vec<PathBuf> {
-    provider_command
-        .ancestors()
-        .skip(1)
-        .find(|ancestor| is_node_package_root(ancestor))
-        .map(|path| vec![path.to_path_buf()])
-        .unwrap_or_default()
-}
-
-fn is_node_package_root(path: &Path) -> bool {
-    let Some(parent) = path.parent() else {
-        return false;
-    };
-    if parent.file_name().and_then(|name| name.to_str()) == Some("node_modules") {
-        return true;
-    }
-    parent
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with('@'))
-        && parent.parent().and_then(|grandparent| {
-            grandparent
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name == "node_modules")
-        }) == Some(true)
-}
-
-fn nono_literal_read_write_rules(paths: &[PathBuf]) -> Vec<String> {
-    paths
-        .iter()
-        .map(|path| {
-            format!(
-                r#"(allow file-read* file-write* (literal "{}"))"#,
-                escape_nono_platform_rule_string(&path.to_string_lossy())
-            )
-        })
-        .collect()
-}
-
-fn nono_unlink_override_rules(paths: &[PathBuf]) -> Vec<String> {
-    let mut rules = paths
-        .iter()
-        .flat_map(|path| {
-            let mut variants = vec![path.clone()];
-            if let Ok(canonical) = path.canonicalize()
-                && canonical != *path
-            {
-                variants.push(canonical);
-            }
-            variants.into_iter().map(|path| {
-                let filter = if fs_err::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
-                    "subpath"
-                } else {
-                    "literal"
-                };
-                format!(
-                    r#"(allow file-write-unlink ({} "{}"))"#,
-                    filter,
-                    escape_nono_platform_rule_string(&path.to_string_lossy())
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    rules.sort();
-    rules.dedup();
-    rules
-}
-
-fn escape_nono_platform_rule_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]) {
@@ -940,27 +686,6 @@ impl CommandAgentProvider {
         sandbox.with_extra_read_write_paths([debug_dir.to_path_buf()])
     }
 
-    fn prepare_provider_runtime_env(
-        &self,
-        sandbox: &CommandSandboxConfig,
-    ) -> AgentResult<Vec<(&'static str, PathBuf)>> {
-        let root = provider_runtime_root_dir_for_sandbox(sandbox);
-        let tmp = root.join("tmp").join(self.kind.as_str());
-        let env = match self.kind {
-            AgentProviderKind::Claude => vec![("CLAUDE_CODE_TMPDIR", tmp.clone()), ("TMPDIR", tmp)],
-            AgentProviderKind::Codex => vec![("TMPDIR", tmp)],
-        };
-        for (_, path) in &env {
-            fs_err::create_dir_all(path).map_err(|error| {
-                AgentError::sandbox(format!(
-                    "create provider runtime directory {}: {error}",
-                    path.display()
-                ))
-            })?;
-        }
-        Ok(env)
-    }
-
     fn review_tool_args(&self, session: &AgentSession, tools: &ReviewToolConfig) -> Vec<String> {
         let mut args = self.review_args(session);
         match self.kind {
@@ -1069,11 +794,6 @@ struct CodexMcpServerConfig {
     args: String,
 }
 
-struct ReviewToolSandboxPaths {
-    read_paths: Vec<PathBuf>,
-    read_write_paths: Vec<PathBuf>,
-}
-
 fn codex_mcp_server_config(config_path: &Path) -> CodexMcpServerConfig {
     let config = fs_err::read(config_path)
         .ok()
@@ -1095,103 +815,6 @@ fn codex_mcp_server_config(config_path: &Path) -> CodexMcpServerConfig {
         .and_then(|args| serde_json::to_string(&args).ok())
         .unwrap_or_else(|| "[]".into());
     CodexMcpServerConfig { command, args }
-}
-
-fn review_tool_sandbox_paths(config_path: &Path) -> ReviewToolSandboxPaths {
-    let config = fs_err::read(config_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .unwrap_or(serde_json::Value::Null);
-    let server = &config["mcpServers"]["nitpick-review"];
-    let mut read_paths = vec![config_path.to_path_buf()];
-    let mut read_write_paths = Vec::new();
-    if let Some(command) = server["command"].as_str() {
-        read_paths.push(PathBuf::from(command));
-    }
-    if let Some(state_path) = server["args"]
-        .as_array()
-        .and_then(|args| args.iter().filter_map(|arg| arg.as_str()).nth(1))
-        .map(PathBuf::from)
-        && let Some(parent) = state_path.parent()
-    {
-        read_write_paths.push(parent.to_path_buf());
-    }
-    ReviewToolSandboxPaths {
-        read_paths,
-        read_write_paths,
-    }
-}
-
-fn provider_runtime_read_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    for path in [Path::new("/opt/homebrew"), Path::new("/usr/local")] {
-        if path.exists() {
-            paths.push(path.to_path_buf());
-        }
-    }
-    paths
-}
-
-fn provider_runtime_read_write_paths(sandbox: &CommandSandboxConfig) -> Vec<PathBuf> {
-    vec![provider_runtime_root_dir_for_sandbox(sandbox)]
-}
-
-fn provider_config_read_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        paths.push(home.join(".agents").join("skills"));
-    }
-    paths
-}
-
-fn provider_config_read_write_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        paths.extend([
-            home.join(".claude"),
-            home.join(".codex"),
-            home.join(".local").join("share").join("claude"),
-            home.join(".local").join("state").join("claude"),
-            home.join("Library")
-                .join("Application Support")
-                .join("Claude"),
-            home.join("Library")
-                .join("Application Support")
-                .join("ClaudeCode"),
-            home.join("Library").join("Caches").join("Claude"),
-            home.join("Library")
-                .join("Caches")
-                .join("claude-cli-nodejs"),
-        ]);
-    }
-    paths
-}
-
-fn provider_config_literal_read_write_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        paths.push(home.join(".claude.json"));
-        paths.push(home.join(".claude.lock"));
-    }
-    paths
-}
-
-fn provider_runtime_root_dir() -> PathBuf {
-    default_data_dir().join("provider-runtime")
-}
-
-fn nono_profile_cache_dir(sandbox: &CommandSandboxConfig) -> PathBuf {
-    sandbox
-        .nono_profile_cache_dir
-        .clone()
-        .unwrap_or_else(|| default_data_dir().join("nono"))
-}
-
-fn provider_runtime_root_dir_for_sandbox(sandbox: &CommandSandboxConfig) -> PathBuf {
-    sandbox
-        .provider_runtime_dir
-        .clone()
-        .unwrap_or_else(provider_runtime_root_dir)
 }
 
 #[cfg(test)]
@@ -1230,46 +853,33 @@ mod tests {
     }
 
     #[test]
-    fn nono_unlink_overrides_allow_read_write_dirs_to_remove_lock_files() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let read_write_dir = dir.path().join("nitpick-review-mcp");
-        fs_err::create_dir(&read_write_dir).expect("read write dir");
-
-        let rules = nono_unlink_override_rules(std::slice::from_ref(&read_write_dir));
-
-        assert!(rules.contains(&format!(
-            r#"(allow file-write-unlink (subpath "{}"))"#,
-            read_write_dir.display()
-        )));
-        if let Ok(canonical) = read_write_dir.canonicalize()
-            && canonical != read_write_dir
-        {
-            assert!(rules.contains(&format!(
-                r#"(allow file-write-unlink (subpath "{}"))"#,
-                canonical.display()
-            )));
-        }
-    }
-
-    #[test]
-    fn nono_sandbox_spec_allows_dev_null_read_write() {
+    fn provider_sandbox_plan_prepares_runtime_env_and_capabilities() {
         let dir = tempfile::tempdir().expect("temp dir");
         let repo_dir = dir.path().join("repo");
         fs_err::create_dir(&repo_dir).expect("repo dir");
         let provider_command = dir.path().join("provider");
         fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let runtime_dir = dir.path().join("runtime");
 
-        let spec = nono_sandbox_spec(
-            &AgentProviderKind::Codex,
+        let plan = crate::provider_sandbox::ProviderSandboxPlan::prepare(
+            &AgentProviderKind::Claude,
             &repo_dir,
             &provider_command,
-            &CommandSandboxConfig::nono().without_nono_profile_updates(),
+            &CommandSandboxConfig::nono()
+                .with_provider_runtime_dir(&runtime_dir)
+                .without_nono_profile_updates(),
         )
-        .expect("spec");
+        .expect("plan");
 
-        if Path::new("/dev/null").exists() {
-            assert!(spec.read_write_paths.contains(&PathBuf::from("/dev/null")));
-        }
+        let tmp = runtime_dir.join("tmp").join("claude");
+        assert_eq!(
+            plan.env,
+            vec![("CLAUDE_CODE_TMPDIR", tmp.clone()), ("TMPDIR", tmp.clone())]
+        );
+        assert!(tmp.is_dir());
+        assert!(plan.spec.read_paths.contains(&repo_dir));
+        assert!(plan.spec.read_paths.contains(&provider_command));
+        assert!(plan.spec.read_write_paths.contains(&runtime_dir));
     }
 
     #[test]
@@ -1279,8 +889,9 @@ mod tests {
         fs_err::create_dir(&repo_dir).expect("repo dir");
         let provider_command = dir.path().join("claude");
         fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let runtime_dir = dir.path().join("runtime");
         let sandbox = CommandSandboxConfig::nono()
-            .with_provider_runtime_dir(dir.path().join("runtime"))
+            .with_provider_runtime_dir(&runtime_dir)
             .without_nono_profile_updates();
         let provider =
             CommandAgentProvider::new(AgentProviderKind::Claude, None, &provider_command)
@@ -1301,8 +912,7 @@ mod tests {
                 )
             })
             .collect::<std::collections::BTreeMap<_, _>>();
-        let root = provider_runtime_root_dir_for_sandbox(&provider.sandbox);
-        let tmp = root.join("tmp").join("claude");
+        let tmp = runtime_dir.join("tmp").join("claude");
         assert!(!envs.contains_key("CLAUDE_CONFIG_DIR"));
         assert_eq!(
             envs.get("CLAUDE_CODE_TMPDIR"),
@@ -1322,8 +932,9 @@ mod tests {
         fs_err::create_dir(&repo_dir).expect("repo dir");
         let provider_command = dir.path().join("codex");
         fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let runtime_dir = dir.path().join("runtime");
         let sandbox = CommandSandboxConfig::nono()
-            .with_provider_runtime_dir(dir.path().join("runtime"))
+            .with_provider_runtime_dir(&runtime_dir)
             .without_nono_profile_updates();
         let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &provider_command)
             .with_sandbox(sandbox);
@@ -1343,8 +954,7 @@ mod tests {
                 )
             })
             .collect::<std::collections::BTreeMap<_, _>>();
-        let root = provider_runtime_root_dir_for_sandbox(&provider.sandbox);
-        let tmp = root.join("tmp").join("codex");
+        let tmp = runtime_dir.join("tmp").join("codex");
         assert!(!envs.contains_key("CODEX_HOME"));
         assert_eq!(
             envs.get("TMPDIR"),

@@ -6,7 +6,8 @@ use std::{
 };
 
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityStatus, ActivityStore, AgentResult, AgentRuntime, ReviewInput,
+    Activity, ActivityStatus, ActivityStore, AgentResult, AgentRuntime, ReviewActivityIdentity,
+    ReviewInput,
 };
 
 use crate::review_slots::ReviewSlotManager;
@@ -89,46 +90,30 @@ impl ReviewExecutionQueue {
     }
 
     fn active_review_for_input(&self, input: &ReviewInput) -> AgentResult<Option<Activity>> {
-        if input.head_sha.is_empty() {
-            return Ok(None);
-        }
-        let Some(number) = input.subject.number else {
-            return Ok(None);
-        };
-        let label = format!("review on {}#{number}", input.subject.repository);
         Ok(self
             .store
             .list()?
             .into_iter()
-            .filter(|activity| activity.kind == ActivityKind::Review)
-            .filter(|activity| active_review_status(&activity.status))
-            .filter(|activity| activity.label.as_deref() == Some(label.as_str()))
-            .find(|activity| {
-                review_activity_head_sha(activity).as_deref() == Some(&input.head_sha)
-            }))
+            .filter(|activity| ReviewActivityIdentity::new(activity).is_active_review())
+            .find(|activity| ReviewActivityIdentity::new(activity).matches_input(input)))
     }
 
     fn has_active_review_for_same_pr(&self, input: &ReviewInput) -> AgentResult<bool> {
-        let Some(label) = review_label(input) else {
-            return Ok(false);
-        };
         Ok(self.store.list()?.into_iter().any(|activity| {
-            activity.kind == ActivityKind::Review
-                && active_review_status(&activity.status)
-                && activity.label.as_deref() == Some(label.as_str())
+            let identity = ReviewActivityIdentity::new(&activity);
+            identity.is_active_review()
+                && identity.matches_target(&input.subject.repository, input.subject.number)
         }))
     }
 
     fn wait_for_prior_reviews_on_same_pr(&self, activity: &Activity) -> AgentResult<()> {
-        let Some(label) = activity.label.as_deref() else {
-            return Ok(());
-        };
+        let activity_identity = ReviewActivityIdentity::new(activity);
         loop {
             let has_prior = self.store.list()?.into_iter().any(|candidate| {
-                candidate.kind == ActivityKind::Review
-                    && active_review_status(&candidate.status)
+                let candidate_identity = ReviewActivityIdentity::new(&candidate);
+                candidate_identity.is_active_review()
                     && candidate.id != activity.id
-                    && candidate.label.as_deref() == Some(label)
+                    && candidate_identity.matches_activity_target(&activity_identity)
                     && activity_started_before(&candidate, activity)
             });
             if !has_prior {
@@ -139,13 +124,10 @@ impl ReviewExecutionQueue {
     }
 
     fn cancel_active_reviews_for_same_pr(&self, input: &ReviewInput) -> AgentResult<()> {
-        let Some(label) = review_label(input) else {
-            return Ok(());
-        };
         for mut activity in self.store.list()?.into_iter().filter(|activity| {
-            activity.kind == ActivityKind::Review
-                && active_review_status(&activity.status)
-                && activity.label.as_deref() == Some(label.as_str())
+            let identity = ReviewActivityIdentity::new(activity);
+            identity.is_active_review()
+                && identity.matches_target(&input.subject.repository, input.subject.number)
         }) {
             activity.status = ActivityStatus::Error;
             activity.session.status =
@@ -194,30 +176,10 @@ impl ReviewExecutionQueue {
     }
 }
 
-fn review_label(input: &ReviewInput) -> Option<String> {
-    input
-        .subject
-        .number
-        .map(|number| format!("review on {}#{number}", input.subject.repository))
-}
-
-fn active_review_status(status: &ActivityStatus) -> bool {
-    matches!(status, ActivityStatus::Queued | ActivityStatus::Running)
-}
-
 fn activity_started_before(candidate: &Activity, activity: &Activity) -> bool {
     candidate
         .created_at_unix
         .cmp(&activity.created_at_unix)
         .then_with(|| candidate.id.cmp(&activity.id))
         .is_lt()
-}
-
-fn review_activity_head_sha(activity: &Activity) -> Option<String> {
-    activity
-        .session
-        .messages
-        .iter()
-        .find(|message| message.role == "nitpick.review.head_sha")
-        .map(|message| message.content.clone())
 }

@@ -1,5 +1,6 @@
 use nitpick_agent_core::{
-    Activity, ActivityId, ActivityKind, ReviewInput, ReviewRequest, ReviewSubject,
+    Activity, ActivityId, ActivityKind, AgentMessage, ReviewActivityIdentity, ReviewInput,
+    ReviewRequest, ReviewSubject,
 };
 
 #[test]
@@ -57,4 +58,29 @@ fn activity_labels_review_input() {
         activity.label.as_deref(),
         Some("review on acme/platform#42")
     );
+}
+
+#[test]
+fn review_activity_identity_matches_retry_label_and_head_sha() {
+    let input = ReviewInput {
+        subject: ReviewSubject {
+            repository: "acme/platform".into(),
+            number: Some(42),
+            ..ReviewSubject::default()
+        },
+        head_sha: "abc123".into(),
+        ..ReviewInput::default()
+    };
+    let mut activity = Activity::new(ActivityId::new("activity-1"), ActivityKind::Review);
+    activity.label = Some("review on acme/platform#42".into());
+    activity.session.messages.push(AgentMessage {
+        role: "nitpick.review.head_sha".into(),
+        content: "abc123".into(),
+    });
+
+    let identity = ReviewActivityIdentity::new(&activity);
+
+    assert!(identity.matches_input(&input));
+    assert!(identity.matches_target("acme/platform", Some(42)));
+    assert_eq!(identity.head_sha(), Some("abc123"));
 }

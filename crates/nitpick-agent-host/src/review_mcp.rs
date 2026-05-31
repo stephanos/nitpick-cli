@@ -21,6 +21,8 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::review_mcp_session_store::ReviewMcpSessionStore;
+
 static NEXT_CONFIG_ID: AtomicU64 = AtomicU64::new(1);
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
@@ -149,14 +151,8 @@ pub struct ReviewMcpServerHandle {
 
 #[derive(Clone, Debug)]
 pub struct ReviewMcpTools {
-    session: ReviewMcpSession,
+    session: ReviewMcpSessionStore,
     tool_router: ToolRouter<Self>,
-}
-
-#[derive(Clone, Debug)]
-enum ReviewMcpSession {
-    Active(ActiveReviewSession),
-    File(PathBuf),
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -166,14 +162,14 @@ impl ServerHandler for ReviewMcpTools {}
 impl ReviewMcpTools {
     pub fn new(session: ActiveReviewSession) -> Self {
         Self {
-            session: ReviewMcpSession::Active(session),
+            session: ReviewMcpSessionStore::active(session),
             tool_router: Self::tool_router(),
         }
     }
 
     pub fn from_state_path(state_path: impl Into<PathBuf>) -> Self {
         Self {
-            session: ReviewMcpSession::File(state_path.into()),
+            session: ReviewMcpSessionStore::file(state_path),
             tool_router: Self::tool_router(),
         }
     }
@@ -182,61 +178,32 @@ impl ReviewMcpTools {
         &self,
         input: AddReviewCommentInput,
     ) -> AgentResult<AddReviewCommentResult> {
-        match &self.session {
-            ReviewMcpSession::Active(session) => {
-                session.add_review_comment(&input.path, input.line, input.body)?;
-            }
-            ReviewMcpSession::File(state_path) => {
-                add_review_comment_to_state_file(state_path, &input.path, input.line, input.body)?;
-            }
-        }
-        Ok(AddReviewCommentResult { accepted: true })
+        self.session.add_review_comment(input)
     }
 
     pub fn finish_review(&self) -> AgentResult<FinishReviewResult> {
-        match &self.session {
-            ReviewMcpSession::Active(session) => session.finish_review(),
-            ReviewMcpSession::File(state_path) => finish_review_in_state_file(state_path),
-        }
+        self.session.finish_review()
     }
 
     pub fn existing_review_comments(&self) -> AgentResult<ExistingReviewCommentsResult> {
-        match &self.session {
-            ReviewMcpSession::Active(session) => session.existing_review_comments(),
-            ReviewMcpSession::File(state_path) => {
-                existing_review_comments_in_state_file(state_path)
-            }
-        }
+        self.session.existing_review_comments()
     }
 
     pub fn pull_request_context(&self) -> AgentResult<PullRequestContextResult> {
-        match &self.session {
-            ReviewMcpSession::Active(session) => session.pull_request_context(),
-            ReviewMcpSession::File(state_path) => pull_request_context_in_state_file(state_path),
-        }
+        self.session.pull_request_context()
     }
 
     pub fn pull_request_conversation_comments(
         &self,
     ) -> AgentResult<PullRequestConversationCommentsResult> {
-        match &self.session {
-            ReviewMcpSession::Active(session) => session.pull_request_conversation_comments(),
-            ReviewMcpSession::File(state_path) => {
-                pull_request_conversation_comments_in_state_file(state_path)
-            }
-        }
+        self.session.pull_request_conversation_comments()
     }
 
     pub fn delete_draft_comment(
         &self,
         input: DeleteDraftCommentInput,
     ) -> AgentResult<DeleteDraftCommentResult> {
-        match &self.session {
-            ReviewMcpSession::Active(session) => session.delete_draft_comment(&input.id),
-            ReviewMcpSession::File(state_path) => {
-                delete_draft_comment_in_state_file(state_path, &input.id)
-            }
-        }
+        self.session.delete_draft_comment(input)
     }
 
     #[tool(
@@ -477,7 +444,7 @@ pub async fn serve_review_mcp_stdio(state_path: PathBuf) -> AgentResult<()> {
     Ok(())
 }
 
-fn add_review_comment_to_state_file(
+pub(crate) fn add_review_comment_to_state_file(
     state_path: &Path,
     path: &str,
     line: u32,
@@ -496,7 +463,7 @@ fn add_review_comment_to_state_file(
     })
 }
 
-fn finish_review_in_state_file(state_path: &Path) -> AgentResult<FinishReviewResult> {
+pub(crate) fn finish_review_in_state_file(state_path: &Path) -> AgentResult<FinishReviewResult> {
     update_review_mcp_session_state(state_path, |state| {
         state.finished = true;
         Ok(FinishReviewResult {
@@ -506,7 +473,7 @@ fn finish_review_in_state_file(state_path: &Path) -> AgentResult<FinishReviewRes
     })
 }
 
-fn existing_review_comments_in_state_file(
+pub(crate) fn existing_review_comments_in_state_file(
     state_path: &Path,
 ) -> AgentResult<ExistingReviewCommentsResult> {
     let state = load_review_mcp_session_state(state_path)?;
@@ -515,14 +482,16 @@ fn existing_review_comments_in_state_file(
     })
 }
 
-fn pull_request_context_in_state_file(state_path: &Path) -> AgentResult<PullRequestContextResult> {
+pub(crate) fn pull_request_context_in_state_file(
+    state_path: &Path,
+) -> AgentResult<PullRequestContextResult> {
     let state = load_review_mcp_session_state(state_path)?;
     Ok(PullRequestContextResult {
         context: state.pull_request_context,
     })
 }
 
-fn pull_request_conversation_comments_in_state_file(
+pub(crate) fn pull_request_conversation_comments_in_state_file(
     state_path: &Path,
 ) -> AgentResult<PullRequestConversationCommentsResult> {
     let state = load_review_mcp_session_state(state_path)?;
@@ -531,7 +500,7 @@ fn pull_request_conversation_comments_in_state_file(
     })
 }
 
-fn delete_draft_comment_in_state_file(
+pub(crate) fn delete_draft_comment_in_state_file(
     state_path: &Path,
     id: &str,
 ) -> AgentResult<DeleteDraftCommentResult> {

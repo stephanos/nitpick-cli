@@ -17,9 +17,12 @@ use nitpick_agent_core::{
 use serde::{Deserialize, Serialize};
 
 mod command;
+mod pending_review_reconciler;
+mod pull_request_client;
 mod review_sync;
 
 pub use nitpick_agent_core::{FsProcessedReviewStore, MemoryProcessedReviewStore};
+pub use pull_request_client::GitHubPullRequestClient;
 pub use review_sync::{GitHubReviewWorkflowSync, NO_FINDINGS_REVIEW_COMMENT};
 
 pub struct GitHubDryRunSyncDestination;
@@ -73,15 +76,13 @@ impl GitHubCliSyncDestination {
 }
 
 pub struct GitHubCliReviewSyncDestination {
-    target: PullRequestRef,
-    command: GitHubCommand,
+    client: GitHubPullRequestClient,
 }
 
 impl GitHubCliReviewSyncDestination {
     pub fn new(target: PullRequestRef, command: impl Into<PathBuf>) -> Self {
         Self {
-            target,
-            command: GitHubCommand::new(command),
+            client: GitHubPullRequestClient::new(target, command),
         }
     }
 
@@ -89,7 +90,12 @@ impl GitHubCliReviewSyncDestination {
         &self,
         artifacts: &[Artifact],
     ) -> AgentResult<Vec<ArtifactSyncOutcome>> {
-        sync_review_batch_with_github_cli(&self.command, &self.target, artifacts, self.name())
+        sync_review_batch_with_github_cli(
+            self.client.command(),
+            self.client.target(),
+            artifacts,
+            self.name(),
+        )
     }
 
     pub fn create_pending_file_comment(
@@ -98,8 +104,8 @@ impl GitHubCliReviewSyncDestination {
         body: &str,
     ) -> AgentResult<ArtifactSyncOutcome> {
         let outcomes = sync_review_batch_with_github_cli(
-            &self.command,
-            &self.target,
+            self.client.command(),
+            self.client.target(),
             &[Artifact::local(
                 ArtifactId::new("no-findings"),
                 ActivityId::new("no-findings"),
@@ -118,13 +124,7 @@ impl GitHubCliReviewSyncDestination {
     }
 
     pub fn fetch_review(&self, review_id: &str) -> AgentResult<GitHubReviewResponse> {
-        github_review_from_cli(
-            &self.command,
-            &[&format!(
-                "repos/{}/{}/pulls/{}/reviews/{}",
-                self.target.owner, self.target.repo, self.target.number, review_id
-            )],
-        )
+        self.client.fetch_review(review_id)
     }
 
     pub fn update_pending_review_body(
@@ -132,92 +132,19 @@ impl GitHubCliReviewSyncDestination {
         review_id: &str,
         body: &str,
     ) -> AgentResult<GitHubReviewResponse> {
-        github_review_from_cli_with_input(
-            &self.command,
-            &[
-                &format!(
-                    "repos/{}/{}/pulls/{}/reviews/{}",
-                    self.target.owner, self.target.repo, self.target.number, review_id
-                ),
-                "--method",
-                "PUT",
-                "--input",
-                "-",
-            ],
-            &serde_json::json!({ "body": body }).to_string(),
-        )
+        self.client.update_pending_review_body(review_id, body)
     }
 
     pub fn review_comments(&self) -> AgentResult<Vec<GitHubReviewComment>> {
-        let mut comments = github_review_comments_from_cli(
-            &self.command,
-            &[&format!(
-                "repos/{}/{}/pulls/{}/comments",
-                self.target.owner, self.target.repo, self.target.number
-            )],
-        )?;
-        let reviews = github_reviews_from_cli(
-            &self.command,
-            &[&format!(
-                "repos/{}/{}/pulls/{}/reviews",
-                self.target.owner, self.target.repo, self.target.number
-            )],
-        )?;
-        for review in reviews
-            .into_iter()
-            .filter(|review| review.state == "PENDING")
-        {
-            let pending_comments = github_review_comments_from_cli(
-                &self.command,
-                &[&format!(
-                    "repos/{}/{}/pulls/{}/reviews/{}/comments",
-                    self.target.owner, self.target.repo, self.target.number, review.id
-                )],
-            )?;
-            comments.extend(pending_comments.into_iter().map(|mut comment| {
-                comment.draft = true;
-                comment
-            }));
-        }
-        let mut seen = HashSet::new();
-        comments.retain(|comment| seen.insert(comment.id.clone()));
-        Ok(comments)
+        self.client.review_comments()
     }
 
     pub fn pull_request_context(&self) -> AgentResult<GitHubPullRequestContext> {
-        let details = pull_request_details(
-            &self.command,
-            &self.target.owner,
-            &self.target.repo,
-            self.target.number,
-        )?;
-        let conversation_comments = github_pull_request_conversation_comments_from_cli(
-            &self.command,
-            &[&format!(
-                "repos/{}/{}/issues/{}/comments",
-                self.target.owner, self.target.repo, self.target.number
-            )],
-        )?;
-        Ok(GitHubPullRequestContext {
-            title: details.title,
-            author: details.author,
-            url: details.url,
-            body: details.body,
-            head_sha: details.head_sha,
-            head_ref_name: details.head_ref_name,
-            state: details.state.as_str().into(),
-            conversation_comments,
-        })
+        self.client.pull_request_context()
     }
 
     pub fn delete_review_comment(&self, comment_id: &str) -> AgentResult<()> {
-        github_delete_from_cli(
-            &self.command,
-            &[&format!(
-                "repos/{}/{}/pulls/comments/{}",
-                self.target.owner, self.target.repo, comment_id
-            )],
-        )
+        self.client.delete_review_comment(comment_id)
     }
 }
 
@@ -998,13 +925,17 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
     fn sync(&self, artifact: &Artifact) -> AgentResult<ArtifactSyncOutcome> {
         match &artifact.content {
             ArtifactContent::ReviewSummary(_) => sync_with_github_cli(
-                &self.command,
+                self.client.command(),
                 &[
                     "pr",
                     "review",
-                    &self.target.number.to_string(),
+                    &self.client.target().number.to_string(),
                     "--repo",
-                    &format!("{}/{}", self.target.owner, self.target.repo),
+                    &format!(
+                        "{}/{}",
+                        self.client.target().owner,
+                        self.client.target().repo
+                    ),
                     "--comment",
                     "--body-file",
                     "-",
@@ -1013,24 +944,20 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
                 self.name(),
             ),
             ArtifactContent::ReviewComment(comment) => {
-                let head_sha = pull_request_head_sha(
-                    &self.command,
-                    &self.target.owner,
-                    &self.target.repo,
-                    self.target.number,
-                )?;
+                let target = self.client.target();
+                let head_sha = self.client.head_sha()?;
                 let payload = serde_json::json!({
                     "commit_id": head_sha,
                     "event": "COMMENT",
                     "comments": [review_comment_payload(comment.clone())],
                 });
                 sync_with_github_cli(
-                    &self.command,
+                    self.client.command(),
                     &[
                         "api",
                         &format!(
                             "repos/{}/{}/pulls/{}/reviews",
-                            self.target.owner, self.target.repo, self.target.number
+                            target.owner, target.repo, target.number
                         ),
                         "--method",
                         "POST",
@@ -1048,7 +975,12 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
     }
 
     fn sync_batch(&self, artifacts: &[Artifact]) -> AgentResult<Vec<ArtifactSyncOutcome>> {
-        sync_review_batch_with_github_cli(&self.command, &self.target, artifacts, self.name())
+        sync_review_batch_with_github_cli(
+            self.client.command(),
+            self.client.target(),
+            artifacts,
+            self.name(),
+        )
     }
 }
 
