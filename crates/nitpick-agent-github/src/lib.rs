@@ -1262,7 +1262,11 @@ fn github_pull_request_conversation_comments_from_cli(
     let mut args = vec!["api"];
     args.extend_from_slice(endpoint_args);
     let comments: Vec<GitHubPullRequestConversationCommentResponse> = command
-        .json_with_start_error(&args, "GitHub PR conversation comments response", "run GitHub CLI")?;
+        .json_with_start_error(
+            &args,
+            "GitHub PR conversation comments response",
+            "run GitHub CLI",
+        )?;
     Ok(comments
         .into_iter()
         .map(|comment| GitHubPullRequestConversationComment {

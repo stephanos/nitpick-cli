@@ -69,13 +69,8 @@ pub(crate) fn github_review_input(
     let pull_request = target
         .parse::<PullRequestRef>()
         .map_err(|error| format!("invalid GitHub pull request reference: {error}"))?;
-    let config =
-        nitpick_agent_host::AgentConfig::load_or_default(config_path).map_err(|error| {
-            format!(
-                "failed to load config {}: {error}",
-                config_path.display()
-            )
-        })?;
+    let config = nitpick_agent_host::AgentConfig::load_or_default(config_path)
+        .map_err(|error| format!("failed to load config {}: {error}", config_path.display()))?;
     github_review_input_with_git_command(&pull_request, &config, data_dir, Path::new("git"))
 }
 
@@ -208,7 +203,7 @@ mod tests {
                 r#"#!/bin/sh
 printf 'gh %s\n' "$*" >> '{}'
 if [ "$1 $2" = "pr view" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr diff" ]; then
@@ -262,7 +257,7 @@ exit 1
         assert_eq!(
             std::fs::read_to_string(log).expect("log"),
             format!(
-                "gh pr view 42 --repo acme/platform --json title,author,url,headRefOid,headRefName,state,mergedAt\n\
+                "gh pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\n\
 gh pr diff 42 --repo acme/platform\n\
 gh repo clone acme/platform {} -- --quiet\n\
 git -C {} fetch origin refs/pull/42/head --quiet\n\
@@ -290,7 +285,7 @@ editor {}\n",
                 r#"#!/bin/sh
 printf 'gh %s\n' "$*" >> '{}'
 if [ "$1 $2" = "pr view" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr diff" ]; then
@@ -333,7 +328,7 @@ exit 1
         assert_eq!(
             std::fs::read_to_string(log).expect("log"),
             format!(
-                "gh pr view 42 --repo acme/platform --json title,author,url,headRefOid,headRefName,state,mergedAt\n\
+                "gh pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\n\
 gh pr diff 42 --repo acme/platform\n\
 gh repo clone acme/platform {} -- --quiet\n\
 git -C {} fetch origin refs/pull/42/head --quiet\n\
@@ -359,7 +354,7 @@ git -C {} checkout -B feature/watcher FETCH_HEAD --quiet\n",
                 r#"#!/bin/sh
 printf 'gh %s\n' "$*" >> '{}'
 if [ "$1 $2" = "pr view" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr diff" ]; then
@@ -405,7 +400,10 @@ exit 1
         assert_eq!(input.subject.title, "Add watcher");
         assert_eq!(input.subject.author, "stephan");
         assert_eq!(input.head_sha, "abc123");
-        assert_eq!(input.diff, "diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n");
+        assert_eq!(
+            input.diff,
+            "diff --git a/src/lib.rs b/src/lib.rs\n+watcher\n"
+        );
     }
 
     fn make_executable(path: &std::path::Path) {

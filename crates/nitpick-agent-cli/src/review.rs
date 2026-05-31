@@ -163,9 +163,16 @@ pub fn run(
 }
 
 fn start_review_input(subject: &str, context: &CliRunContext) -> Result<ReviewInput, CliError> {
-    if subject.parse::<nitpick_agent_github::PullRequestRef>().is_ok() {
-        return crate::support::github_review_input(subject, &context.config_path, &context.data_dir)
-            .map_err(CliError::from);
+    if subject
+        .parse::<nitpick_agent_github::PullRequestRef>()
+        .is_ok()
+    {
+        return crate::support::github_review_input(
+            subject,
+            &context.config_path,
+            &context.data_dir,
+        )
+        .map_err(CliError::from);
     }
     Ok(review_input(
         subject.to_owned(),

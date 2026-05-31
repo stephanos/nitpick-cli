@@ -277,7 +277,10 @@ exit 1
     assert_eq!(context.state, "open");
     assert_eq!(context.conversation_comments.len(), 1);
     assert_eq!(context.conversation_comments[0].id, "100");
-    assert_eq!(context.conversation_comments[0].author.as_deref(), Some("alice"));
+    assert_eq!(
+        context.conversation_comments[0].author.as_deref(),
+        Some("alice")
+    );
     assert_eq!(
         context.conversation_comments[0].url.as_deref(),
         Some("https://github.com/acme/platform/pull/42#issuecomment-100")

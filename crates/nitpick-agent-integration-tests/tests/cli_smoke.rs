@@ -43,8 +43,8 @@ async fn cli_commands_talk_to_the_host_api() {
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> {log}
-if [ "$1 $2" = "pr view" ] && [ "$6" = "--json" ] && [ "$7" = "title,author,url,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{{"title":"Stub PR","author":{{"login":"stub-author"}},"url":"https://github.com/stephanos/nitpick-agent/pull/42","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}}\n'
+if [ "$1 $2" = "pr view" ] && [ "$6" = "--json" ] && [ "$7" = "title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{{"title":"Stub PR","author":{{"login":"stub-author"}},"url":"https://github.com/stephanos/nitpick-agent/pull/42","body":"Please review the stub changes.","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}}\n'
   exit 0
 fi
 if [ "$1 $2" = "pr view" ]; then
@@ -71,7 +71,43 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     .expect("config");
     let data_dir = temp.path().join("data");
     let checkout = data_dir.join("checkouts/stephanos/nitpick-agent/pr-42");
-    std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
+    let remote_work = temp.path().join("remote-work");
+    std::fs::create_dir_all(&remote_work).expect("remote work");
+    run_git(&remote_work, &["init"]);
+    run_git(
+        &remote_work,
+        &["config", "user.email", "nitpick@example.com"],
+    );
+    run_git(&remote_work, &["config", "user.name", "Nitpick"]);
+    std::fs::write(remote_work.join("README.md"), "stub\n").expect("remote file");
+    run_git(&remote_work, &["add", "README.md"]);
+    run_git(&remote_work, &["commit", "-m", "stub"]);
+    let remote = temp.path().join("remote.git");
+    run_git(
+        temp.path(),
+        &["init", "--bare", remote.to_str().expect("remote path")],
+    );
+    run_git(
+        &remote_work,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    run_git(&remote_work, &["push", "origin", "HEAD:refs/pull/42/head"]);
+    std::fs::create_dir_all(&checkout).expect("checkout");
+    run_git(&checkout, &["init"]);
+    run_git(
+        &checkout,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
     let daemon_log = data_dir.join("logs/daemon.log");
     std::fs::create_dir_all(daemon_log.parent().expect("daemon log parent"))
         .expect("daemon log dir");
@@ -173,6 +209,7 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
     let review_start = run_cli_command(
         CliCommand::Review(ReviewCommand::Start {
             subject: "stephanos/nitpick-agent#42".into(),
+            force: false,
         }),
         &host_addr,
         repo_dir.clone(),
@@ -592,6 +629,7 @@ async fn review_start_uses_mcp_tools_for_local_smoke_comments() {
     let review_start = run_cli_command(
         CliCommand::Review(ReviewCommand::Start {
             subject: "local-smoke".into(),
+            force: false,
         }),
         &host_addr,
         repo_dir,
