@@ -705,7 +705,9 @@ fn command_provider_review_with_tools_passes_mcp_config_and_skips_review_output_
 
     let tools = ReviewToolConfig {
         mcp_config_path: mcp_config_path.clone(),
-        instructions: "Use add_review_comment, then finish_review.".into(),
+        instructions:
+            "Use pull_request_context, pull_request_conversation_comments, existing_review_comments, add_review_comment, then finish_review."
+                .into(),
     };
     let output = provider
         .review(
@@ -736,7 +738,11 @@ fn command_provider_review_with_tools_passes_mcp_config_and_skips_review_output_
     let prompt = fs::read_to_string(prompt_log).expect("prompt");
     assert!(prompt.starts_with("Custom prompt: use the Nitpick review MCP tools."));
     assert!(prompt.contains("Extra configured guidance."));
-    assert!(prompt.contains("Use add_review_comment, then finish_review."));
+    assert!(prompt.contains("pull_request_context"));
+    assert!(prompt.contains("pull_request_conversation_comments"));
+    assert!(prompt.contains("existing_review_comments"));
+    assert!(prompt.contains("add_review_comment"));
+    assert!(prompt.contains("finish_review"));
     assert!(prompt.contains("focus on correctness"));
     assert!(!prompt.contains(".nitpick/review-output.json"));
 }

@@ -23,8 +23,9 @@ use nitpick_agent_core::{
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
-    GitHubCliSyncDestination, GitHubDryRunSyncDestination, GitHubReviewComment,
-    GitHubReviewWorkflowSync, PullRequestRef,
+    GitHubCliSyncDestination, GitHubDryRunSyncDestination, GitHubPullRequestContext,
+    GitHubPullRequestConversationComment, GitHubReviewComment, GitHubReviewWorkflowSync,
+    PullRequestRef,
 };
 use polling_state::PollingState;
 use review_intake::ReviewRequestIntake;
@@ -64,6 +65,7 @@ impl AgentProvider for HostReviewProvider {
         let handle = review_mcp::ReviewMcpServerHandle::start(
             input,
             self.existing_review_comments(input),
+            self.pull_request_context(input),
             self.review_mcp_github_target(input),
         )?;
         let tools = handle.tool_config();
@@ -115,6 +117,19 @@ impl HostReviewProvider {
             Err(error) => {
                 tracing::warn!(error = %error, "fetch existing GitHub review comments failed");
                 Vec::new()
+            }
+        }
+    }
+
+    fn pull_request_context(&self, input: &ReviewInput) -> review_mcp::PullRequestContext {
+        let Some(destination) = self.github_review_destination(input) else {
+            return review_mcp::PullRequestContext::default();
+        };
+        match destination.pull_request_context() {
+            Ok(context) => pull_request_context(context),
+            Err(error) => {
+                tracing::warn!(error = %error, "fetch GitHub pull request context failed");
+                review_mcp::PullRequestContext::default()
             }
         }
     }
@@ -171,6 +186,36 @@ fn existing_review_comment(comment: GitHubReviewComment) -> review_mcp::Existing
         body: comment.body,
         author: comment.author,
         draft: comment.draft,
+    }
+}
+
+fn pull_request_context(context: GitHubPullRequestContext) -> review_mcp::PullRequestContext {
+    review_mcp::PullRequestContext {
+        title: context.title,
+        author: context.author,
+        url: context.url,
+        body: context.body,
+        head_sha: context.head_sha,
+        head_ref_name: context.head_ref_name,
+        state: context.state,
+        conversation_comments: context
+            .conversation_comments
+            .into_iter()
+            .map(pull_request_conversation_comment)
+            .collect(),
+    }
+}
+
+fn pull_request_conversation_comment(
+    comment: GitHubPullRequestConversationComment,
+) -> review_mcp::PullRequestConversationComment {
+    review_mcp::PullRequestConversationComment {
+        id: comment.id,
+        body: comment.body,
+        author: comment.author,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        url: comment.url,
     }
 }
 

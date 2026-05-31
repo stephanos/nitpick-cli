@@ -179,7 +179,7 @@ fn github_cli_discovery_builds_review_input_from_pr_metadata_and_diff() {
             r#"#!/bin/sh
 echo "gh $*" >> '{}'
 if [ "$1 $2" = "pr view" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr diff" ]; then
@@ -244,7 +244,7 @@ exit 0
     assert_eq!(
         fs::read_to_string(log).expect("command log"),
         format!(
-            "gh pr view 42 --repo acme/platform --json title,author,url,headRefOid,headRefName,state,mergedAt\n\
+            "gh pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\n\
 gh pr diff 42 --repo acme/platform\n\
 gh repo clone acme/platform {} -- --quiet\n\
 git -C {} fetch origin refs/pull/42/head --quiet\n\
@@ -427,7 +427,7 @@ fn github_cli_discovery_parses_pull_request_state_metadata() {
             format!(
                 r#"#!/bin/sh
 if [ "$1 $2" = "pr view" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","headRefOid":"abc123","headRefName":"feature/watcher","state":"{}","mergedAt":{}}}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"{}","mergedAt":{}}}'
   exit 0
 fi
 exit 1
@@ -591,6 +591,7 @@ fn pull_request_details_for_state(
         title: "Add watcher".into(),
         author: "stephan".into(),
         url: "https://github.com/acme/platform/pull/42".into(),
+        body: "Please review the watcher changes.".into(),
         head_sha: "abc123".into(),
         head_ref_name: "feature/watcher".into(),
         state,

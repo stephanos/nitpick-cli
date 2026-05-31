@@ -33,6 +33,7 @@ pub struct ActiveReviewSession {
 struct ActiveReviewSessionState {
     validator: ReviewCommentValidator,
     comments: Vec<ReviewComment>,
+    pull_request_context: PullRequestContext,
     existing_comments: Vec<ExistingReviewComment>,
     deleted_comment_ids: Vec<String>,
     finished: bool,
@@ -72,6 +73,39 @@ pub struct ExistingReviewCommentsResult {
     pub comments: Vec<ExistingReviewComment>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub struct PullRequestContext {
+    pub title: String,
+    pub author: String,
+    pub url: String,
+    pub body: String,
+    pub head_sha: String,
+    pub head_ref_name: String,
+    pub state: String,
+    #[serde(default)]
+    pub conversation_comments: Vec<PullRequestConversationComment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub struct PullRequestConversationComment {
+    pub id: String,
+    pub body: String,
+    pub author: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct PullRequestContextResult {
+    pub context: PullRequestContext,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct PullRequestConversationCommentsResult {
+    pub comments: Vec<PullRequestConversationComment>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct DeleteDraftCommentInput {
     pub id: String,
@@ -95,6 +129,8 @@ pub struct ReviewMcpSessionState {
     pub repo_dir: PathBuf,
     pub diff: String,
     pub comments: Vec<ReviewComment>,
+    #[serde(default)]
+    pub pull_request_context: PullRequestContext,
     #[serde(default)]
     pub existing_comments: Vec<ExistingReviewComment>,
     #[serde(default)]
@@ -173,6 +209,24 @@ impl ReviewMcpTools {
         }
     }
 
+    pub fn pull_request_context(&self) -> AgentResult<PullRequestContextResult> {
+        match &self.session {
+            ReviewMcpSession::Active(session) => session.pull_request_context(),
+            ReviewMcpSession::File(state_path) => pull_request_context_in_state_file(state_path),
+        }
+    }
+
+    pub fn pull_request_conversation_comments(
+        &self,
+    ) -> AgentResult<PullRequestConversationCommentsResult> {
+        match &self.session {
+            ReviewMcpSession::Active(session) => session.pull_request_conversation_comments(),
+            ReviewMcpSession::File(state_path) => {
+                pull_request_conversation_comments_in_state_file(state_path)
+            }
+        }
+    }
+
     pub fn delete_draft_comment(
         &self,
         input: DeleteDraftCommentInput,
@@ -221,6 +275,28 @@ impl ReviewMcpTools {
     }
 
     #[tool(
+        name = "pull_request_context",
+        description = "Read pull request details, including title, author, URL, body, head commit, branch name, state, and conversation comments"
+    )]
+    async fn pull_request_context_tool(&self) -> Result<Json<PullRequestContextResult>, String> {
+        self.pull_request_context()
+            .map(Json)
+            .map_err(|error| error.to_string())
+    }
+
+    #[tool(
+        name = "pull_request_conversation_comments",
+        description = "List general pull request conversation comments from the pull request timeline, excluding inline review comments"
+    )]
+    async fn pull_request_conversation_comments_tool(
+        &self,
+    ) -> Result<Json<PullRequestConversationCommentsResult>, String> {
+        self.pull_request_conversation_comments()
+            .map(Json)
+            .map_err(|error| error.to_string())
+    }
+
+    #[tool(
         name = "delete_draft_comment",
         description = "Delete an outdated Nitpick draft review comment by id. Only draft comments whose body starts with the robot emoji can be deleted."
     )]
@@ -241,6 +317,7 @@ impl ActiveReviewSession {
             state: Arc::new(Mutex::new(ActiveReviewSessionState {
                 validator,
                 comments: Vec::new(),
+                pull_request_context: PullRequestContext::default(),
                 existing_comments: Vec::new(),
                 deleted_comment_ids: Vec::new(),
                 finished: false,
@@ -289,6 +366,24 @@ impl ActiveReviewSession {
         })
     }
 
+    pub fn pull_request_context(&self) -> AgentResult<PullRequestContextResult> {
+        Ok(PullRequestContextResult {
+            context: self.lock_state()?.pull_request_context.clone(),
+        })
+    }
+
+    pub fn pull_request_conversation_comments(
+        &self,
+    ) -> AgentResult<PullRequestConversationCommentsResult> {
+        Ok(PullRequestConversationCommentsResult {
+            comments: self
+                .lock_state()?
+                .pull_request_context
+                .conversation_comments
+                .clone(),
+        })
+    }
+
     pub fn delete_draft_comment(&self, id: &str) -> AgentResult<DeleteDraftCommentResult> {
         let mut state = self.lock_state()?;
         validate_deletable_comment(&state.existing_comments, id)?;
@@ -313,6 +408,7 @@ impl ReviewMcpServerHandle {
     pub fn start(
         input: &ReviewInput,
         existing_comments: Vec<ExistingReviewComment>,
+        pull_request_context: PullRequestContext,
         github: Option<ReviewMcpGitHubTarget>,
     ) -> AgentResult<Self> {
         let temp_dir = new_temp_config_dir()?;
@@ -323,6 +419,7 @@ impl ReviewMcpServerHandle {
                 repo_dir: input.repo_dir.clone(),
                 diff: input.diff.clone(),
                 comments: Vec::new(),
+                pull_request_context,
                 existing_comments,
                 deleted_comment_ids: Vec::new(),
                 github,
@@ -415,6 +512,22 @@ fn existing_review_comments_in_state_file(
     let state = load_review_mcp_session_state(state_path)?;
     Ok(ExistingReviewCommentsResult {
         comments: state.existing_comments,
+    })
+}
+
+fn pull_request_context_in_state_file(state_path: &Path) -> AgentResult<PullRequestContextResult> {
+    let state = load_review_mcp_session_state(state_path)?;
+    Ok(PullRequestContextResult {
+        context: state.pull_request_context,
+    })
+}
+
+fn pull_request_conversation_comments_in_state_file(
+    state_path: &Path,
+) -> AgentResult<PullRequestConversationCommentsResult> {
+    let state = load_review_mcp_session_state(state_path)?;
+    Ok(PullRequestConversationCommentsResult {
+        comments: state.pull_request_context.conversation_comments,
     })
 }
 

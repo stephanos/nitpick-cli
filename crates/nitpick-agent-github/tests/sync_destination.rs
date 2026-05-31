@@ -231,6 +231,64 @@ fn github_cli_review_destination_posts_summary_with_gh_pr_review() {
 }
 
 #[test]
+fn github_cli_review_destination_reads_pull_request_context() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    fs::write(
+        &gh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}\n'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then
+  printf '[{{"id":100,"body":"Can you explain the retry behavior?","user":{{"login":"alice"}},"created_at":"2026-05-30T12:00:00Z","updated_at":"2026-05-30T12:30:00Z","html_url":"https://github.com/acme/platform/pull/42#issuecomment-100"}}]\n'
+  exit 0
+fi
+exit 1
+"#,
+            commands = commands_file.display(),
+        ),
+    )
+    .expect("write fake gh");
+    make_executable(&gh);
+    let destination = GitHubCliReviewSyncDestination::new(
+        PullRequestRef {
+            owner: "acme".into(),
+            repo: "platform".into(),
+            number: 42,
+        },
+        &gh,
+    );
+
+    let context = destination
+        .pull_request_context()
+        .expect("pull request context");
+
+    assert_eq!(context.title, "Add watcher");
+    assert_eq!(context.author, "stephan");
+    assert_eq!(context.url, "https://github.com/acme/platform/pull/42");
+    assert_eq!(context.body, "Please review the watcher changes.");
+    assert_eq!(context.head_sha, "abc123");
+    assert_eq!(context.head_ref_name, "feature/watcher");
+    assert_eq!(context.state, "open");
+    assert_eq!(context.conversation_comments.len(), 1);
+    assert_eq!(context.conversation_comments[0].id, "100");
+    assert_eq!(context.conversation_comments[0].author.as_deref(), Some("alice"));
+    assert_eq!(
+        context.conversation_comments[0].url.as_deref(),
+        Some("https://github.com/acme/platform/pull/42#issuecomment-100")
+    );
+    assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\napi repos/acme/platform/issues/42/comments\n"
+    );
+}
+
+#[test]
 fn github_cli_review_destination_posts_inline_comment_with_gh_api() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");

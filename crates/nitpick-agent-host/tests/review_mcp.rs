@@ -9,8 +9,8 @@ use nitpick_agent_host::{
     HostDaemon, HostReviewProvider,
     review_mcp::{
         ActiveReviewSession, AddReviewCommentInput, DeleteDraftCommentInput, ExistingReviewComment,
-        ReviewMcpSessionState, ReviewMcpTools, load_review_mcp_session_state,
-        write_review_mcp_session_state_for_test,
+        PullRequestContext, PullRequestConversationComment, ReviewMcpSessionState, ReviewMcpTools,
+        load_review_mcp_session_state, write_review_mcp_session_state_for_test,
     },
 };
 
@@ -110,6 +110,7 @@ fn review_mcp_tools_lists_existing_comments() {
             repo_dir: ".".into(),
             diff: String::new(),
             comments: Vec::new(),
+            pull_request_context: PullRequestContext::default(),
             existing_comments: vec![
                 existing_comment("10", "alice", "Please adjust this.", false),
                 existing_comment("11", "nitpick", "🤖 Old automated note.", true),
@@ -130,6 +131,64 @@ fn review_mcp_tools_lists_existing_comments() {
 }
 
 #[test]
+fn review_mcp_tools_returns_pull_request_context() {
+    let state = tempfile::NamedTempFile::new().expect("state file");
+    write_review_mcp_session_state_for_test(
+        state.path(),
+        &ReviewMcpSessionState {
+            repo_dir: ".".into(),
+            diff: String::new(),
+            comments: Vec::new(),
+            pull_request_context: pull_request_context(),
+            existing_comments: Vec::new(),
+            deleted_comment_ids: Vec::new(),
+            github: None,
+            finished: false,
+        },
+    )
+    .expect("write state");
+    let tools = ReviewMcpTools::from_state_path(state.path());
+
+    let result = tools.pull_request_context().expect("pull request context");
+
+    assert_eq!(result.context.title, "Add watcher");
+    assert_eq!(result.context.body, "Please review the watcher changes.");
+    assert_eq!(result.context.conversation_comments.len(), 1);
+    assert_eq!(
+        result.context.conversation_comments[0].body,
+        "Can you explain the retry behavior?"
+    );
+}
+
+#[test]
+fn review_mcp_tools_returns_pull_request_conversation_comments() {
+    let state = tempfile::NamedTempFile::new().expect("state file");
+    write_review_mcp_session_state_for_test(
+        state.path(),
+        &ReviewMcpSessionState {
+            repo_dir: ".".into(),
+            diff: String::new(),
+            comments: Vec::new(),
+            pull_request_context: pull_request_context(),
+            existing_comments: Vec::new(),
+            deleted_comment_ids: Vec::new(),
+            github: None,
+            finished: false,
+        },
+    )
+    .expect("write state");
+    let tools = ReviewMcpTools::from_state_path(state.path());
+
+    let result = tools
+        .pull_request_conversation_comments()
+        .expect("pull request conversation comments");
+
+    assert_eq!(result.comments.len(), 1);
+    assert_eq!(result.comments[0].id, "100");
+    assert_eq!(result.comments[0].author.as_deref(), Some("alice"));
+}
+
+#[test]
 fn review_mcp_tools_records_robot_draft_comment_deletion() {
     let state = tempfile::NamedTempFile::new().expect("state file");
     write_review_mcp_session_state_for_test(
@@ -138,6 +197,7 @@ fn review_mcp_tools_records_robot_draft_comment_deletion() {
             repo_dir: ".".into(),
             diff: String::new(),
             comments: Vec::new(),
+            pull_request_context: PullRequestContext::default(),
             existing_comments: vec![existing_comment(
                 "11",
                 "nitpick",
@@ -170,6 +230,7 @@ fn review_mcp_tools_refuses_to_delete_user_or_submitted_comments() {
             repo_dir: ".".into(),
             diff: String::new(),
             comments: Vec::new(),
+            pull_request_context: PullRequestContext::default(),
             existing_comments: vec![
                 existing_comment("10", "alice", "Please adjust this.", true),
                 existing_comment("11", "nitpick", "🤖 Submitted note.", false),
@@ -298,6 +359,10 @@ if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then
   printf '[{{"id":10,"pull_request_review_id":98,"path":"src.rs","line":1,"body":"Please adjust this.","user":{{"login":"alice"}},"state":"SUBMITTED"}},{{"id":11,"pull_request_review_id":99,"path":"src.rs","line":1,"body":"🤖 Old automated note.","user":{{"login":"nitpick"}},"state":"PENDING"}}]\n'
 elif [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
   printf '[]\n'
+elif [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}\n'
+elif [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then
+  printf '[{{"id":100,"body":"Can you explain the retry behavior?","user":{{"login":"alice"}},"created_at":"2026-05-30T12:00:00Z","updated_at":"2026-05-30T12:30:00Z","html_url":"https://github.com/acme/platform/pull/42#issuecomment-100"}}]\n'
 fi
 "#,
             commands = commands.display(),
@@ -328,7 +393,7 @@ fi
     assert_eq!(activity.status, ActivityStatus::Completed);
     assert_eq!(
         fs::read_to_string(commands).expect("commands"),
-        "api repos/acme/platform/pulls/42/comments\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/comments/11 --method DELETE\n"
+        "api repos/acme/platform/pulls/42/comments\napi repos/acme/platform/pulls/42/reviews\npr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\napi repos/acme/platform/issues/42/comments\napi repos/acme/platform/pulls/comments/11 --method DELETE\n"
     );
 }
 
@@ -457,6 +522,14 @@ impl AgentProvider for DeletingToolProvider {
         assert_eq!(existing.comments.len(), 2);
         assert_eq!(existing.comments[0].author.as_deref(), Some("alice"));
         assert!(existing.comments[1].draft);
+        let context = tools.pull_request_context()?;
+        assert_eq!(context.context.body, "Please review the watcher changes.");
+        let comments = tools.pull_request_conversation_comments()?;
+        assert_eq!(comments.comments.len(), 1);
+        assert_eq!(
+            comments.comments[0].body,
+            "Can you explain the retry behavior?"
+        );
         tools.delete_draft_comment(DeleteDraftCommentInput { id: "11".into() })?;
         tools.finish_review()?;
         Ok(ReviewOutput::default())
@@ -524,6 +597,26 @@ fn existing_comment(id: &str, author: &str, body: &str, draft: bool) -> Existing
         body: body.into(),
         author: Some(author.into()),
         draft,
+    }
+}
+
+fn pull_request_context() -> PullRequestContext {
+    PullRequestContext {
+        title: "Add watcher".into(),
+        author: "stephan".into(),
+        url: "https://github.com/acme/platform/pull/42".into(),
+        body: "Please review the watcher changes.".into(),
+        head_sha: "abc123".into(),
+        head_ref_name: "feature/watcher".into(),
+        state: "open".into(),
+        conversation_comments: vec![PullRequestConversationComment {
+            id: "100".into(),
+            body: "Can you explain the retry behavior?".into(),
+            author: Some("alice".into()),
+            created_at: Some("2026-05-30T12:00:00Z".into()),
+            updated_at: Some("2026-05-30T12:30:00Z".into()),
+            url: Some("https://github.com/acme/platform/pull/42#issuecomment-100".into()),
+        }],
     }
 }
 

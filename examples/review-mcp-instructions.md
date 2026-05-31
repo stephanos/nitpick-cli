@@ -1,6 +1,6 @@
 Use the `nitpick-review` MCP server for review output.
 
-Call `existing_review_comments` before reviewing so you can account for user comments and previous Nitpick comments.
+Call `pull_request_context`, `pull_request_conversation_comments`, and `existing_review_comments` before reviewing so you can account for the PR description, general PR conversation, user inline comments, and previous Nitpick comments.
 
 Call `delete_draft_comment` for outdated Nitpick draft comments only when appropriate; it only accepts draft comments whose body starts with the robot emoji.
 

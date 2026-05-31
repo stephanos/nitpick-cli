@@ -184,6 +184,32 @@ impl GitHubCliReviewSyncDestination {
         Ok(comments)
     }
 
+    pub fn pull_request_context(&self) -> AgentResult<GitHubPullRequestContext> {
+        let details = pull_request_details(
+            &self.command,
+            &self.target.owner,
+            &self.target.repo,
+            self.target.number,
+        )?;
+        let conversation_comments = github_pull_request_conversation_comments_from_cli(
+            &self.command,
+            &[&format!(
+                "repos/{}/{}/issues/{}/comments",
+                self.target.owner, self.target.repo, self.target.number
+            )],
+        )?;
+        Ok(GitHubPullRequestContext {
+            title: details.title,
+            author: details.author,
+            url: details.url,
+            body: details.body,
+            head_sha: details.head_sha,
+            head_ref_name: details.head_ref_name,
+            state: details.state.as_str().into(),
+            conversation_comments,
+        })
+    }
+
     pub fn delete_review_comment(&self, comment_id: &str) -> AgentResult<()> {
         github_delete_from_cli(
             &self.command,
@@ -237,6 +263,7 @@ pub struct PullRequestDetails {
     pub title: String,
     pub author: String,
     pub url: String,
+    pub body: String,
     pub head_sha: String,
     pub head_ref_name: String,
     pub state: PullRequestState,
@@ -257,6 +284,28 @@ impl PullRequestState {
             Self::Merged => "merged",
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubPullRequestContext {
+    pub title: String,
+    pub author: String,
+    pub url: String,
+    pub body: String,
+    pub head_sha: String,
+    pub head_ref_name: String,
+    pub state: String,
+    pub conversation_comments: Vec<GitHubPullRequestConversationComment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubPullRequestConversationComment {
+    pub id: String,
+    pub body: String,
+    pub author: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub url: Option<String>,
 }
 
 pub struct GitHubCliDiscovery {
@@ -799,7 +848,7 @@ fn pull_request_details(
             "--repo",
             &format!("{owner}/{repo}"),
             "--json",
-            "title,author,url,headRefOid,headRefName,state,mergedAt",
+            "title,author,url,body,headRefOid,headRefName,state,mergedAt",
         ],
         "GitHub PR response",
     )?;
@@ -811,6 +860,7 @@ struct PullRequestDetailsResponse {
     title: String,
     author: PullRequestAuthor,
     url: String,
+    body: String,
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
     #[serde(rename = "headRefName")]
@@ -826,6 +876,7 @@ impl PullRequestDetailsResponse {
             title: self.title,
             author: self.author.login,
             url: self.url,
+            body: self.body,
             head_sha: self.head_ref_oid,
             head_ref_name: self.head_ref_name,
             state: if self.merged_at.is_some() {
@@ -1095,6 +1146,16 @@ struct GitHubReviewCommentResponse {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+struct GitHubPullRequestConversationCommentResponse {
+    id: u64,
+    body: String,
+    user: Option<GitHubUserResponse>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    html_url: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
 struct GitHubUserResponse {
     login: String,
 }
@@ -1190,6 +1251,27 @@ fn github_review_comments_from_cli(
             body: comment.body,
             author: comment.user.map(|user| user.login),
             draft: comment.state.as_deref() == Some("PENDING"),
+        })
+        .collect())
+}
+
+fn github_pull_request_conversation_comments_from_cli(
+    command: &GitHubCommand,
+    endpoint_args: &[&str],
+) -> AgentResult<Vec<GitHubPullRequestConversationComment>> {
+    let mut args = vec!["api"];
+    args.extend_from_slice(endpoint_args);
+    let comments: Vec<GitHubPullRequestConversationCommentResponse> = command
+        .json_with_start_error(&args, "GitHub PR conversation comments response", "run GitHub CLI")?;
+    Ok(comments
+        .into_iter()
+        .map(|comment| GitHubPullRequestConversationComment {
+            id: comment.id.to_string(),
+            body: comment.body,
+            author: comment.user.map(|user| user.login),
+            created_at: comment.created_at,
+            updated_at: comment.updated_at,
+            url: comment.html_url,
         })
         .collect())
 }
