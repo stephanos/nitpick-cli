@@ -1105,7 +1105,7 @@ fn provider_attention(
     Some(nitpick_agent_core::HostAttention {
         kind: classification.kind.clone(),
         title: "provider needs attention".into(),
-        detail: provider_attention_detail(&classification),
+        detail: provider_attention_detail(classification),
         retryable_activity_count,
     })
 }
@@ -1680,7 +1680,7 @@ pub struct AgentSandboxConfig {
 impl Default for AgentSandboxConfig {
     fn default() -> Self {
         Self {
-            mode: "macos-seatbelt".into(),
+            mode: "nono".into(),
         }
     }
 }
@@ -1692,7 +1692,7 @@ impl AgentSandboxConfig {
             .map(|mode| mode.trim().to_owned())
             .filter(|mode| !mode.is_empty())
             .unwrap_or(default.mode);
-        if !matches!(mode.as_str(), "macos-seatbelt" | "none") {
+        if !matches!(mode.as_str(), "nono" | "macos-seatbelt" | "none") {
             return Err(AgentError::config(format!(
                 "unsupported agent sandbox mode `{mode}`"
             )));
@@ -1701,10 +1701,10 @@ impl AgentSandboxConfig {
     }
 
     fn command_sandbox_config(&self) -> CommandSandboxConfig {
-        if self.mode == "macos-seatbelt" {
-            CommandSandboxConfig::macos_seatbelt()
-        } else {
-            CommandSandboxConfig::unsandboxed()
+        match self.mode.as_str() {
+            "nono" => CommandSandboxConfig::nono(),
+            "macos-seatbelt" => CommandSandboxConfig::macos_seatbelt(),
+            _ => CommandSandboxConfig::unsandboxed(),
         }
     }
 }

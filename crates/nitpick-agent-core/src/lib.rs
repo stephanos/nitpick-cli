@@ -8,6 +8,7 @@ mod host;
 mod json;
 mod macos_sandbox;
 mod model;
+mod nono_sandbox;
 mod provider;
 mod provider_command_runner;
 mod provider_failure;
@@ -43,6 +44,7 @@ pub use model::{
     ChatInput, ProviderDiagnosticInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
     ReviewRequest, ReviewSubject,
 };
+pub use nono_sandbox::{NONO_SANDBOX_HELPER_ARG, run_nono_sandbox_helper};
 pub use provider::{
     AgentProvider, NoopProviderRunSink, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     ReviewToolConfig,

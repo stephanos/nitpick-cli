@@ -339,7 +339,7 @@ fn review_activity_row(activity: &Activity) -> Vec<String> {
         activity
             .error
             .as_ref()
-            .map(|error| crate::style::error(error))
+            .map(crate::style::error)
             .unwrap_or_default(),
     ]
 }

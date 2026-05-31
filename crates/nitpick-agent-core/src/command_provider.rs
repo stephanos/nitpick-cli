@@ -8,23 +8,47 @@ use crate::{
     AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
     ChatInput, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
-    app_paths::default_data_dir, macos_sandbox::SandboxProfileBuilder,
-    provider_command_runner::ProviderCommandRunner, provider_log,
-    validate_review_output_file_for_diff,
+    app_paths::default_data_dir,
+    macos_sandbox::SandboxProfileBuilder,
+    nono_sandbox::{NONO_SANDBOX_HELPER_ARG, NONO_SANDBOX_SPEC_ENV, NonoSandboxSpec},
+    provider_command_runner::ProviderCommandRunner,
+    provider_log, validate_review_output_file_for_diff,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSandboxConfig {
     pub enabled: bool,
+    backend: CommandSandboxBackend,
+    nono_helper_command: Option<PathBuf>,
     provider_runtime_dir: Option<PathBuf>,
     extra_read_paths: Vec<PathBuf>,
     extra_read_write_paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CommandSandboxBackend {
+    None,
+    MacosSeatbelt,
+    Nono,
 }
 
 impl CommandSandboxConfig {
     pub fn macos_seatbelt() -> Self {
         Self {
             enabled: true,
+            backend: CommandSandboxBackend::MacosSeatbelt,
+            nono_helper_command: None,
+            provider_runtime_dir: None,
+            extra_read_paths: Vec::new(),
+            extra_read_write_paths: Vec::new(),
+        }
+    }
+
+    pub fn nono() -> Self {
+        Self {
+            enabled: true,
+            backend: CommandSandboxBackend::Nono,
+            nono_helper_command: None,
             provider_runtime_dir: None,
             extra_read_paths: Vec::new(),
             extra_read_write_paths: Vec::new(),
@@ -34,6 +58,8 @@ impl CommandSandboxConfig {
     pub fn unsandboxed() -> Self {
         Self {
             enabled: false,
+            backend: CommandSandboxBackend::None,
+            nono_helper_command: None,
             provider_runtime_dir: None,
             extra_read_paths: Vec::new(),
             extra_read_write_paths: Vec::new(),
@@ -47,6 +73,11 @@ impl CommandSandboxConfig {
 
     pub fn with_read_paths(self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
         self.with_extra_read_paths(paths)
+    }
+
+    pub fn with_helper_command(mut self, command: impl Into<PathBuf>) -> Self {
+        self.nono_helper_command = Some(command.into());
+        self
     }
 
     fn with_extra_read_write_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
@@ -63,7 +94,7 @@ impl CommandSandboxConfig {
 
 impl Default for CommandSandboxConfig {
     fn default() -> Self {
-        Self::macos_seatbelt()
+        Self::nono()
     }
 }
 
@@ -80,6 +111,35 @@ pub struct CommandAgentProvider {
     model: Option<String>,
     command: PathBuf,
     sandbox: CommandSandboxConfig,
+}
+
+struct PromptRunRequest<'a> {
+    session: &'a mut AgentSession,
+    run_sink: &'a dyn ProviderRunSink,
+    prompt: &'a str,
+    args: &'a [String],
+    current_dir: Option<&'a Path>,
+    review_output_path: Option<&'a Path>,
+    sandbox: &'a CommandSandboxConfig,
+    timeout: Option<std::time::Duration>,
+    provider_debug_file: Option<&'a Path>,
+}
+
+struct ProviderRunDiagnosticContext<'a> {
+    provider: &'a AgentProviderKind,
+    model: Option<&'a str>,
+    command: &'a Path,
+    sandbox_enabled: bool,
+    timeout: Option<std::time::Duration>,
+    provider_debug_file: Option<&'a Path>,
+}
+
+struct ProviderRunDiagnosticResult<'a> {
+    status: std::process::ExitStatus,
+    duration_ms: u128,
+    timed_out: bool,
+    stdout: &'a [u8],
+    stderr: &'a [u8],
 }
 
 impl CommandAgentProvider {
@@ -143,44 +203,44 @@ impl CommandAgentProvider {
         self.run_interactive_in_dir(&[], repo_dir.as_deref())
     }
 
-    fn run_prompt_in_dir_with_sandbox(
-        &self,
-        session: &mut AgentSession,
-        run_sink: &dyn ProviderRunSink,
-        prompt: &str,
-        args: &[String],
-        current_dir: Option<&Path>,
-        review_output_path: Option<&Path>,
-        sandbox: &CommandSandboxConfig,
-        timeout: Option<std::time::Duration>,
-        provider_debug_file: Option<&Path>,
-    ) -> AgentResult<String> {
-        let sandbox_log_tag = sandbox.enabled.then(new_sandbox_log_tag);
-        let mut command =
-            self.command_for_with_sandbox(current_dir, args, sandbox, sandbox_log_tag.as_deref())?;
-        if let Some(current_dir) = current_dir {
+    fn run_prompt_in_dir_with_sandbox(&self, request: PromptRunRequest<'_>) -> AgentResult<String> {
+        let sandbox_log_tag = request.sandbox.enabled.then(new_sandbox_log_tag);
+        let mut command = self.command_for_with_sandbox(
+            request.current_dir,
+            request.args,
+            request.sandbox,
+            sandbox_log_tag.as_deref(),
+        )?;
+        if let Some(current_dir) = request.current_dir {
             command.current_dir(current_dir);
         }
-        if let Some(review_output_path) = review_output_path {
+        if let Some(review_output_path) = request.review_output_path {
             command.env("NITPICK_REVIEW_OUTPUT", review_output_path);
         }
         tracing::debug!(
             provider = %self.kind,
             command = %self.command.display(),
-            sandbox = sandbox.enabled,
+            sandbox = request.sandbox.enabled,
             "running provider command"
         );
-        run_sink.set_run_diagnostic(&provider_run_start_diagnostic(
-            &self.kind,
-            self.model.as_deref(),
-            &self.command,
-            sandbox.enabled,
-            timeout,
-            provider_debug_file,
-        ))?;
+        let diagnostic_context = ProviderRunDiagnosticContext {
+            provider: &self.kind,
+            model: self.model.as_deref(),
+            command: &self.command,
+            sandbox_enabled: request.sandbox.enabled,
+            timeout: request.timeout,
+            provider_debug_file: request.provider_debug_file,
+        };
+        request
+            .run_sink
+            .set_run_diagnostic(&provider_run_start_diagnostic(&diagnostic_context))?;
         let command_display = self.command.display().to_string();
-        let output = ProviderCommandRunner::new(self.kind.as_str(), &command_display)
-            .run(command, prompt, run_sink, timeout)?;
+        let output = ProviderCommandRunner::new(self.kind.as_str(), &command_display).run(
+            command,
+            request.prompt,
+            request.run_sink,
+            request.timeout,
+        )?;
         tracing::debug!(
             provider = %self.kind,
             command = %self.command.display(),
@@ -188,27 +248,25 @@ impl CommandAgentProvider {
             duration_ms = output.duration_ms,
             "provider command finished"
         );
-        record_provider_logs(session, &output.stdout, &output.stderr);
+        record_provider_logs(request.session, &output.stdout, &output.stderr);
         let run_diagnostic = provider_run_diagnostic(
-            &self.kind,
-            self.model.as_deref(),
-            &self.command,
-            sandbox.enabled,
-            timeout,
-            provider_debug_file,
-            output.status,
-            output.duration_ms,
-            output.timed_out,
-            &output.stdout,
-            &output.stderr,
+            &diagnostic_context,
+            ProviderRunDiagnosticResult {
+                status: output.status,
+                duration_ms: output.duration_ms,
+                timed_out: output.timed_out,
+                stdout: &output.stdout,
+                stderr: &output.stderr,
+            },
         );
-        run_sink.set_run_diagnostic(&run_diagnostic)?;
-        record_provider_run_diagnostic(session, &run_diagnostic);
+        request.run_sink.set_run_diagnostic(&run_diagnostic)?;
+        record_provider_run_diagnostic(request.session, &run_diagnostic);
         if output.timed_out {
             return Err(AgentError::provider(format!(
                 "{} provider command timed out after {}",
                 self.kind,
-                timeout
+                request
+                    .timeout
                     .map(format_timeout_duration)
                     .unwrap_or_else(|| "unknown duration".into())
             )));
@@ -222,8 +280,8 @@ impl CommandAgentProvider {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             let session_already_in_use = provider_session_already_in_use(&stderr);
-            let failure_hint = provider_failure_hint(&stderr, sandbox.enabled);
-            let sandbox_violations = if sandbox.enabled {
+            let failure_hint = provider_failure_hint(&stderr, request.sandbox.enabled);
+            let sandbox_violations = if request.sandbox.enabled {
                 sandbox_log_tag
                     .as_deref()
                     .map(recent_sandbox_violations)
@@ -231,9 +289,9 @@ impl CommandAgentProvider {
             } else {
                 Vec::new()
             };
-            if sandbox.enabled && !session_already_in_use {
+            if request.sandbox.enabled && !session_already_in_use {
                 record_provider_sandbox_diagnostic(
-                    session,
+                    request.session,
                     output.status,
                     &stderr,
                     &sandbox_violations,
@@ -259,6 +317,14 @@ impl CommandAgentProvider {
         self.command_for_with_sandbox(repo_dir, args, &self.sandbox, None)
     }
 
+    pub fn command_for_testing(
+        &self,
+        repo_dir: Option<&Path>,
+        args: &[String],
+    ) -> AgentResult<Command> {
+        self.command_for(repo_dir, args)
+    }
+
     fn command_for_with_sandbox(
         &self,
         repo_dir: Option<&Path>,
@@ -272,6 +338,24 @@ impl CommandAgentProvider {
             return Ok(command);
         }
         let provider_runtime_env = self.prepare_provider_runtime_env(sandbox)?;
+
+        if sandbox.backend == CommandSandboxBackend::Nono {
+            let repo_dir = repo_dir.ok_or_else(|| {
+                AgentError::sandbox("sandboxed provider execution requires a repository directory")
+            })?;
+            let provider_command = self.resolved_command()?;
+            let mut command = Command::new(nono_helper_command(sandbox)?);
+            command.arg(NONO_SANDBOX_HELPER_ARG);
+            command.arg("--");
+            command.arg(&provider_command);
+            command.args(args);
+            command.envs(provider_runtime_env);
+            command.env(
+                NONO_SANDBOX_SPEC_ENV,
+                nono_sandbox_spec(repo_dir, &provider_command, sandbox)?.to_env_value()?,
+            );
+            return Ok(command);
+        }
 
         #[cfg(target_os = "macos")]
         {
@@ -423,6 +507,87 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
         })
 }
 
+fn nono_helper_command(sandbox: &CommandSandboxConfig) -> AgentResult<PathBuf> {
+    match &sandbox.nono_helper_command {
+        Some(command) => Ok(command.clone()),
+        None => std::env::current_exe().map_err(|error| {
+            AgentError::sandbox(format!(
+                "resolve current executable for nono helper: {error}"
+            ))
+        }),
+    }
+}
+
+fn nono_sandbox_spec(
+    repo_dir: &Path,
+    provider_command: &Path,
+    sandbox: &CommandSandboxConfig,
+) -> AgentResult<NonoSandboxSpec> {
+    let mut read_paths = vec![repo_dir.to_path_buf(), provider_command.to_path_buf()];
+    read_paths.extend(nono_system_read_paths());
+    read_paths.extend(provider_runtime_read_paths());
+    read_paths.extend(provider_config_read_paths());
+    read_paths.extend(sandbox.extra_read_paths.iter().cloned());
+
+    let mut read_write_paths = provider_runtime_read_write_paths(sandbox);
+    read_write_paths.extend(provider_config_read_write_paths());
+    let provider_config_literal_read_write_paths = provider_config_literal_read_write_paths();
+    read_write_paths.extend(provider_config_literal_read_write_paths.iter().cloned());
+    read_write_paths.extend(sandbox.extra_read_write_paths.iter().cloned());
+
+    Ok(NonoSandboxSpec::new(
+        read_paths,
+        read_write_paths,
+        nono_literal_read_write_rules(&provider_config_literal_read_write_paths),
+    ))
+}
+
+fn nono_system_read_paths() -> Vec<PathBuf> {
+    [
+        "/bin",
+        "/sbin",
+        "/usr/bin",
+        "/usr/sbin",
+        "/usr/lib",
+        "/usr/share",
+        "/lib",
+        "/lib64",
+        "/etc",
+        "/private/etc",
+        "/System",
+        "/Library",
+        "/Applications",
+        "/dev",
+        "/var",
+        "/private/var",
+        "/tmp",
+        "/private/tmp",
+        "/opt",
+        "/run",
+        "/nix",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .filter(|path| path.exists())
+    .collect()
+}
+
+fn nono_literal_read_write_rules(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| {
+            format!(
+                r#"(allow file-read* file-write* (literal "{}"))"#,
+                escape_nono_platform_rule_string(&path.to_string_lossy())
+            )
+        })
+        .collect()
+}
+
+fn escape_nono_platform_rule_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]) {
     provider_log::push_provider_log(session, "provider.stdout", stdout);
     provider_log::push_provider_log(session, "provider.stderr", stderr);
@@ -432,21 +597,14 @@ fn record_provider_run_diagnostic(session: &mut AgentSession, content: &str) {
     provider_log::upsert_provider_log(session, "provider.run", content);
 }
 
-fn provider_run_start_diagnostic(
-    provider: &AgentProviderKind,
-    model: Option<&str>,
-    command: &Path,
-    sandbox_enabled: bool,
-    timeout: Option<std::time::Duration>,
-    provider_debug_file: Option<&Path>,
-) -> String {
+fn provider_run_start_diagnostic(context: &ProviderRunDiagnosticContext<'_>) -> String {
     let mut lines = vec![
-        format!("provider {provider} command running"),
-        format!("model: {}", model.unwrap_or("(default)")),
-        format!("command: {}", command.display()),
+        format!("provider {} command running", context.provider),
+        format!("model: {}", context.model.unwrap_or("(default)")),
+        format!("command: {}", context.command.display()),
         format!(
             "sandbox: {}",
-            if sandbox_enabled {
+            if context.sandbox_enabled {
                 "enabled"
             } else {
                 "disabled"
@@ -454,38 +612,30 @@ fn provider_run_start_diagnostic(
         ),
         format!(
             "timeout: {}",
-            timeout
+            context
+                .timeout
                 .map(format_timeout_duration)
                 .unwrap_or_else(|| "none".into())
         ),
         "status: running".into(),
     ];
-    if let Some(provider_debug_file) = provider_debug_file {
+    if let Some(provider_debug_file) = context.provider_debug_file {
         lines.push(format!("debug_file: {}", provider_debug_file.display()));
     }
     lines.join("\n")
 }
 
 fn provider_run_diagnostic(
-    provider: &AgentProviderKind,
-    model: Option<&str>,
-    command: &Path,
-    sandbox_enabled: bool,
-    timeout: Option<std::time::Duration>,
-    provider_debug_file: Option<&Path>,
-    status: std::process::ExitStatus,
-    duration_ms: u128,
-    timed_out: bool,
-    stdout: &[u8],
-    stderr: &[u8],
+    context: &ProviderRunDiagnosticContext<'_>,
+    result: ProviderRunDiagnosticResult<'_>,
 ) -> String {
     let mut lines = vec![
-        format!("provider {provider} command completed"),
-        format!("model: {}", model.unwrap_or("(default)")),
-        format!("command: {}", command.display()),
+        format!("provider {} command completed", context.provider),
+        format!("model: {}", context.model.unwrap_or("(default)")),
+        format!("command: {}", context.command.display()),
         format!(
             "sandbox: {}",
-            if sandbox_enabled {
+            if context.sandbox_enabled {
                 "enabled"
             } else {
                 "disabled"
@@ -493,17 +643,18 @@ fn provider_run_diagnostic(
         ),
         format!(
             "timeout: {}",
-            timeout
+            context
+                .timeout
                 .map(format_timeout_duration)
                 .unwrap_or_else(|| "none".into())
         ),
-        format!("status: {status}"),
-        format!("duration_ms: {duration_ms}"),
-        format!("timed_out: {timed_out}"),
-        format!("stdout: {}", provider_stream_state(stdout)),
-        format!("stderr: {}", provider_stream_state(stderr)),
+        format!("status: {}", result.status),
+        format!("duration_ms: {}", result.duration_ms),
+        format!("timed_out: {}", result.timed_out),
+        format!("stdout: {}", provider_stream_state(result.stdout)),
+        format!("stderr: {}", provider_stream_state(result.stderr)),
     ];
-    if let Some(provider_debug_file) = provider_debug_file {
+    if let Some(provider_debug_file) = context.provider_debug_file {
         lines.push(format!("debug_file: {}", provider_debug_file.display()));
     }
     lines.join("\n")
@@ -655,17 +806,17 @@ impl AgentProvider for CommandAgentProvider {
                 let prompt = review_tool_prompt(self.model.as_deref(), input, &tools.instructions);
                 let args = self.review_tool_args(session, tools);
                 let sandbox = sandbox.with_review_tool_paths(tools);
-                self.run_prompt_in_dir_with_sandbox(
+                self.run_prompt_in_dir_with_sandbox(PromptRunRequest {
                     session,
-                    context.run_sink,
-                    &prompt,
-                    &args,
-                    Some(&repo_dir),
-                    None,
-                    &sandbox,
-                    None,
-                    None,
-                )?;
+                    run_sink: context.run_sink,
+                    prompt: &prompt,
+                    args: &args,
+                    current_dir: Some(&repo_dir),
+                    review_output_path: None,
+                    sandbox: &sandbox,
+                    timeout: None,
+                    provider_debug_file: None,
+                })?;
                 Ok(ReviewOutput {
                     comments: Vec::new(),
                 })
@@ -689,17 +840,17 @@ impl AgentProvider for CommandAgentProvider {
                 let prompt =
                     review_prompt(self.model.as_deref(), input, REVIEW_OUTPUT_RELATIVE_PATH);
                 let args = self.review_args(session);
-                self.run_prompt_in_dir_with_sandbox(
+                self.run_prompt_in_dir_with_sandbox(PromptRunRequest {
                     session,
-                    context.run_sink,
-                    &prompt,
-                    &args,
-                    Some(&repo_dir),
-                    Some(&output_path),
-                    &sandbox,
-                    None,
-                    None,
-                )?;
+                    run_sink: context.run_sink,
+                    prompt: &prompt,
+                    args: &args,
+                    current_dir: Some(&repo_dir),
+                    review_output_path: Some(&output_path),
+                    sandbox: &sandbox,
+                    timeout: None,
+                    provider_debug_file: None,
+                })?;
                 validate_review_output_file_for_diff(&repo_dir, &output_path, &input.diff)
             }
         }
@@ -720,19 +871,19 @@ impl AgentProvider for CommandAgentProvider {
         let sandbox = self.effective_chat_sandbox(input);
         let repo_dir = self.sandbox_repo_dir(&input.repo_dir, &sandbox)?;
         let args = self.chat_args(input);
-        self.run_prompt_in_dir_with_sandbox(
+        self.run_prompt_in_dir_with_sandbox(PromptRunRequest {
             session,
-            context.run_sink,
-            &chat_prompt(self.model.as_deref(), input),
-            &args,
-            repo_dir.as_deref(),
-            None,
-            &sandbox,
-            input
+            run_sink: context.run_sink,
+            prompt: &chat_prompt(self.model.as_deref(), input),
+            args: &args,
+            current_dir: repo_dir.as_deref(),
+            review_output_path: None,
+            sandbox: &sandbox,
+            timeout: input
                 .provider_timeout_ms
                 .map(std::time::Duration::from_millis),
-            input.provider_debug_file.as_deref(),
-        )
+            provider_debug_file: input.provider_debug_file.as_deref(),
+        })
     }
 
     #[tracing::instrument(skip_all, fields(provider = %self.kind))]
@@ -1034,7 +1185,6 @@ fn macos_sandbox_profile(
     })
 }
 
-#[cfg(target_os = "macos")]
 fn provider_runtime_read_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for path in [Path::new("/opt/homebrew"), Path::new("/usr/local")] {
@@ -1045,12 +1195,10 @@ fn provider_runtime_read_paths() -> Vec<PathBuf> {
     paths
 }
 
-#[cfg(target_os = "macos")]
 fn provider_runtime_read_write_paths(sandbox: &CommandSandboxConfig) -> Vec<PathBuf> {
     vec![provider_runtime_root_dir_for_sandbox(sandbox)]
 }
 
-#[cfg(target_os = "macos")]
 fn provider_config_read_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -1059,7 +1207,6 @@ fn provider_config_read_paths() -> Vec<PathBuf> {
     paths
 }
 
-#[cfg(target_os = "macos")]
 fn provider_config_read_write_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -1083,7 +1230,6 @@ fn provider_config_read_write_paths() -> Vec<PathBuf> {
     paths
 }
 
-#[cfg(target_os = "macos")]
 fn provider_config_literal_read_write_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {

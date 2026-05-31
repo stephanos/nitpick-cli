@@ -1016,10 +1016,10 @@ fi
     assert_eq!(comments.len(), 2);
     assert_eq!(comments[0].id, "10");
     assert_eq!(comments[0].author.as_deref(), Some("alice"));
-    assert_eq!(comments[0].draft, false);
+    assert!(!comments[0].draft);
     assert_eq!(comments[1].id, "11");
     assert_eq!(comments[1].body, "🤖 Old note.");
-    assert_eq!(comments[1].draft, true);
+    assert!(comments[1].draft);
 }
 
 #[test]

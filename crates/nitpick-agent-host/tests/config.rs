@@ -16,6 +16,7 @@ fn default_config_uses_claude_without_model_pin() {
 
     assert_eq!(config.provider, AgentProviderKind::Claude);
     assert_eq!(config.model, None);
+    assert_eq!(config.sandbox.mode, "nono");
     assert_eq!(config.github_discovery.interval_seconds, 60);
     assert_eq!(config.max_concurrent_reviews, 3);
     assert_eq!(
@@ -25,6 +26,24 @@ fn default_config_uses_claude_without_model_pin() {
     assert_eq!(config.review_extra_prompt_path, None);
     assert_eq!(config.review_self_extra_prompt_path, None);
     assert_eq!(config.review_requested_extra_prompt_path, None);
+}
+
+#[test]
+fn parses_nono_agent_sandbox_mode_from_toml() {
+    let config = AgentConfig::from_toml(
+        r#"
+[agent]
+sandbox = "nono"
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(
+        config.sandbox,
+        AgentSandboxConfig {
+            mode: "nono".into(),
+        }
+    );
 }
 
 #[test]

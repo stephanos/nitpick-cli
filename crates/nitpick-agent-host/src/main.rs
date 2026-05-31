@@ -3,13 +3,17 @@ use std::{
 };
 
 use nitpick_agent_core::{
-    FsActivityStore, FsProcessedReviewStore, config_path_from_env_value, data_dir_from_env_value,
+    FsActivityStore, FsProcessedReviewStore, NONO_SANDBOX_HELPER_ARG, config_path_from_env_value,
+    data_dir_from_env_value, run_nono_sandbox_helper,
 };
 use nitpick_agent_host::{AgentConfig, HostDaemon, api_router, review_mcp};
 
 #[tokio::main]
 async fn main() -> ExitCode {
     init_tracing();
+    if env::args().nth(1).as_deref() == Some(NONO_SANDBOX_HELPER_ARG) {
+        return run_nono_sandbox_helper(env::args_os().skip(2));
+    }
     if env::args().nth(1).as_deref() == Some("daemon") {
         return run_daemon().await;
     }

@@ -188,8 +188,5 @@ fn no_findings_review_comment_for_diff(diff: &str) -> AgentResult<Option<ReviewC
 }
 
 fn is_missing_review_error(error: &AgentError) -> bool {
-    match error {
-        AgentError::NotFound { .. } => true,
-        _ => false,
-    }
+    matches!(error, AgentError::NotFound { .. })
 }

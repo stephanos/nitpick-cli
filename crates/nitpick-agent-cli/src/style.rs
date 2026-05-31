@@ -73,6 +73,20 @@ pub(crate) fn table(rows: Vec<Vec<String>>) -> String {
         .join("\n")
 }
 
+pub(crate) fn colorize(value: impl std::fmt::Display, style: anstyle::Style) -> String {
+    format!("{}{}{}", style.render(), value, style.render_reset())
+}
+
+fn status_style(status: &ActivityStatus) -> anstyle::Style {
+    match status {
+        ActivityStatus::Queued => anstyle::AnsiColor::Cyan.on_default(),
+        ActivityStatus::Running => anstyle::AnsiColor::Blue.on_default(),
+        ActivityStatus::Completed => anstyle::AnsiColor::Green.on_default(),
+        ActivityStatus::Error => anstyle::AnsiColor::Red.on_default(),
+        ActivityStatus::Cancelled => anstyle::AnsiColor::Yellow.on_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -100,19 +114,5 @@ mod tests {
             ]),
             "\u{1b}[32mok\u{1b}[0m     short   1\n\u{1b}[31merror\u{1b}[0m  longer  2"
         );
-    }
-}
-
-pub(crate) fn colorize(value: impl std::fmt::Display, style: anstyle::Style) -> String {
-    format!("{}{}{}", style.render(), value, style.render_reset())
-}
-
-fn status_style(status: &ActivityStatus) -> anstyle::Style {
-    match status {
-        ActivityStatus::Queued => anstyle::AnsiColor::Cyan.on_default(),
-        ActivityStatus::Running => anstyle::AnsiColor::Blue.on_default(),
-        ActivityStatus::Completed => anstyle::AnsiColor::Green.on_default(),
-        ActivityStatus::Error => anstyle::AnsiColor::Red.on_default(),
-        ActivityStatus::Cancelled => anstyle::AnsiColor::Yellow.on_default(),
     }
 }

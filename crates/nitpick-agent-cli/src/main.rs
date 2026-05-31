@@ -9,8 +9,12 @@ use nitpick_agent_cli::{
     data_dir_from_env, format_error_message, host_addr_from_env, parse_invocation,
     run_cli_command_with_options,
 };
+use nitpick_agent_core::{NONO_SANDBOX_HELPER_ARG, run_nono_sandbox_helper};
 
 fn main() -> ExitCode {
+    if env::args().nth(1).as_deref() == Some(NONO_SANDBOX_HELPER_ARG) {
+        return run_nono_sandbox_helper(env::args_os().skip(2));
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

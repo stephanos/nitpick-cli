@@ -2,7 +2,7 @@
 provider = "claude"
 # model = "claude-opus-4-6"
 # command = "claude"
-sandbox = "macos-seatbelt"
+sandbox = "nono"
 
 # To use Codex instead:
 # provider = "codex"

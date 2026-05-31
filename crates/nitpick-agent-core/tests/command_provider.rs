@@ -839,6 +839,48 @@ fn command_provider_resolves_bare_provider_command_from_path() {
 }
 
 #[test]
+fn nono_sandboxed_provider_command_uses_current_executable_helper() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    let provider_command = dir.path().join("provider");
+    fs::write(&provider_command, "#!/bin/sh\n").expect("write provider command");
+    make_executable(&provider_command);
+    let helper_command = dir.path().join("nitpick");
+    fs::write(&helper_command, "#!/bin/sh\n").expect("write helper command");
+    make_executable(&helper_command);
+    let provider = CommandAgentProvider::new(AgentProviderKind::Claude, None, &provider_command)
+        .with_sandbox(CommandSandboxConfig::nono().with_helper_command(&helper_command));
+
+    let command = provider
+        .command_for_testing(Some(&repo_dir), &["--version".into()])
+        .expect("command");
+
+    assert_eq!(command.get_program(), helper_command.as_os_str());
+    assert_eq!(
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        vec![
+            "__nitpick-nono-sandbox".to_owned(),
+            "--".to_owned(),
+            provider_command
+                .canonicalize()
+                .expect("canonical provider")
+                .to_string_lossy()
+                .into_owned(),
+            "--version".to_owned(),
+        ]
+    );
+    assert!(
+        command
+            .get_envs()
+            .any(|(key, value)| { key == "NITPICK_NONO_SANDBOX_SPEC" && value.is_some() })
+    );
+}
+
+#[test]
 fn validate_review_output_file_rejects_paths_that_escape_repo() {
     let dir = tempfile::tempdir().expect("temp dir");
     let repo_dir = dir.path().join("repo");

@@ -180,11 +180,8 @@ fn collect_provider_output(
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
         }
     };
-    loop {
-        match rx.recv() {
-            Ok(chunk) => append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, run_sink)?,
-            Err(_) => break,
-        }
+    while let Ok(chunk) = rx.recv() {
+        append_provider_stream_chunk(chunk?, &mut stdout, &mut stderr, run_sink)?;
     }
     run_sink.flush()?;
     Ok(ProviderCommandOutput {

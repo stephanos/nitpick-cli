@@ -101,7 +101,7 @@ fn open_checkout_with_editor(checkout: &Path, editor: Option<&Path>) -> Result<S
         .or_else(editor_from_env)
         .ok_or_else(|| "set VISUAL or EDITOR to open review checkouts".to_owned())?;
     let status = Command::new(&editor)
-        .arg(&checkout)
+        .arg(checkout)
         .status()
         .map_err(|error| format!("failed to start editor `{}`: {error}", editor.display()))?;
     if !status.success() {
