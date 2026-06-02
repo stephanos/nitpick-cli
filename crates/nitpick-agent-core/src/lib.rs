@@ -13,10 +13,12 @@ mod provider;
 mod provider_command_runner;
 mod provider_failure;
 mod provider_log;
+mod provider_run_transcript;
 mod provider_sandbox;
 mod repo_path;
 mod review_identity;
 mod review_output;
+mod review_prompt;
 mod review_session;
 mod review_source;
 mod runtime;
@@ -53,12 +55,14 @@ pub use provider::{
 pub use provider_failure::{
     ProviderFailureClassification, ProviderFailureKind, classify_provider_failure,
 };
+pub use provider_run_transcript::ProviderRunTranscriptContext;
 pub use provider_sandbox::CommandSandboxConfig;
 pub use repo_path::RepoPath;
 pub use review_identity::ReviewActivityIdentity;
 pub use review_output::{
     REVIEW_OUTPUT_RELATIVE_PATH, validate_review_output_file, validate_review_output_file_for_diff,
 };
+pub use review_prompt::{ReviewPromptOutput, render_review_prompt};
 pub use review_session::{ReviewCommentValidator, first_changed_file_for_diff};
 pub use review_source::{
     FsProcessedReviewStore, MemoryProcessedReviewStore, ProcessedReview, ProcessedReviewStore,

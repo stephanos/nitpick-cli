@@ -5,15 +5,23 @@ use std::{
 };
 
 use crate::{
-    AgentError, AgentMessage, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
-    ChatInput, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
-    REVIEW_OUTPUT_RELATIVE_PATH, ReviewInput, ReviewOutput, ReviewToolConfig,
+    AgentError, AgentProvider, AgentProviderKind, AgentResult, AgentSession, ChatInput,
+    ProviderReviewContext, ProviderRunContext, ProviderRunSink, REVIEW_OUTPUT_RELATIVE_PATH,
+    ReviewInput, ReviewOutput, ReviewPromptOutput, ReviewToolConfig,
     nono_sandbox::{NONO_SANDBOX_HELPER_ARG, NONO_SANDBOX_SPEC_ENV},
     provider_command_runner::ProviderCommandRunner,
     provider_log,
+    provider_run_transcript::{
+        ProviderRunTranscriptContext, ProviderRunTranscriptResult, format_timeout_duration,
+        provider_failure_hint, provider_session_already_in_use, record_provider_sandbox_diagnostic,
+    },
     provider_sandbox::{CommandSandboxConfig, ProviderSandboxPlan},
+    review_prompt::{render_chat_prompt, render_review_prompt},
     validate_review_output_file_for_diff,
 };
+
+#[cfg(test)]
+use crate::provider_run_transcript::{sandbox_diagnostic, sandbox_failure_hint};
 
 pub struct CommandAgentProvider {
     kind: AgentProviderKind,
@@ -32,23 +40,6 @@ struct PromptRunRequest<'a> {
     sandbox: &'a CommandSandboxConfig,
     timeout: Option<std::time::Duration>,
     provider_debug_file: Option<&'a Path>,
-}
-
-struct ProviderRunDiagnosticContext<'a> {
-    provider: &'a AgentProviderKind,
-    model: Option<&'a str>,
-    command: &'a Path,
-    sandbox_enabled: bool,
-    timeout: Option<std::time::Duration>,
-    provider_debug_file: Option<&'a Path>,
-}
-
-struct ProviderRunDiagnosticResult<'a> {
-    status: std::process::ExitStatus,
-    duration_ms: u128,
-    timed_out: bool,
-    stdout: &'a [u8],
-    stderr: &'a [u8],
 }
 
 impl CommandAgentProvider {
@@ -127,7 +118,7 @@ impl CommandAgentProvider {
             sandbox = request.sandbox.enabled,
             "running provider command"
         );
-        let diagnostic_context = ProviderRunDiagnosticContext {
+        let diagnostic_context = ProviderRunTranscriptContext {
             provider: &self.kind,
             model: self.model.as_deref(),
             command: &self.command,
@@ -137,7 +128,7 @@ impl CommandAgentProvider {
         };
         request
             .run_sink
-            .set_run_diagnostic(&provider_run_start_diagnostic(&diagnostic_context))?;
+            .set_run_diagnostic(&diagnostic_context.start_diagnostic())?;
         let command_display = self.command.display().to_string();
         let output = ProviderCommandRunner::new(self.kind.as_str(), &command_display).run(
             command,
@@ -153,16 +144,14 @@ impl CommandAgentProvider {
             "provider command finished"
         );
         record_provider_logs(request.session, &output.stdout, &output.stderr);
-        let run_diagnostic = provider_run_diagnostic(
-            &diagnostic_context,
-            ProviderRunDiagnosticResult {
+        let run_diagnostic =
+            diagnostic_context.completion_diagnostic(ProviderRunTranscriptResult {
                 status: output.status,
                 duration_ms: output.duration_ms,
                 timed_out: output.timed_out,
                 stdout: &output.stdout,
                 stderr: &output.stderr,
-            },
-        );
+            });
         request.run_sink.set_run_diagnostic(&run_diagnostic)?;
         record_provider_run_diagnostic(request.session, &run_diagnostic);
         if output.timed_out {
@@ -377,132 +366,6 @@ fn record_provider_run_diagnostic(session: &mut AgentSession, content: &str) {
     provider_log::upsert_provider_log(session, "provider.run", content);
 }
 
-fn provider_run_start_diagnostic(context: &ProviderRunDiagnosticContext<'_>) -> String {
-    let mut lines = vec![
-        format!("provider {} command running", context.provider),
-        format!("model: {}", context.model.unwrap_or("(default)")),
-        format!("command: {}", context.command.display()),
-        format!(
-            "sandbox: {}",
-            if context.sandbox_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        ),
-        format!(
-            "timeout: {}",
-            context
-                .timeout
-                .map(format_timeout_duration)
-                .unwrap_or_else(|| "none".into())
-        ),
-        "status: running".into(),
-    ];
-    if let Some(provider_debug_file) = context.provider_debug_file {
-        lines.push(format!("debug_file: {}", provider_debug_file.display()));
-    }
-    lines.join("\n")
-}
-
-fn provider_run_diagnostic(
-    context: &ProviderRunDiagnosticContext<'_>,
-    result: ProviderRunDiagnosticResult<'_>,
-) -> String {
-    let mut lines = vec![
-        format!("provider {} command completed", context.provider),
-        format!("model: {}", context.model.unwrap_or("(default)")),
-        format!("command: {}", context.command.display()),
-        format!(
-            "sandbox: {}",
-            if context.sandbox_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        ),
-        format!(
-            "timeout: {}",
-            context
-                .timeout
-                .map(format_timeout_duration)
-                .unwrap_or_else(|| "none".into())
-        ),
-        format!("status: {}", result.status),
-        format!("duration_ms: {}", result.duration_ms),
-        format!("timed_out: {}", result.timed_out),
-        format!("stdout: {}", provider_stream_state(result.stdout)),
-        format!("stderr: {}", provider_stream_state(result.stderr)),
-    ];
-    if let Some(provider_debug_file) = context.provider_debug_file {
-        lines.push(format!("debug_file: {}", provider_debug_file.display()));
-    }
-    lines.join("\n")
-}
-
-fn provider_stream_state(bytes: &[u8]) -> &'static str {
-    if bytes.is_empty() {
-        "empty"
-    } else {
-        "captured"
-    }
-}
-
-fn format_timeout_duration(timeout: std::time::Duration) -> String {
-    if timeout.as_millis() < 1_000 {
-        format!("{}ms", timeout.as_millis())
-    } else {
-        format!("{}s", timeout.as_secs())
-    }
-}
-
-fn record_provider_sandbox_diagnostic(
-    session: &mut AgentSession,
-    status: std::process::ExitStatus,
-    stderr: &str,
-) {
-    session.messages.push(AgentMessage {
-        role: "provider.sandbox".into(),
-        content: sandbox_diagnostic(status, stderr),
-    });
-}
-
-fn sandbox_failure_hint(sandbox_enabled: bool) -> String {
-    if sandbox_enabled {
-        "; sandbox was enabled, retry with --no-sandbox to determine whether the sandbox is involved"
-            .into()
-    } else {
-        String::new()
-    }
-}
-
-fn provider_failure_hint(stderr: &str, sandbox_enabled: bool) -> String {
-    if provider_session_already_in_use(stderr) {
-        "; provider session is already in use, wait for the active Claude process to finish or stop the stale provider process before retrying".into()
-    } else {
-        sandbox_failure_hint(sandbox_enabled)
-    }
-}
-
-fn provider_session_already_in_use(stderr: &str) -> bool {
-    stderr.contains("Session ID") && stderr.contains("already in use")
-}
-
-fn sandbox_diagnostic(status: std::process::ExitStatus, stderr: &str) -> String {
-    let mut lines = vec![
-        "sandbox was enabled for this provider run".into(),
-        format!("provider exited with status {status}"),
-        "retry with --no-sandbox to determine whether the sandbox is involved".into(),
-    ];
-    if stderr.trim().is_empty() {
-        lines.push("provider stderr was empty".into());
-    } else {
-        lines.push("provider stderr:".into());
-        lines.push(stderr.trim().into());
-    }
-    lines.join("\n")
-}
-
 impl AgentProvider for CommandAgentProvider {
     #[tracing::instrument(skip_all, fields(provider = %self.kind, repository = %input.subject.repository))]
     fn review(
@@ -522,7 +385,13 @@ impl AgentProvider for CommandAgentProvider {
         })?;
         match context.tools {
             Some(tools) => {
-                let prompt = review_tool_prompt(self.model.as_deref(), input, &tools.instructions);
+                let prompt = render_review_prompt(
+                    self.model.as_deref(),
+                    input,
+                    ReviewPromptOutput::Tools {
+                        tool_instructions: tools.instructions.clone(),
+                    },
+                );
                 let args = self.review_tool_args(session, tools);
                 let sandbox = sandbox.with_review_tool_paths(tools);
                 self.run_prompt_in_dir_with_sandbox(PromptRunRequest {
@@ -556,8 +425,13 @@ impl AgentProvider for CommandAgentProvider {
                         AgentError::provider(format!("remove stale review output: {error}"))
                     })?;
                 }
-                let prompt =
-                    review_prompt(self.model.as_deref(), input, REVIEW_OUTPUT_RELATIVE_PATH);
+                let prompt = render_review_prompt(
+                    self.model.as_deref(),
+                    input,
+                    ReviewPromptOutput::JsonFile {
+                        output_path: REVIEW_OUTPUT_RELATIVE_PATH.into(),
+                    },
+                );
                 let args = self.review_args(session);
                 self.run_prompt_in_dir_with_sandbox(PromptRunRequest {
                     session,
@@ -593,7 +467,7 @@ impl AgentProvider for CommandAgentProvider {
         self.run_prompt_in_dir_with_sandbox(PromptRunRequest {
             session,
             run_sink: context.run_sink,
-            prompt: &chat_prompt(self.model.as_deref(), input),
+            prompt: &render_chat_prompt(self.model.as_deref(), input),
             args: &args,
             current_dir: repo_dir.as_deref(),
             review_output_path: None,
@@ -706,83 +580,6 @@ impl CommandAgentProvider {
         }
         args
     }
-}
-
-fn review_prompt(model: Option<&str>, input: &ReviewInput, output_path: &str) -> String {
-    format!(
-        "{}\n\nmodel: {}\nrepository: {}\nnumber: {}\ntitle: {}\nauthor: {}\nrepo_dir: {}\ninstructions:\n{}\n\ndiff:\n{}\n",
-        initial_review_prompt(input, output_path),
-        model.unwrap_or("(default)"),
-        input.subject.repository,
-        input
-            .subject
-            .number
-            .map(|number| number.to_string())
-            .unwrap_or_else(|| "(none)".into()),
-        input.subject.title,
-        input.subject.author,
-        input.repo_dir.display(),
-        input.instructions,
-        input.diff,
-    )
-}
-
-fn initial_review_prompt(input: &ReviewInput, output_path: &str) -> String {
-    let prompt = input.review_prompt.trim();
-    let prompt = if prompt.is_empty() {
-        include_str!("../../../examples/review-prompt.md")
-    } else {
-        prompt
-    };
-    prompt.replace("{review_output_path}", output_path)
-}
-
-fn review_tool_prompt(model: Option<&str>, input: &ReviewInput, tool_instructions: &str) -> String {
-    format!(
-        "{}\n\nmodel: {}\nrepository: {}\nnumber: {}\ntitle: {}\nauthor: {}\nrepo_dir: {}\ntool instructions:\n{}\n\ninstructions:\n{}\n\ndiff:\n{}\n",
-        initial_review_tool_prompt(input),
-        model.unwrap_or("(default)"),
-        input.subject.repository,
-        input
-            .subject
-            .number
-            .map(|number| number.to_string())
-            .unwrap_or_else(|| "(none)".into()),
-        input.subject.title,
-        input.subject.author,
-        input.repo_dir.display(),
-        tool_instructions,
-        input.instructions,
-        input.diff,
-    )
-}
-
-fn initial_review_tool_prompt(input: &ReviewInput) -> String {
-    let prompt = input.review_prompt.trim();
-    let prompt = if prompt.is_empty() {
-        include_str!("../../../examples/review-prompt.md")
-    } else {
-        prompt
-    };
-    let prompt = prompt.replace(
-        "Write review annotations as JSON to `{review_output_path}` relative to the repository root. Do not return review annotations on stdout.",
-        "Record review annotations with the Nitpick review MCP tools. Do not write review annotations to stdout or to a file.",
-    );
-    let prompt = prompt.replace(
-        "The JSON object must contain `comments`. Each comment must use a repository-relative path, a line number inside the diff changeset, and a body. Use line 0 only for file-level comments on files in the diff changeset.",
-        "Each comment must use a repository-relative path, a line number inside the diff changeset, and a body. Use line 0 only for file-level comments on files in the diff changeset.",
-    );
-    prompt.replace("{review_output_path}", "the Nitpick review MCP tools")
-}
-
-fn chat_prompt(model: Option<&str>, input: &ChatInput) -> String {
-    format!(
-        "You are answering a development question.\n\nmodel: {}\nrepo_dir: {}\ncontext:\n{}\n\nprompt:\n{}\n",
-        model.unwrap_or("(default)"),
-        input.repo_dir.display(),
-        input.context,
-        input.prompt,
-    )
 }
 
 fn to_command_path(path: &Path) -> String {

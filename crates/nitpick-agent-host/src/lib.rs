@@ -1,10 +1,13 @@
 mod api;
+mod artifact_sync_orchestrator;
+mod host_status_projection;
 mod polling_state;
 mod review_intake;
 pub mod review_mcp;
 mod review_mcp_session_store;
 mod review_poll_cycle;
 mod review_queue;
+mod review_retry_intake;
 mod review_slots;
 
 use std::{
@@ -37,6 +40,9 @@ use review_queue::ReviewExecutionQueue;
 use serde::Deserialize;
 
 pub use api::api_router;
+pub use artifact_sync_orchestrator::ArtifactSyncOrchestrator;
+pub use host_status_projection::HostStatusProjection;
+pub use review_retry_intake::ReviewRetryIntake;
 
 const ACTIVITY_PRUNE_AGE_SECS: u64 = 24 * 60 * 60;
 
@@ -363,63 +369,18 @@ impl HostDaemon {
     pub fn status(&self) -> AgentResult<HostStatus> {
         let artifacts = self.store.list_artifacts()?;
         let activities = self.store.list()?;
-        let attention = provider_attention(&activities, &self.config.provider);
-        let reviews: Vec<_> = activities
-            .iter()
-            .filter(|activity| activity.kind == ActivityKind::Review)
-            .collect();
-        Ok(HostStatus {
-            activity_count: activities.len(),
-            queued_activity_count: activities
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Queued)
-                .count(),
-            running_activity_count: activities
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Running)
-                .count(),
-            completed_activity_count: activities
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Completed)
-                .count(),
-            error_activity_count: activities
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Error)
-                .count(),
+        Ok(HostStatusProjection {
+            activities: &activities,
+            artifacts: &artifacts,
             open_review_count: self.polling_state.open_review_count()?,
-            queued_review_count: reviews
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Queued)
-                .count(),
-            running_review_count: reviews
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Running)
-                .count(),
-            completed_review_count: reviews
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Completed)
-                .count(),
-            error_review_count: reviews
-                .iter()
-                .filter(|activity| activity.status == ActivityStatus::Error)
-                .count(),
-            artifact_count: artifacts.len(),
-            local_only_artifact_count: artifacts
-                .iter()
-                .filter(|artifact| artifact.sync_state == ArtifactSyncState::LocalOnly)
-                .count(),
-            pending_sync_artifact_count: artifacts
-                .iter()
-                .filter(|artifact| matches!(artifact.sync_state, ArtifactSyncState::Pending { .. }))
-                .count(),
             provider: self.config.provider.clone(),
             model: self.config.model.clone(),
             review_source_name: self.config.review_source_name(),
             review_source_enabled: self.config.github_discovery.enabled,
             review_source_last_poll_unix: self.polling_state.last_poll_unix()?,
             review_source_last_poll_summary: self.polling_state.last_poll_summary()?,
-            attention,
-        })
+        }
+        .project())
     }
 
     pub fn config(&self) -> &AgentConfig {
@@ -681,21 +642,11 @@ impl HostDaemon {
             .config
             .sync_destination(destination, target)?
             .sync_batch(&artifacts)?;
-        if outcomes.len() != artifacts.len() {
-            return Err(AgentError::invalid_input(format!(
-                "sync destination `{destination}` returned {} outcome(s) for {} artifact(s)",
-                outcomes.len(),
-                artifacts.len()
-            )));
-        }
-
-        let mut updated = Vec::with_capacity(artifacts.len());
-        for (artifact, outcome) in artifacts.into_iter().zip(outcomes) {
-            updated.push(
-                self.store
-                    .update_artifact_sync_state(&artifact.id, outcome.sync_state)?,
-            );
-        }
+        let updated = ArtifactSyncOrchestrator::new(self.store.clone()).apply_batch_outcomes(
+            destination,
+            &artifacts,
+            outcomes,
+        )?;
         Ok(Some(updated))
     }
 
@@ -869,7 +820,7 @@ impl HostDaemon {
             if activity.status != ActivityStatus::Error || activity.kind != ActivityKind::Review {
                 continue;
             }
-            if provider_failure_resolved(&activity) {
+            if ReviewRetryIntake::provider_failure_resolved(&activity) {
                 continue;
             }
             let Some(classification) = nitpick_agent_core::classify_provider_failure(&activity)
@@ -887,7 +838,7 @@ impl HostDaemon {
                 skipped += 1;
                 continue;
             };
-            if !is_retryable_review_metadata(review) {
+            if !ReviewRetryIntake::is_retryable_review_metadata(review) {
                 skipped += 1;
                 continue;
             }
@@ -902,9 +853,7 @@ impl HostDaemon {
             let new_activity = self.enqueue_review(review_input)?;
             let new_activity_id = new_activity.id.clone();
             let mut resolved_activity = activity;
-            if let Some(retry) = resolved_activity.retry.as_mut() {
-                retry.resolved_by_activity = Some(new_activity_id.clone());
-            }
+            ReviewRetryIntake::mark_resolved(&mut resolved_activity, new_activity_id.clone());
             self.store.save(&resolved_activity)?;
             queued.push(new_activity_id);
         }
@@ -1033,93 +982,6 @@ impl HostDaemon {
         input.review_mode = retry.review_mode.clone();
         input.force = retry.force;
         Ok(input)
-    }
-}
-
-fn is_retryable_review_metadata(retry: &nitpick_agent_core::ReviewRetryMetadata) -> bool {
-    retry.source == "github"
-        && retry.number.is_some()
-        && retry
-            .repository
-            .split_once('/')
-            .is_some_and(|(owner, repo)| !owner.is_empty() && !repo.is_empty())
-}
-
-fn provider_attention(
-    activities: &[Activity],
-    provider: &AgentProviderKind,
-) -> Option<nitpick_agent_core::HostAttention> {
-    let mut classified = activities
-        .iter()
-        .filter_map(|activity| {
-            let mut classified_activity = activity.clone();
-            classified_activity
-                .session
-                .provider
-                .get_or_insert_with(|| provider.clone());
-            if provider_failure_resolved(&classified_activity) {
-                return None;
-            }
-            nitpick_agent_core::classify_provider_failure(&classified_activity)
-                .map(|classification| (activity.updated_at_unix, classification))
-        })
-        .collect::<Vec<_>>();
-    classified.sort_by_key(|(updated_at_unix, classification)| {
-        (
-            provider_failure_priority(&classification.kind),
-            std::cmp::Reverse(*updated_at_unix),
-        )
-    });
-    let (_, classification) = classified.first()?;
-    let retryable_activity_count = activities
-        .iter()
-        .filter(|activity| {
-            activity.kind == ActivityKind::Review
-                && activity.status == ActivityStatus::Error
-                && activity
-                    .retry
-                    .as_ref()
-                    .and_then(|retry| retry.review.as_ref())
-                    .is_some_and(is_retryable_review_metadata)
-                && !provider_failure_resolved(activity)
-                && nitpick_agent_core::classify_provider_failure(activity)
-                    .is_some_and(|candidate| candidate.kind == classification.kind)
-        })
-        .count();
-    Some(nitpick_agent_core::HostAttention {
-        kind: classification.kind.clone(),
-        title: "provider needs attention".into(),
-        detail: provider_attention_detail(classification),
-        retryable_activity_count,
-    })
-}
-
-fn provider_failure_resolved(activity: &Activity) -> bool {
-    activity
-        .retry
-        .as_ref()
-        .and_then(|retry| retry.resolved_by_activity.as_ref())
-        .is_some()
-}
-
-fn provider_attention_detail(
-    classification: &nitpick_agent_core::ProviderFailureClassification,
-) -> String {
-    match classification.suggested_action.as_deref() {
-        Some(action) => format!(
-            "{}: {} {}",
-            classification.title, classification.detail, action
-        ),
-        None => format!("{}: {}", classification.title, classification.detail),
-    }
-}
-
-fn provider_failure_priority(kind: &nitpick_agent_core::ProviderFailureKind) -> u8 {
-    match kind {
-        nitpick_agent_core::ProviderFailureKind::AuthInvalidCredentials => 0,
-        nitpick_agent_core::ProviderFailureKind::SandboxPermissionDenied => 1,
-        nitpick_agent_core::ProviderFailureKind::ProviderUnavailable => 2,
-        nitpick_agent_core::ProviderFailureKind::UnknownProviderFailure => 3,
     }
 }
 

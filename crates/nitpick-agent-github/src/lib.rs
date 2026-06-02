@@ -12,17 +12,21 @@ use fs_err as fs;
 use nitpick_agent_core::{
     ActivityId, AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactKind,
     ArtifactSyncDestination, ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput,
-    ReviewMode, ReviewRequest, ReviewSource, ReviewSubject, checkout_root_from_env_values,
+    ReviewRequest, ReviewSource, checkout_root_from_env_values,
 };
 use serde::{Deserialize, Serialize};
 
 mod command;
 mod pending_review_reconciler;
 mod pull_request_client;
+mod review_payload;
+mod review_request_preparation;
 mod review_sync;
 
 pub use nitpick_agent_core::{FsProcessedReviewStore, MemoryProcessedReviewStore};
 pub use pull_request_client::GitHubPullRequestClient;
+pub use review_payload::GitHubReviewPayload;
+pub use review_request_preparation::prepare_github_review_input;
 pub use review_sync::{GitHubReviewWorkflowSync, NO_FINDINGS_REVIEW_COMMENT};
 
 pub struct GitHubDryRunSyncDestination;
@@ -490,29 +494,12 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
             pull_request,
             &details.head_ref_name,
         )?;
-        let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
-        Ok(ReviewInput {
-            repo_dir,
-            source: "github".into(),
-            review_mode: ReviewMode::Requested,
-            instructions: format!(
-                "Review GitHub pull request {repository}#{}.\n\nURL: {}\nState: {}\nHead SHA: {}\nHead ref: {}.",
-                pull_request.number,
-                details.url,
-                details.state.as_str(),
-                details.head_sha,
-                details.head_ref_name
-            ),
-            subject: ReviewSubject {
-                repository,
-                number: Some(pull_request.number),
-                title: details.title,
-                author: details.author,
-            },
-            head_sha: details.head_sha,
+        Ok(prepare_github_review_input(
+            pull_request,
+            details,
             diff,
-            ..ReviewInput::default()
-        })
+            repo_dir,
+        ))
     }
 }
 
@@ -949,7 +936,7 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
                 let payload = serde_json::json!({
                     "commit_id": head_sha,
                     "event": "COMMENT",
-                    "comments": [review_comment_payload(comment.clone())],
+                    "comments": [GitHubReviewPayload::comment(comment.clone())],
                 });
                 sync_with_github_cli(
                     self.client.command(),
@@ -990,44 +977,19 @@ fn sync_review_batch_with_github_cli(
     artifacts: &[Artifact],
     destination: &str,
 ) -> AgentResult<Vec<ArtifactSyncOutcome>> {
-    let mut body = None;
-    let mut comments = Vec::new();
     for artifact in artifacts {
-        match &artifact.content {
-            ArtifactContent::ReviewSummary(summary) => {
-                body = Some(summary.clone());
-            }
-            ArtifactContent::ReviewComment(comment) => {
-                comments.push(comment.clone());
-            }
-            ArtifactContent::ChatResponse(_) => {
-                return Err(AgentError::invalid_input(
-                    "github-review sync only supports review artifacts",
-                ));
-            }
+        if matches!(artifact.content, ArtifactContent::ChatResponse(_)) {
+            return Err(AgentError::invalid_input(
+                "github-review sync only supports review artifacts",
+            ));
         }
     }
     if artifacts.is_empty() {
         return Ok(Vec::new());
     }
-    if body.is_none() && comments.is_empty() {
-        return Err(AgentError::invalid_input(
-            "github-review sync requires at least one review summary or comment",
-        ));
-    }
 
     let head_sha = pull_request_head_sha(command, &target.owner, &target.repo, target.number)?;
-    let payload_comments = comments
-        .into_iter()
-        .map(review_comment_payload)
-        .collect::<Vec<_>>();
-    let mut payload = serde_json::json!({
-        "commit_id": head_sha,
-        "comments": payload_comments,
-    });
-    if let Some(body) = body {
-        payload["body"] = serde_json::Value::String(body);
-    }
+    let payload = GitHubReviewPayload::batch(head_sha, artifacts)?;
     let outcome = sync_pending_review_with_github_cli(
         command,
         &[
@@ -1090,23 +1052,6 @@ struct GitHubPullRequestConversationCommentResponse {
 #[derive(Clone, Debug, serde::Deserialize)]
 struct GitHubUserResponse {
     login: String,
-}
-
-fn review_comment_payload(comment: ReviewComment) -> serde_json::Value {
-    if comment.line == 0 {
-        serde_json::json!({
-            "path": comment.path,
-            "subject_type": "file",
-            "body": robot_prefixed_body(&comment.body),
-        })
-    } else {
-        serde_json::json!({
-            "path": comment.path,
-            "line": comment.line,
-            "side": "RIGHT",
-            "body": robot_prefixed_body(&comment.body),
-        })
-    }
 }
 
 fn sync_with_github_cli(
@@ -1360,14 +1305,6 @@ fn github_comment_body(artifact: &Artifact) -> String {
         ArtifactContent::ChatResponse(response) => {
             format!("<!-- nitpick-agent:{} -->\n\n{response}\n", artifact.id)
         }
-    }
-}
-
-fn robot_prefixed_body(body: &str) -> String {
-    if body.starts_with("🤖 ") {
-        body.to_owned()
-    } else {
-        format!("🤖 {body}")
     }
 }
 

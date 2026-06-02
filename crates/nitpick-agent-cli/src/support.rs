@@ -5,6 +5,70 @@ use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
 
 use crate::CliOptions;
 
+pub(crate) struct ReviewWorkspace<'a> {
+    config: nitpick_agent_host::AgentConfig,
+    data_dir: &'a Path,
+    git_command: &'a Path,
+}
+
+impl<'a> ReviewWorkspace<'a> {
+    pub(crate) fn new(config: nitpick_agent_host::AgentConfig, data_dir: &'a Path) -> Self {
+        Self {
+            config,
+            data_dir,
+            git_command: Path::new("git"),
+        }
+    }
+
+    fn with_git_command(
+        config: nitpick_agent_host::AgentConfig,
+        data_dir: &'a Path,
+        git_command: &'a Path,
+    ) -> Self {
+        Self {
+            config,
+            data_dir,
+            git_command,
+        }
+    }
+
+    pub(crate) fn checkout_path_for(&self, pull_request: &PullRequestRef) -> std::path::PathBuf {
+        self.discovery().checkout_path_for(pull_request)
+    }
+
+    fn ensure_checkout(&self, target: &str) -> Result<std::path::PathBuf, String> {
+        let pull_request = target
+            .parse::<PullRequestRef>()
+            .map_err(|error| format!("invalid GitHub pull request reference: {error}"))?;
+        let checkout = self.checkout_path_for(&pull_request);
+        if checkout.join(".git").is_dir() {
+            return Ok(checkout);
+        }
+        Ok(self.review_input_for(&pull_request)?.repo_dir)
+    }
+
+    fn review_input_for(&self, pull_request: &PullRequestRef) -> Result<ReviewInput, String> {
+        self.discovery()
+            .review_input(&pull_request.into())
+            .map_err(|error| error.to_string())
+    }
+
+    fn discovery(&self) -> GitHubCliDiscovery {
+        match &self.config.checkout_dir {
+            Some(checkout_dir) => GitHubCliDiscovery::with_checkout_commands(
+                self.config.github_command.as_deref().unwrap_or("gh"),
+                self.git_command,
+                checkout_dir,
+            ),
+            None => GitHubCliDiscovery::with_checkout_commands(
+                self.config.github_command.as_deref().unwrap_or("gh"),
+                self.git_command,
+                self.data_dir.join("checkouts"),
+            ),
+        }
+    }
+}
+
 pub(crate) fn handle_resume_error(activity: &Activity, data_dir: &Path, error: String) -> String {
     if !provider_session_missing(&error) {
         return error;
@@ -38,27 +102,17 @@ pub(crate) fn ensure_cached_checkout(
     config: &nitpick_agent_host::AgentConfig,
     data_dir: &Path,
 ) -> Result<std::path::PathBuf, String> {
-    ensure_cached_checkout_with_git_command(target, config, data_dir, Path::new("git"))
+    ReviewWorkspace::new(config.clone(), data_dir).ensure_checkout(target)
 }
 
+#[cfg(test)]
 fn ensure_cached_checkout_with_git_command(
     target: &str,
     config: &nitpick_agent_host::AgentConfig,
     data_dir: &Path,
     git_command: &Path,
 ) -> Result<std::path::PathBuf, String> {
-    let pull_request = target
-        .parse::<PullRequestRef>()
-        .map_err(|error| format!("invalid GitHub pull request reference: {error}"))?;
-    let discovery = configured_github_discovery_with_git_command(config, data_dir, git_command);
-    let checkout = discovery.checkout_path_for(&pull_request);
-    if checkout.join(".git").is_dir() {
-        return Ok(checkout);
-    }
-    let review_input = discovery
-        .review_input(&(&pull_request).into())
-        .map_err(|error| error.to_string())?;
-    Ok(review_input.repo_dir)
+    ReviewWorkspace::with_git_command(config.clone(), data_dir, git_command).ensure_checkout(target)
 }
 
 pub(crate) fn github_review_input(
@@ -80,9 +134,8 @@ fn github_review_input_with_git_command(
     data_dir: &Path,
     git_command: &Path,
 ) -> Result<ReviewInput, String> {
-    configured_github_discovery_with_git_command(config, data_dir, git_command)
-        .review_input(&pull_request.into())
-        .map_err(|error| error.to_string())
+    ReviewWorkspace::with_git_command(config.clone(), data_dir, git_command)
+        .review_input_for(pull_request)
 }
 
 pub(crate) fn open_cached_checkout(
@@ -108,25 +161,6 @@ fn open_checkout_with_editor(checkout: &Path, editor: Option<&Path>) -> Result<S
         return Err(format!("editor `{}` failed: {status}", editor.display()));
     }
     Ok(format!("opened {}", checkout.display()))
-}
-
-fn configured_github_discovery_with_git_command(
-    config: &nitpick_agent_host::AgentConfig,
-    data_dir: &Path,
-    git_command: &Path,
-) -> GitHubCliDiscovery {
-    match &config.checkout_dir {
-        Some(checkout_dir) => GitHubCliDiscovery::with_checkout_commands(
-            config.github_command.as_deref().unwrap_or("gh"),
-            git_command,
-            checkout_dir,
-        ),
-        None => GitHubCliDiscovery::with_checkout_commands(
-            config.github_command.as_deref().unwrap_or("gh"),
-            git_command,
-            data_dir.join("checkouts"),
-        ),
-    }
 }
 
 fn editor_from_env() -> Option<std::path::PathBuf> {
@@ -186,6 +220,26 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(log).expect("log"),
             format!("{}\n", checkout.display())
+        );
+    }
+
+    #[test]
+    fn review_workspace_uses_configured_checkout_root() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let checkout_root = dir.path().join("configured-checkouts");
+        let workspace = super::ReviewWorkspace::new(
+            nitpick_agent_host::AgentConfig {
+                checkout_dir: Some(checkout_root.display().to_string()),
+                ..nitpick_agent_host::AgentConfig::default()
+            },
+            &data_dir,
+        );
+        let reference = "acme/platform#42".parse().expect("pull request ref");
+
+        assert_eq!(
+            workspace.checkout_path_for(&reference),
+            checkout_root.join("acme/platform/pr-42")
         );
     }
 
