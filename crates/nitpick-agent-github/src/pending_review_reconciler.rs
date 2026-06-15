@@ -1,6 +1,5 @@
-use nitpick_agent_core::{
-    AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactSyncState,
-};
+use nitpick_agent_core::{AgentError, AgentResult};
+use nitpick_agent_model::{Artifact, ArtifactContent, ArtifactId, ArtifactSyncState};
 
 const GITHUB_REVIEW_DESTINATION: &str = "github-review";
 
@@ -174,7 +173,7 @@ fn is_local_inline_comment(artifact: &Artifact) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use nitpick_agent_core::{ActivityId, ArtifactKind, ReviewComment};
+    use nitpick_agent_model::{ActivityId, ArtifactKind, ReviewComment};
 
     use super::*;
 

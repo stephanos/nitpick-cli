@@ -1,9 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
-use nitpick_agent_core::{
-    ActivityStore, AgentResult, Clock, ProcessedReviewStore, ReviewInput, ReviewRequest,
-    ReviewSource,
-};
+use nitpick_agent_core::{ActivityStore, AgentResult, Clock, ProcessedReviewStore, ReviewSource};
+use nitpick_agent_model::{ReviewInput, ReviewRequest};
 
 use crate::{AgentConfig, ReviewSourcePollResult, polling_state::PollingState};
 

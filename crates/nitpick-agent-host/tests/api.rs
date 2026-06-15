@@ -9,13 +9,16 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use nitpick_agent_core::{
-    ActivityId, ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider,
-    AgentProviderKind, AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState,
-    ChatInput, MemoryActivityStore, MemoryProcessedReviewStore, ProcessedReviewStore,
-    ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput, ReviewRequest,
-    ReviewSource, ReviewSubject, SystemClock,
+    ActivityStore, AgentError, AgentProvider, AgentResult, MemoryActivityStore,
+    MemoryProcessedReviewStore, ProcessedReviewStore, ProviderReviewContext, ProviderRunContext,
+    ReviewSource, SystemClock,
 };
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon, api_router};
+use nitpick_agent_model::{
+    ActivityId, ActivityKind, ActivityStatus, AgentProviderKind, AgentSession, ArtifactContent,
+    ArtifactKind, ArtifactSyncState, ChatInput, ReviewComment, ReviewInput, ReviewOutput,
+    ReviewRequest, ReviewSubject,
+};
 use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 use tower::ServiceExt;
@@ -544,7 +547,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         .create_artifact(
             activity_id.clone(),
             ArtifactKind::ReviewComment,
-            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            ArtifactContent::ReviewComment(ReviewComment {
                 path: "src/lib.rs".into(),
                 line: 12,
                 body: "Prefer this.".into(),
@@ -794,7 +797,7 @@ exit 1
         .create_artifact(
             activity_id.clone(),
             ArtifactKind::ReviewComment,
-            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            ArtifactContent::ReviewComment(ReviewComment {
                 path: "src/lib.rs".into(),
                 line: 12,
                 body: "Prefer this.".into(),
@@ -878,7 +881,7 @@ exit 1
         .create_artifact(
             activity_id.clone(),
             ArtifactKind::ReviewComment,
-            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            ArtifactContent::ReviewComment(ReviewComment {
                 path: "src/lib.rs".into(),
                 line: 12,
                 body: "Already staged.".into(),
@@ -889,7 +892,7 @@ exit 1
         .create_artifact(
             activity_id.clone(),
             ArtifactKind::ReviewComment,
-            ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+            ArtifactContent::ReviewComment(ReviewComment {
                 path: "src/main.rs".into(),
                 line: 8,
                 body: "New comment.".into(),
@@ -1425,7 +1428,7 @@ impl AgentProvider for FakeProvider {
         _context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
         Ok(ReviewOutput {
-            comments: vec![nitpick_agent_core::ReviewComment {
+            comments: vec![ReviewComment {
                 path: "src/lib.rs".into(),
                 line: 1,
                 body: "looks good".into(),

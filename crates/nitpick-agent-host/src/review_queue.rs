@@ -5,10 +5,8 @@ use std::{
     time::Duration,
 };
 
-use nitpick_agent_core::{
-    Activity, ActivityStatus, ActivityStore, AgentResult, AgentRuntime, ReviewActivityIdentity,
-    ReviewInput,
-};
+use nitpick_agent_core::{ActivityStore, AgentResult, AgentRuntime, ReviewActivityIdentity};
+use nitpick_agent_model::{Activity, ActivityId, ActivityStatus, ReviewInput};
 
 use crate::review_slots::ReviewSlotManager;
 
@@ -16,7 +14,7 @@ use crate::review_slots::ReviewSlotManager;
 pub(crate) struct ReviewExecutionQueue {
     store: Arc<dyn ActivityStore>,
     slots: ReviewSlotManager,
-    running: Arc<Mutex<BTreeSet<nitpick_agent_core::ActivityId>>>,
+    running: Arc<Mutex<BTreeSet<ActivityId>>>,
 }
 
 impl ReviewExecutionQueue {
@@ -131,7 +129,7 @@ impl ReviewExecutionQueue {
         }) {
             activity.status = ActivityStatus::Error;
             activity.session.status =
-                nitpick_agent_core::SessionStatus::Error("superseded by forced review".into());
+                nitpick_agent_model::SessionStatus::Error("superseded by forced review".into());
             activity.error = Some("superseded by forced review".into());
             activity.touch();
             self.store.save(&activity)?;
@@ -147,7 +145,7 @@ impl ReviewExecutionQueue {
         Ok(())
     }
 
-    fn unregister_running(&self, activity_id: &nitpick_agent_core::ActivityId) -> AgentResult<()> {
+    fn unregister_running(&self, activity_id: &ActivityId) -> AgentResult<()> {
         self.running
             .lock()
             .map_err(|_| nitpick_agent_core::AgentError::io("review queue lock", "poisoned"))?
@@ -169,7 +167,7 @@ impl ReviewExecutionQueue {
         }
         activity.status = ActivityStatus::Error;
         activity.session.status =
-            nitpick_agent_core::SessionStatus::Error("stale running review recovered".into());
+            nitpick_agent_model::SessionStatus::Error("stale running review recovered".into());
         activity.error = Some("stale running review recovered".into());
         activity.touch();
         self.store.save(&activity)

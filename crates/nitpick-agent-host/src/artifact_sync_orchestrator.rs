@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use nitpick_agent_core::{ActivityStore, AgentError, AgentResult, Artifact, ArtifactSyncOutcome};
+use nitpick_agent_core::{ActivityStore, AgentError, AgentResult, ArtifactSyncOutcome};
+use nitpick_agent_model::Artifact;
 
 pub struct ArtifactSyncOrchestrator {
     store: Arc<dyn ActivityStore>,

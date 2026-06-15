@@ -1,5 +1,5 @@
-use nitpick_agent_core::ReviewComment;
 use nitpick_agent_github::GitHubReviewPayload;
+use nitpick_agent_model::ReviewComment;
 
 #[test]
 fn github_review_payload_builds_file_level_comment_shape() {

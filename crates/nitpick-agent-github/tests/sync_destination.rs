@@ -1,10 +1,11 @@
-use nitpick_agent_core::{
-    ActivityId, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncDestination,
-    ArtifactSyncState,
-};
+use nitpick_agent_core::ArtifactSyncDestination;
 use nitpick_agent_github::{
     GitHubCliReviewSyncDestination, GitHubCliSyncDestination, GitHubDryRunSyncDestination,
     GitHubReviewWorkflowSync, PullRequestRef,
+};
+use nitpick_agent_model::{
+    ActivityId, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState,
+    ReviewComment,
 };
 use std::{fs, os::unix::fs::PermissionsExt};
 
@@ -157,7 +158,7 @@ fn github_cli_destination_does_not_prefix_plain_review_comment_body() {
         ArtifactId::new("artifact-1"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/lib.rs".into(),
             line: 12,
             body: "Prefer this.".into(),
@@ -327,7 +328,7 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#discussion_r99"}}
         ArtifactId::new("artifact-1"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/lib.rs".into(),
             line: 12,
             body: "Prefer this.".into(),
@@ -391,7 +392,7 @@ printf '{{"html_url":"https://github.com/acme/platform/pull/42#discussion_r99"}}
         ArtifactId::new("artifact-1"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/lib.rs".into(),
             line: 12,
             body: "🤖 Prefer this.".into(),
@@ -448,7 +449,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         ArtifactId::new("artifact-2"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/lib.rs".into(),
             line: 12,
             body: "Prefer this.".into(),
@@ -458,7 +459,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         ArtifactId::new("artifact-3"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/main.rs".into(),
             line: 8,
             body: "Also this.".into(),
@@ -600,7 +601,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         ArtifactId::new("artifact-1"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/lib.rs".into(),
             line: 12,
             body: "Prefer this.".into(),
@@ -610,7 +611,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         ArtifactId::new("artifact-2"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/main.rs".into(),
             line: 8,
             body: "🤖 Already prefixed.".into(),
@@ -848,7 +849,7 @@ exit 1
         ArtifactId::new("artifact-1"),
         ActivityId::new("activity-1"),
         ArtifactKind::ReviewComment,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/lib.rs".into(),
             line: 12,
             body: "Already staged.".into(),

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 fs-err = "3.3.0"
 nitpick-agent-core.workspace = true
+nitpick-agent-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing = "0.1.44"

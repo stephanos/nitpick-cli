@@ -5,13 +5,13 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use nitpick_agent_core::{
-    Activity, ActivityId, ActivityKind, ActivityStatus, AgentError, AgentResult, Artifact,
-    ArtifactId, ArtifactSyncState, ChatInput, CleanupCheckoutsResult, HostStatus,
-    LocalStateResetResult, ProviderDiagnosticInput, RetryFailedActivitiesInput,
-    RetryFailedActivitiesResult, ReviewInput, ReviewRequest,
-};
+use nitpick_agent_core::{AgentError, AgentResult};
 use nitpick_agent_github::DiscoveredPullRequest;
+use nitpick_agent_model::{
+    Activity, ActivityId, ActivityKind, ActivityStatus, Artifact, ArtifactId, ArtifactSyncState,
+    ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
+    RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewInput, ReviewRequest,
+};
 use serde::Deserialize;
 
 use crate::{HostDaemon, github_pull_request_from_review_request};

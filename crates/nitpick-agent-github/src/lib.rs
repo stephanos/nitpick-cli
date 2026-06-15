@@ -9,9 +9,12 @@ use std::{
 use command::{GitHubCommand, command_status_error};
 use fs_err as fs;
 use nitpick_agent_core::{
-    ActivityId, AgentError, AgentResult, Artifact, ArtifactContent, ArtifactId, ArtifactKind,
-    ArtifactSyncDestination, ArtifactSyncOutcome, ArtifactSyncState, ReviewComment, ReviewInput,
-    ReviewRequest, ReviewSource, checkout_root_from_env_values,
+    AgentError, AgentResult, ArtifactSyncDestination, ArtifactSyncOutcome, ReviewSource,
+    checkout_root_from_env_values,
+};
+use nitpick_agent_model::{
+    ActivityId, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState,
+    ReviewComment, ReviewInput, ReviewRequest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -22,8 +25,8 @@ mod review_payload;
 mod review_request_preparation;
 mod review_sync;
 
-pub use nitpick_agent_core::{
-    FsProcessedReviewStore, MemoryProcessedReviewStore,
+pub use nitpick_agent_core::{FsProcessedReviewStore, MemoryProcessedReviewStore};
+pub use nitpick_agent_model::{
     ParseRemotePullRequestRefError as ParsePullRequestRefError,
     RemotePullRequestRef as PullRequestRef, RemotePullRequestState as PullRequestState,
 };

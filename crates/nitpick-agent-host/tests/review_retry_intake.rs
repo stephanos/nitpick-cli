@@ -1,5 +1,5 @@
-use nitpick_agent_core::{Activity, ActivityId, ActivityKind, ReviewRetryMetadata};
 use nitpick_agent_host::ReviewRetryIntake;
+use nitpick_agent_model::{Activity, ActivityId, ActivityKind, ReviewMode, ReviewRetryMetadata};
 
 #[test]
 fn review_retry_intake_accepts_github_pr_retry_metadata() {
@@ -8,7 +8,7 @@ fn review_retry_intake_accepts_github_pr_retry_metadata() {
         repository: "acme/platform".into(),
         number: Some(42),
         head_sha: "abc123".into(),
-        review_mode: nitpick_agent_core::ReviewMode::Requested,
+        review_mode: ReviewMode::Requested,
         force: false,
     };
 

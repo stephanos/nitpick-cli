@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 
-use nitpick_agent_core::{
-    AgentError, AgentResult, Artifact, ArtifactId, ArtifactSyncState, ReviewComment,
-    first_changed_file_for_diff,
-};
+use nitpick_agent_core::{AgentError, AgentResult, first_changed_file_for_diff};
+use nitpick_agent_model::{Artifact, ArtifactId, ArtifactSyncState, ReviewComment};
 
 use crate::{
     GitHubCliReviewSyncDestination, PullRequestRef,

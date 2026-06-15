@@ -1,9 +1,10 @@
 use std::time::Duration;
 
-use nitpick_agent_core::{
+use nitpick_agent_core::parse_json_str;
+use nitpick_agent_model::{
     Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult,
     ProviderDiagnosticInput, RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewInput,
-    ReviewRequest, parse_json_str,
+    ReviewRequest,
 };
 
 use crate::{
@@ -192,7 +193,7 @@ fn decode_response_json<T: serde::de::DeserializeOwned>(body: &str) -> HostClien
 
 #[cfg(test)]
 mod tests {
-    use nitpick_agent_core::HostStatus;
+    use nitpick_agent_model::HostStatus;
 
     use crate::HostClientError;
 

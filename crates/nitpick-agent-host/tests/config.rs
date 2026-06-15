@@ -1,13 +1,16 @@
 use std::sync::{Arc, Mutex};
 
 use nitpick_agent_core::{
-    ActivityKind, ActivityStore, AgentProvider, AgentProviderKind, AgentResult, AgentSession,
-    ChatInput, HostStatus, MemoryActivityStore, ProviderReviewContext, ProviderRunContext,
-    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource,
+    ActivityStore, AgentProvider, AgentResult, MemoryActivityStore, ProviderReviewContext,
+    ProviderRunContext, ReviewSource,
 };
 use nitpick_agent_host::{
     AgentConfig, AgentSandboxConfig, CONFIG_TEMPLATE, GitHubDiscoveryConfig, HostDaemon,
     REVIEW_PROMPT_TEMPLATE,
+};
+use nitpick_agent_model::{
+    ActivityKind, AgentProviderKind, AgentSession, ChatInput, HostStatus, ReviewInput, ReviewMode,
+    ReviewOutput, ReviewRequest,
 };
 
 #[test]

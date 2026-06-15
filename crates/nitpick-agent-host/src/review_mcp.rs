@@ -10,9 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nitpick_agent_core::{
-    AgentError, AgentResult, ReviewComment, ReviewCommentValidator, ReviewInput, ReviewToolConfig,
-};
+use nitpick_agent_core::{AgentError, AgentResult, ReviewCommentValidator, ReviewToolConfig};
+use nitpick_agent_model::{ReviewComment, ReviewInput};
 use rmcp::{
     Json, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},

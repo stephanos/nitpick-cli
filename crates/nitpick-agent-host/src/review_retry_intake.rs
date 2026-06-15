@@ -1,4 +1,4 @@
-use nitpick_agent_core::{Activity, ActivityId, ReviewRetryMetadata};
+use nitpick_agent_model::{Activity, ActivityId, ReviewRetryMetadata};
 
 pub struct ReviewRetryIntake;
 

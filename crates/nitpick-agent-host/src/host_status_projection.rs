@@ -1,6 +1,7 @@
-use nitpick_agent_core::{
+use nitpick_agent_core::ProviderFailureClassification;
+use nitpick_agent_model::{
     Activity, ActivityKind, ActivityStatus, AgentProviderKind, Artifact, ArtifactSyncState,
-    HostAttention, HostStatus, ProviderFailureClassification, ProviderFailureKind,
+    HostAttention, HostStatus, ProviderFailureKind,
 };
 
 use crate::ReviewRetryIntake;

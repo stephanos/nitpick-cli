@@ -1,4 +1,5 @@
-use nitpick_agent_core::{AgentError, AgentResult, Artifact, ArtifactContent, ReviewComment};
+use nitpick_agent_core::{AgentError, AgentResult};
+use nitpick_agent_model::{Artifact, ArtifactContent, ReviewComment};
 
 pub struct GitHubReviewPayload;
 

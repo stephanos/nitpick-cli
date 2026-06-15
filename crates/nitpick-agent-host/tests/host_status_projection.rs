@@ -1,8 +1,8 @@
-use nitpick_agent_core::{
+use nitpick_agent_host::HostStatusProjection;
+use nitpick_agent_model::{
     Activity, ActivityId, ActivityKind, ActivityStatus, AgentProviderKind, Artifact,
     ArtifactContent, ArtifactId, ArtifactKind,
 };
-use nitpick_agent_host::HostStatusProjection;
 
 #[test]
 fn host_status_projection_counts_activity_and_artifact_states() {

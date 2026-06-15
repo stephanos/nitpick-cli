@@ -18,20 +18,22 @@ use std::{
 
 use fs_err as fs;
 use nitpick_agent_core::{
-    Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentError,
-    AgentProvider, AgentProviderKind, AgentResult, AgentRuntime, Artifact, ArtifactContent,
-    ArtifactId, ArtifactKind, ArtifactSyncDestination, ArtifactSyncState, ChatInput,
-    CleanupCheckoutsResult, Clock, CommandAgentProvider, CommandSandboxConfig, HostStatus,
-    LocalStateResetResult, MemoryProcessedReviewStore, ProcessedReviewStore,
-    ProviderDiagnosticInput, ProviderReviewContext, ProviderRunContext, ReviewActivityIdentity,
-    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, ReviewSource, SessionStatus, SystemClock,
-    default_data_dir,
+    ActivityStore, AgentError, AgentProvider, AgentResult, AgentRuntime, ArtifactSyncDestination,
+    Clock, CommandAgentProvider, CommandSandboxConfig, MemoryProcessedReviewStore,
+    ProcessedReviewStore, ProviderReviewContext, ProviderRunContext, ReviewActivityIdentity,
+    ReviewSource, SystemClock, default_data_dir,
 };
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
     GitHubCliSyncDestination, GitHubDryRunSyncDestination, GitHubPullRequestContext,
     GitHubPullRequestConversationComment, GitHubReviewComment, GitHubReviewWorkflowSync,
     PullRequestRef,
+};
+use nitpick_agent_model::{
+    Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, AgentProviderKind,
+    AgentSession, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState,
+    ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
+    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, SessionStatus,
 };
 use polling_state::PollingState;
 use review_intake::ReviewRequestIntake;
@@ -64,7 +66,7 @@ impl HostReviewProvider {
 impl AgentProvider for HostReviewProvider {
     fn review(
         &self,
-        session: &mut nitpick_agent_core::AgentSession,
+        session: &mut AgentSession,
         input: &ReviewInput,
         context: ProviderReviewContext<'_>,
     ) -> AgentResult<ReviewOutput> {
@@ -102,14 +104,14 @@ impl AgentProvider for HostReviewProvider {
 
     fn chat(
         &self,
-        session: &mut nitpick_agent_core::AgentSession,
+        session: &mut AgentSession,
         input: &ChatInput,
         context: ProviderRunContext<'_>,
     ) -> AgentResult<String> {
         self.inner.chat(session, input, context)
     }
 
-    fn attach_session(&self, session: &nitpick_agent_core::AgentSession) -> AgentResult<()> {
+    fn attach_session(&self, session: &AgentSession) -> AgentResult<()> {
         self.inner.attach_session(session)
     }
 }
@@ -1109,7 +1111,11 @@ impl AgentConfig {
         let reviews = raw.reviews.unwrap_or_default();
         let github = raw.github.unwrap_or_default();
         let provider = match agent.provider {
-            Some(provider) => provider.parse()?,
+            Some(provider) => provider.parse().map_err(
+                |error: nitpick_agent_model::ParseAgentProviderKindError| {
+                    nitpick_agent_core::AgentError::invalid_input(error.to_string())
+                },
+            )?,
             None => AgentProviderKind::default(),
         };
         let model = agent

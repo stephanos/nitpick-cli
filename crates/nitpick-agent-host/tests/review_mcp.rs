@@ -1,9 +1,8 @@
 use std::{fs, sync::Arc};
 
 use nitpick_agent_core::{
-    ActivityStatus, AgentProvider, AgentResult, AgentRuntime, AgentSession, ChatInput,
-    MemoryActivityStore, ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewOutput,
-    ReviewSubject,
+    AgentProvider, AgentResult, AgentRuntime, MemoryActivityStore, ProviderReviewContext,
+    ProviderRunContext,
 };
 use nitpick_agent_host::{
     HostDaemon, HostReviewProvider,
@@ -12,6 +11,9 @@ use nitpick_agent_host::{
         PullRequestContext, PullRequestConversationComment, ReviewMcpSessionState, ReviewMcpTools,
         load_review_mcp_session_state, write_review_mcp_session_state_for_test,
     },
+};
+use nitpick_agent_model::{
+    ActivityStatus, AgentSession, ChatInput, ReviewInput, ReviewOutput, ReviewSubject,
 };
 
 #[test]

@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use nitpick_agent_core::{ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentResult};
+use nitpick_agent_core::{ActivityStore, AgentError, AgentResult};
+use nitpick_agent_model::{ActivityKind, ActivityStatus};
 
 use crate::ReviewSourcePollResult;
 

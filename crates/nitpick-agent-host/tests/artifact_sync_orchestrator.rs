@@ -1,8 +1,8 @@
-use nitpick_agent_core::{
-    ActivityId, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncOutcome,
-    ArtifactSyncState, MemoryActivityStore,
-};
+use nitpick_agent_core::{ArtifactSyncOutcome, MemoryActivityStore};
 use nitpick_agent_host::ArtifactSyncOrchestrator;
+use nitpick_agent_model::{
+    ActivityId, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState,
+};
 use std::sync::Arc;
 
 #[test]

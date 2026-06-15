@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 nitpick-agent-core.workspace = true
+nitpick-agent-model.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror = "2.0.18"

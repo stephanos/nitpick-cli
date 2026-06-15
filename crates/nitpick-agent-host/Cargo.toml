@@ -7,6 +7,7 @@ edition.workspace = true
 axum.workspace = true
 fs-err = "3.3.0"
 nitpick-agent-core.workspace = true
+nitpick-agent-model.workspace = true
 nitpick-agent-github = { path = "../nitpick-agent-github" }
 rmcp.workspace = true
 schemars.workspace = true

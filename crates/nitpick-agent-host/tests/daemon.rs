@@ -4,14 +4,17 @@ use std::sync::{
 };
 
 use nitpick_agent_core::{
-    ActivityKind, ActivityStatus, ActivityStore, AgentError, AgentProvider, AgentProviderKind,
-    AgentResult, AgentSession, ArtifactContent, ArtifactKind, ArtifactSyncState, ChatInput,
-    FixedClock, FsActivityStore, HostStatus, MemoryActivityStore, MemoryProcessedReviewStore,
-    ProviderReviewContext, ProviderRunContext, ReviewInput, ReviewMode, ReviewOutput,
-    ReviewRequest, ReviewSource, SessionStatus,
+    ActivityStore, AgentError, AgentProvider, AgentResult, FixedClock, FsActivityStore,
+    MemoryActivityStore, MemoryProcessedReviewStore, ProviderReviewContext, ProviderRunContext,
+    ReviewSource,
 };
 use nitpick_agent_github::PullRequestRef;
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon};
+use nitpick_agent_model::{
+    ActivityKind, ActivityStatus, AgentProviderKind, AgentSession, ArtifactContent, ArtifactKind,
+    ArtifactSyncState, ChatInput, HostStatus, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
+    ReviewRequest, ReviewSubject, SessionStatus,
+};
 
 #[test]
 fn host_status_reports_current_activity_count() {
@@ -626,10 +629,10 @@ fn enqueue_review_limits_running_reviews_to_configured_default() {
     for number in 1..=4 {
         daemon
             .enqueue_review(ReviewInput {
-                subject: nitpick_agent_core::ReviewSubject {
+                subject: ReviewSubject {
                     repository: "acme/platform".into(),
                     number: Some(number),
-                    ..nitpick_agent_core::ReviewSubject::default()
+                    ..ReviewSubject::default()
                 },
                 ..ReviewInput::default()
             })
@@ -1006,7 +1009,7 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     assert_eq!(artifacts[0].kind, ArtifactKind::ReviewComment);
     assert_eq!(
         artifacts[0].content,
-        ArtifactContent::ReviewComment(nitpick_agent_core::ReviewComment {
+        ArtifactContent::ReviewComment(ReviewComment {
             path: "src/lib.rs".into(),
             line: 0,
             body: "🤖 Review completed: no findings.".into(),
@@ -1030,10 +1033,10 @@ fn review_input_for_head(head_sha: &str) -> ReviewInput {
 
 fn review_input_for_pr(number: u64, head_sha: &str) -> ReviewInput {
     ReviewInput {
-        subject: nitpick_agent_core::ReviewSubject {
+        subject: ReviewSubject {
             repository: "acme/platform".into(),
             number: Some(number),
-            ..nitpick_agent_core::ReviewSubject::default()
+            ..ReviewSubject::default()
         },
         head_sha: head_sha.into(),
         diff: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -0,0 +1 @@\n+pub fn example() {}\n".into(),

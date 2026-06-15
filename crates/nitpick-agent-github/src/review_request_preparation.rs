@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use nitpick_agent_core::{ReviewInput, ReviewMode, ReviewSubject};
+use nitpick_agent_model::{ReviewInput, ReviewMode, ReviewSubject};
 
 use crate::{DiscoveredPullRequest, PullRequestDetails};
 

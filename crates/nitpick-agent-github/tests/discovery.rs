@@ -1,9 +1,10 @@
 use std::{fs, os::unix::fs::PermissionsExt};
 
-use nitpick_agent_core::{ProcessedReviewStore, ReviewMode, ReviewRequest, ReviewSource};
+use nitpick_agent_core::{ProcessedReviewStore, ReviewSource};
 use nitpick_agent_github::{
     DiscoveredPullRequest, FsProcessedReviewStore, GitHubCliDiscovery, PullRequestState,
 };
+use nitpick_agent_model::{ReviewMode, ReviewRequest};
 
 #[test]
 fn github_cli_discovery_lists_requested_reviews() {

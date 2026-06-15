@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use nitpick_agent_core::{AgentResult, CleanupCheckoutsResult, Clock, ReviewInput, ReviewRequest};
+use nitpick_agent_core::{AgentResult, Clock};
+use nitpick_agent_model::{CleanupCheckoutsResult, ReviewInput, ReviewRequest};
 
 use crate::{
     ReviewSourcePollResult, polling_state::PollingState, review_intake::ReviewRequestIntake,
