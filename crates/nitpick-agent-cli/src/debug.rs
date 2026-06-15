@@ -96,11 +96,11 @@ pub fn run(
             &client.artifact(&artifact_id)?,
         )),
         DebugCommand::Provider { provider, model } => {
-            let provider = provider
-                .as_deref()
-                .map(str::parse)
-                .transpose()
-                .map_err(CliError::from)?;
+            let provider = provider.as_deref().map(str::parse).transpose().map_err(
+                |error: nitpick_agent_core::ParseAgentProviderKindError| {
+                    CliError::from(error.to_string())
+                },
+            )?;
             let config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
                 .map_err(CliError::from)?;
             let display = ProviderDiagnosticDisplay::new(
