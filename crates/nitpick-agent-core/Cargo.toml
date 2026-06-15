@@ -8,6 +8,7 @@ atomic-write-file = "0.3.0"
 camino = "1.2.2"
 directories = "6.0.0"
 fs-err = "3.3.0"
+nitpick-agent-model.workspace = true
 nono = { version = "0.59.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

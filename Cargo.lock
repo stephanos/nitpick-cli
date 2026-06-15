@@ -1487,6 +1487,7 @@ dependencies = [
  "camino",
  "directories",
  "fs-err",
+ "nitpick-agent-model",
  "nono",
  "serde",
  "serde_json",
@@ -1511,7 +1512,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -1547,6 +1547,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "nitpick-agent-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]

@@ -1,8 +1,12 @@
 use crate::{
     activity::{Activity, ActivityKind, ActivityStatus},
-    model::{ReviewInput, ReviewRequest},
+    model::ReviewInput,
 };
 
+#[cfg(test)]
+use crate::model::ReviewRequest;
+
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReviewIdentity {
     source: String,
@@ -12,6 +16,7 @@ pub(crate) struct ReviewIdentity {
     head_sha: String,
 }
 
+#[cfg(test)]
 impl ReviewIdentity {
     pub(crate) fn from_request(request: &ReviewRequest) -> Self {
         Self {
@@ -23,19 +28,6 @@ impl ReviewIdentity {
         }
     }
 
-    pub(crate) fn from_input(input: &ReviewInput) -> Self {
-        Self {
-            source: match input.subject.number {
-                Some(_) => "github".into(),
-                None => "review".into(),
-            },
-            repository: input.subject.repository.clone(),
-            number: input.subject.number,
-            id: String::new(),
-            head_sha: input.head_sha.clone(),
-        }
-    }
-
     pub(crate) fn display_reference(&self) -> String {
         match self.number {
             Some(number) => format!("{}#{}", self.repository, number),
@@ -44,11 +36,6 @@ impl ReviewIdentity {
         }
     }
 
-    pub(crate) fn activity_label(&self) -> String {
-        format!("review on {}", self.display_reference())
-    }
-
-    #[cfg(test)]
     pub(crate) fn version_key(&self) -> String {
         let mut key = format!("{}:{}", self.source, self.display_reference());
         if !self.head_sha.is_empty() {

@@ -15,6 +15,7 @@ mod provider_failure;
 mod provider_log;
 mod provider_run_transcript;
 mod provider_sandbox;
+mod pull_request;
 mod repo_path;
 mod review_identity;
 mod review_output;
@@ -47,16 +48,20 @@ pub use model::{
     ChatInput, ProviderDiagnosticInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
     ReviewRequest, ReviewSubject,
 };
+pub use nitpick_agent_model::ProviderFailureKind;
 pub use nono_sandbox::{NONO_SANDBOX_HELPER_ARG, run_nono_sandbox_helper};
 pub use provider::{
     AgentProvider, NoopProviderRunSink, ProviderReviewContext, ProviderRunContext, ProviderRunSink,
     ReviewToolConfig,
 };
-pub use provider_failure::{
-    ProviderFailureClassification, ProviderFailureKind, classify_provider_failure,
-};
+pub use provider_failure::{ProviderFailureClassification, classify_provider_failure};
 pub use provider_run_transcript::ProviderRunTranscriptContext;
 pub use provider_sandbox::CommandSandboxConfig;
+pub use pull_request::{
+    LocalPullRequestState, ParseRemotePullRequestRefError, RemotePullRequest,
+    RemotePullRequestChecks, RemotePullRequestChecksState, RemotePullRequestRef,
+    RemotePullRequestReviewer, RemotePullRequestReviewerState, RemotePullRequestState,
+};
 pub use repo_path::RepoPath;
 pub use review_identity::ReviewActivityIdentity;
 pub use review_output::{
@@ -69,6 +74,8 @@ pub use review_source::{
     ReviewSource,
 };
 pub use runtime::{AgentRuntime, new_provider_session_id};
-pub use session::{AgentMessage, AgentProviderKind, AgentSession, SessionStatus};
+pub use session::{
+    AgentMessage, AgentProviderKind, AgentSession, ParseAgentProviderKindError, SessionStatus,
+};
 pub use store::{ActivityStore, ArtifactStore, FsActivityStore, MemoryActivityStore};
 pub use sync::{ArtifactSyncDestination, ArtifactSyncOutcome};

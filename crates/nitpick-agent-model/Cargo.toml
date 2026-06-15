@@ -1,0 +1,11 @@
+[package]
+name = "nitpick-agent-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+url = "2.5.8"
+
+[dev-dependencies]
+serde_json.workspace = true

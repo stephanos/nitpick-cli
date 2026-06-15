@@ -1,4 +1,4 @@
-use crate::{Activity, ActivityStatus, AgentProviderKind};
+use crate::{Activity, ActivityStatus, AgentProviderKind, ProviderFailureKind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -7,15 +7,6 @@ pub struct ProviderFailureClassification {
     pub title: String,
     pub detail: String,
     pub suggested_action: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderFailureKind {
-    AuthInvalidCredentials,
-    SandboxPermissionDenied,
-    ProviderUnavailable,
-    UnknownProviderFailure,
 }
 
 pub fn classify_provider_failure(activity: &Activity) -> Option<ProviderFailureClassification> {

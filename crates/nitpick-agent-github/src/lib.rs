@@ -3,7 +3,6 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Command,
-    str::FromStr,
     time::Instant,
 };
 
@@ -23,7 +22,11 @@ mod review_payload;
 mod review_request_preparation;
 mod review_sync;
 
-pub use nitpick_agent_core::{FsProcessedReviewStore, MemoryProcessedReviewStore};
+pub use nitpick_agent_core::{
+    FsProcessedReviewStore, MemoryProcessedReviewStore,
+    ParseRemotePullRequestRefError as ParsePullRequestRefError,
+    RemotePullRequestRef as PullRequestRef, RemotePullRequestState as PullRequestState,
+};
 pub use pull_request_client::GitHubPullRequestClient;
 pub use review_payload::GitHubReviewPayload;
 pub use review_request_preparation::prepare_github_review_input;
@@ -198,23 +201,6 @@ pub struct PullRequestDetails {
     pub head_sha: String,
     pub head_ref_name: String,
     pub state: PullRequestState,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PullRequestState {
-    Open,
-    Closed,
-    Merged,
-}
-
-impl PullRequestState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Closed => "closed",
-            Self::Merged => "merged",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1193,104 +1179,6 @@ fn github_remote_id_from_stdout(stdout: &[u8]) -> String {
         return html_url.to_owned();
     }
     output
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PullRequestRef {
-    pub owner: String,
-    pub repo: String,
-    pub number: u64,
-}
-
-impl FromStr for PullRequestRef {
-    type Err = ParsePullRequestRefError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let trimmed = value.trim();
-        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-            return parse_github_pull_url(trimmed);
-        }
-
-        let (repo, number) = trimmed
-            .rsplit_once('#')
-            .ok_or_else(|| ParsePullRequestRefError::new(trimmed))?;
-        let (owner, repo) = repo
-            .split_once('/')
-            .ok_or_else(|| ParsePullRequestRefError::new(trimmed))?;
-        let number = number
-            .parse::<u64>()
-            .map_err(|_| ParsePullRequestRefError::new(trimmed))?;
-
-        Ok(PullRequestRef {
-            owner: owner.to_owned(),
-            repo: repo.to_owned(),
-            number,
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParsePullRequestRefError {
-    value: String,
-}
-
-impl ParsePullRequestRefError {
-    fn new(value: &str) -> Self {
-        Self {
-            value: value.to_owned(),
-        }
-    }
-}
-
-impl std::fmt::Display for ParsePullRequestRefError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "invalid GitHub pull request reference `{}`",
-            self.value
-        )
-    }
-}
-
-impl std::error::Error for ParsePullRequestRefError {}
-
-fn parse_github_pull_url(value: &str) -> Result<PullRequestRef, ParsePullRequestRefError> {
-    let url = url::Url::parse(value).map_err(|_| ParsePullRequestRefError::new(value))?;
-    if url.domain() != Some("github.com") {
-        return Err(ParsePullRequestRefError::new(value));
-    }
-
-    let mut segments = url
-        .path_segments()
-        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
-    let owner = segments
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
-    let repo = segments
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
-    let kind = segments
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
-    let number = segments
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ParsePullRequestRefError::new(value))?;
-
-    if kind != "pull" {
-        return Err(ParsePullRequestRefError::new(value));
-    }
-
-    Ok(PullRequestRef {
-        owner: owner.to_owned(),
-        repo: repo.to_owned(),
-        number: number
-            .parse::<u64>()
-            .map_err(|_| ParsePullRequestRefError::new(value))?,
-    })
 }
 
 fn github_comment_body(artifact: &Artifact) -> String {
