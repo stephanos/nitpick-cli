@@ -6,18 +6,16 @@ final class HostProcessTests: XCTestCase {
     func testCommandLookupPathKeepsConfiguredPathFirst() {
         let path = HostProcessEnvironment.commandLookupPath(
             environment: ["PATH": "/custom/bin:/usr/bin"],
-            homeDirectoryURL: URL(fileURLWithPath: "/Users/test"),
-            loginShellPath: "/shell/bin:/custom/bin"
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/test")
         )
 
-        XCTAssertTrue(path.hasPrefix("/custom/bin:/usr/bin:/shell/bin"))
+        XCTAssertTrue(path.hasPrefix("/custom/bin:/usr/bin:/Users/test/.local/bin"))
     }
 
     func testCommandLookupPathIncludesUserAndHomebrewBins() {
         let path = HostProcessEnvironment.commandLookupPath(
             environment: [:],
-            homeDirectoryURL: URL(fileURLWithPath: "/Users/test"),
-            loginShellPath: nil
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/test")
         )
         let paths = path.split(separator: ":").map(String.init)
 
@@ -30,8 +28,7 @@ final class HostProcessTests: XCTestCase {
     func testCommandLookupPathDeduplicatesEntries() {
         let path = HostProcessEnvironment.commandLookupPath(
             environment: ["PATH": "/usr/bin:/bin:/usr/bin"],
-            homeDirectoryURL: URL(fileURLWithPath: "/Users/test"),
-            loginShellPath: "/bin:/opt/homebrew/bin"
+            homeDirectoryURL: URL(fileURLWithPath: "/Users/test")
         )
         let paths = path.split(separator: ":").map(String.init)
 

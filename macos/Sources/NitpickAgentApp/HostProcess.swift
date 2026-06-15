@@ -21,6 +21,7 @@ final class HostProcess {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = ["daemon"]
+        process.environment = HostProcessEnvironment.values()
         let logURL = DaemonLogFile().url
         do {
             try FileManager.default.createDirectory(
@@ -79,5 +80,55 @@ final class HostProcess {
         while process.isRunning && Date() < deadline {
             Thread.sleep(forTimeInterval: 0.05)
         }
+    }
+}
+
+enum HostProcessEnvironment {
+    private static let fallbackPathEntries = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ]
+
+    static func values(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String: String] {
+        var values = environment
+        values["PATH"] = commandLookupPath(
+            environment: environment,
+            homeDirectoryURL: homeDirectoryURL
+        )
+        return values
+    }
+
+    static func commandLookupPath(
+        environment: [String: String],
+        homeDirectoryURL: URL
+    ) -> String {
+        var paths: [String] = []
+        appendPathEntries(environment["PATH"], to: &paths)
+        paths.append(homeDirectoryURL.appendingPathComponent(".local/bin").path)
+        paths.append(homeDirectoryURL.appendingPathComponent("bin").path)
+        paths.append(contentsOf: fallbackPathEntries)
+
+        var seen = Set<String>()
+        return paths.filter { path in
+            guard !path.isEmpty, !seen.contains(path) else {
+                return false
+            }
+            seen.insert(path)
+            return true
+        }.joined(separator: ":")
+    }
+
+    private static func appendPathEntries(_ path: String?, to paths: inout [String]) {
+        guard let path else {
+            return
+        }
+        paths.append(contentsOf: path.split(separator: ":").map(String.init))
     }
 }
