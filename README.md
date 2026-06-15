@@ -96,11 +96,11 @@ For fine-grained PATs and GitHub App tokens, those repository permissions are th
 
 Agent execution is handled by external commands. By default `provider = "claude"` runs `claude` and `provider = "codex"` runs `codex`; override the executable path with `command` in the config file. Review commands run from the checked-out PR repository with Nitpick MCP tools available. Agents read the PR description and conversation with `pull_request_context`, `pull_request_conversation_comments`, and `existing_review_comments`, record inline findings with `add_review_comment`, and call `finish_review` when done. Nitpick validates comments before creating local review comment artifacts, including rejecting absolute paths, `..` path escapes, missing files, empty comments, and invalid line numbers.
 
-Review command execution is sandboxed by default on macOS with a Seatbelt profile that gives the provider read/write access to the checked-out repository and denies writes elsewhere. Disable this only for debugging:
+Review command execution is sandboxed by default with `sandbox = "nono"`, which gives the provider read/write access to the checked-out repository and denies writes elsewhere. Disable this only for debugging:
 
 ```toml
-[agent.sandbox]
-mode = "none"
+[agent]
+sandbox = "none"
 ```
 
 For one-off CLI runs, pass `--no-sandbox` before the command:
