@@ -162,11 +162,13 @@ fn nono_sandbox_spec(
     read_write_paths.extend(nono_system_read_write_paths());
     read_write_paths.extend(provider_config_read_write_paths());
     let provider_config_literal_read_write_paths = provider_config_literal_read_write_paths();
+    let provider_config_pattern_read_write_rules = provider_config_pattern_read_write_rules();
     read_write_paths.extend(provider_config_literal_read_write_paths.iter().cloned());
     read_write_paths.extend(sandbox.extra_read_write_paths.iter().cloned());
 
     let mut platform_rules =
         nono_literal_read_write_rules(&provider_config_literal_read_write_paths);
+    platform_rules.extend(provider_config_pattern_read_write_rules);
     if sandbox.nono_profile_updates_enabled {
         let profile_spec = NonoProfileManager::new(nono_profile_cache_dir(sandbox))
             .resolve_for_provider(provider, repo_dir, SystemTime::now())?;
@@ -180,6 +182,10 @@ fn nono_sandbox_spec(
     {
         platform_rules.extend(nono_unlink_override_rules(&read_write_paths));
     }
+    platform_rules.extend(nono_unlink_override_rules(
+        &provider_config_literal_read_write_paths,
+    ));
+    platform_rules.extend(provider_config_pattern_unlink_rules());
 
     Ok(NonoSandboxSpec::new(
         read_paths,
@@ -299,6 +305,20 @@ fn escape_nono_platform_rule_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn escape_nono_platform_rule_regex(value: &str) -> String {
+    let mut escaped = String::new();
+    for character in value.chars() {
+        match character {
+            '.' | '+' | '*' | '?' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
 struct ReviewToolSandboxPaths {
     read_paths: Vec<PathBuf>,
     read_write_paths: Vec<PathBuf>,
@@ -378,9 +398,46 @@ fn provider_config_literal_read_write_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         paths.push(home.join(".claude.json"));
+        paths.push(home.join(".claude.json.lock"));
         paths.push(home.join(".claude.lock"));
     }
     paths
+}
+
+fn provider_config_pattern_read_write_rules() -> Vec<String> {
+    provider_config_pattern_read_write_patterns()
+        .into_iter()
+        .map(|pattern| {
+            format!(
+                r#"(allow file-read* file-write* (regex "{}"))"#,
+                escape_nono_platform_rule_string(&pattern)
+            )
+        })
+        .collect()
+}
+
+fn provider_config_pattern_unlink_rules() -> Vec<String> {
+    provider_config_pattern_read_write_patterns()
+        .into_iter()
+        .map(|pattern| {
+            format!(
+                r#"(allow file-write-unlink (regex "{}"))"#,
+                escape_nono_platform_rule_string(&pattern)
+            )
+        })
+        .collect()
+}
+
+fn provider_config_pattern_read_write_patterns() -> Vec<String> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| {
+            vec![format!(
+                r#"^{}/\.claude\.json\.tmp\..*$"#,
+                escape_nono_platform_rule_regex(&home.to_string_lossy())
+            )]
+        })
+        .unwrap_or_default()
 }
 
 fn provider_runtime_root_dir() -> PathBuf {
@@ -446,5 +503,45 @@ mod tests {
         if Path::new("/dev/null").exists() {
             assert!(spec.read_write_paths.contains(&PathBuf::from("/dev/null")));
         }
+    }
+
+    #[test]
+    fn nono_sandbox_spec_allows_claude_atomic_config_writes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_dir = dir.path().join("repo");
+        fs_err::create_dir(&repo_dir).expect("repo dir");
+        let provider_command = dir.path().join("provider");
+        fs_err::write(&provider_command, "#!/bin/sh\n").expect("provider command");
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("HOME should be set for provider config paths");
+
+        let spec = nono_sandbox_spec(
+            &AgentProviderKind::Claude,
+            &repo_dir,
+            &provider_command,
+            &CommandSandboxConfig::nono().without_nono_profile_updates(),
+        )
+        .expect("spec");
+
+        assert!(spec.read_write_paths.contains(&home.join(".claude.json")));
+        assert!(
+            spec.read_write_paths
+                .contains(&home.join(".claude.json.lock"))
+        );
+        let expected_pattern = format!(
+            r#"^{}/\.claude\.json\.tmp\..*$"#,
+            escape_nono_platform_rule_regex(&home.to_string_lossy())
+        );
+        let expected_rule = format!(
+            r#"(allow file-read* file-write* (regex "{}"))"#,
+            escape_nono_platform_rule_string(&expected_pattern)
+        );
+        assert!(spec.platform_rules.contains(&expected_rule));
+        let expected_unlink_rule = format!(
+            r#"(allow file-write-unlink (regex "{}"))"#,
+            escape_nono_platform_rule_string(&expected_pattern)
+        );
+        assert!(spec.platform_rules.contains(&expected_unlink_rule));
     }
 }
