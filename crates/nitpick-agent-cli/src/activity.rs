@@ -136,17 +136,17 @@ fn format_activity_logs_with_options(
     }
     rows.push(vec![
         crate::style::label("created"),
-        format_unix_iso_utc(activity.created_at_unix),
+        format_unix_local(activity.created_at_unix),
     ]);
     if let Some(started_at_unix) = activity.started_at_unix {
         rows.push(vec![
             crate::style::label("started"),
-            format_unix_iso_utc(started_at_unix),
+            format_unix_local(started_at_unix),
         ]);
     }
     rows.push(vec![
         crate::style::label("updated"),
-        format_unix_iso_utc(activity.updated_at_unix),
+        format_unix_local(activity.updated_at_unix),
     ]);
     if let Some(error) = &activity.error {
         rows.push(vec![
@@ -510,10 +510,23 @@ pub(crate) fn format_section(title: &str, body: impl Into<String>) -> String {
     format!("{title}\n{}", indent_block(&body))
 }
 
-fn format_unix_iso_utc(timestamp: u64) -> String {
-    chrono::DateTime::from_timestamp(timestamp as i64, 0)
-        .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-        .unwrap_or_else(|| timestamp.to_string())
+fn format_unix_local(timestamp: u64) -> String {
+    let Some(time) = chrono::DateTime::from_timestamp(timestamp as i64, 0) else {
+        return timestamp.to_string();
+    };
+    if let Some(timezone) = local_timezone() {
+        return time
+            .with_timezone(&timezone)
+            .format("%Y-%m-%d %H:%M:%S %Z")
+            .to_string();
+    }
+    time.with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S %:z")
+        .to_string()
+}
+
+fn local_timezone() -> Option<chrono_tz::Tz> {
+    iana_time_zone::get_timezone().ok()?.parse().ok()
 }
 
 fn indent_block_by(value: &str, prefix: &str) -> String {
@@ -709,10 +722,15 @@ mod tests {
             nitpick_agent_core::ArtifactKind::ReviewSummary,
             nitpick_agent_core::ArtifactContent::ReviewSummary("artifact summary".into()),
         );
+        let created = super::format_unix_local(activity.created_at_unix);
+        let started = super::format_unix_local(activity.started_at_unix.expect("started"));
+        let updated = super::format_unix_local(activity.updated_at_unix);
 
         assert_eq!(
             super::format_activity_logs(&activity, &[artifact]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/acme/platform/pull/42\u{1b}\\https://github.com/acme/platform/pull/42\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nComments\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body"
+            format!(
+                "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    acme/platform#42\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/acme/platform/pull/42\u{1b}\\https://github.com/acme/platform/pull/42\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[31mError\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on acme/platform#42\n  \u{1b}[2mcreated\u{1b}[0m   {created}\n  \u{1b}[2mstarted\u{1b}[0m   {started}\n  \u{1b}[2mupdated\u{1b}[0m   {updated}\n  \u{1b}[2merror\u{1b}[0m     \u{1b}[31mprovider failed\u{1b}[0m\n\nComments\n  \u{1b}[2mpath\u{1b}[0m        \u{1b}[2mline\u{1b}[0m  \u{1b}[2mcomment\u{1b}[0m\n  src/lib.rs  12    comment body"
+            )
         );
     }
 
@@ -727,10 +745,15 @@ mod tests {
         activity.created_at_unix = 1_000;
         activity.started_at_unix = Some(1_100);
         activity.updated_at_unix = 1_200;
+        let created = super::format_unix_local(activity.created_at_unix);
+        let started = super::format_unix_local(activity.started_at_unix.expect("started"));
+        let updated = super::format_unix_local(activity.updated_at_unix);
 
         assert_eq!(
             super::format_activity_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/stephanos/subvoc/pull/1\u{1b}\\https://github.com/stephanos/subvoc/pull/1\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mstarted\u{1b}[0m   1970-01-01T00:18:20Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z"
+            format!(
+                "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mreview\u{1b}[0m    stephanos/subvoc#1\n  \u{1b}[2murl\u{1b}[0m       \u{1b}]8;;https://github.com/stephanos/subvoc/pull/1\u{1b}\\https://github.com/stephanos/subvoc/pull/1\u{1b}]8;;\u{1b}\\\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mlabel\u{1b}[0m     review on stephanos/subvoc#1\n  \u{1b}[2mcreated\u{1b}[0m   {created}\n  \u{1b}[2mstarted\u{1b}[0m   {started}\n  \u{1b}[2mupdated\u{1b}[0m   {updated}"
+            )
         );
     }
 
@@ -743,6 +766,8 @@ mod tests {
         activity.status = nitpick_agent_core::ActivityStatus::Completed;
         activity.created_at_unix = 1_000;
         activity.updated_at_unix = 1_200;
+        let created = super::format_unix_local(activity.created_at_unix);
+        let updated = super::format_unix_local(activity.updated_at_unix);
         activity.session.messages = vec![
             nitpick_agent_core::AgentMessage {
                 role: "provider.stdout".into(),
@@ -764,7 +789,9 @@ mod tests {
 
         assert_eq!(
             super::format_activity_debug_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n  \u{1b}[2mrun\u{1b}[0m\n    provider claude command completed\n\nSync artifacts\n  none"
+            format!(
+                "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   {created}\n  \u{1b}[2mupdated\u{1b}[0m   {updated}\n\nProvider logs\n  \u{1b}[2mstdout\u{1b}[0m\n    review progress\n    completed\n  \u{1b}[2mstderr\u{1b}[0m\n    warning\n  \u{1b}[2msandbox\u{1b}[0m\n    retry with --no-sandbox\n  \u{1b}[2mrun\u{1b}[0m\n    provider claude command completed\n\nSync artifacts\n  none"
+            )
         );
     }
 
@@ -816,10 +843,14 @@ mod tests {
         activity.status = nitpick_agent_core::ActivityStatus::Completed;
         activity.created_at_unix = 1_000;
         activity.updated_at_unix = 1_200;
+        let created = super::format_unix_local(activity.created_at_unix);
+        let updated = super::format_unix_local(activity.updated_at_unix);
 
         assert_eq!(
             super::format_activity_debug_logs(&activity, &[]),
-            "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   1970-01-01T00:16:40Z\n  \u{1b}[2mupdated\u{1b}[0m   1970-01-01T00:20:00Z\n\nProvider logs\n  no provider logs captured\n\nSync artifacts\n  none"
+            format!(
+                "Review\n  \u{1b}[2mactivity\u{1b}[0m  activity-1\n  \u{1b}[2mkind\u{1b}[0m      Review\n  \u{1b}[2mstatus\u{1b}[0m    \u{1b}[32mCompleted\u{1b}[0m\n  \u{1b}[2mcreated\u{1b}[0m   {created}\n  \u{1b}[2mupdated\u{1b}[0m   {updated}\n\nProvider logs\n  no provider logs captured\n\nSync artifacts\n  none"
+            )
         );
     }
 

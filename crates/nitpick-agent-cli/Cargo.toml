@@ -10,7 +10,9 @@ path = "src/main.rs"
 [dependencies]
 anstyle = "1.0.14"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+chrono-tz = "0.10.4"
 clap = { version = "4", features = ["derive"] }
+iana-time-zone = "0.1.65"
 nitpick-agent-client = { path = "../nitpick-agent-client" }
 nitpick-agent-core.workspace = true
 nitpick-agent-github = { path = "../nitpick-agent-github" }
