@@ -33,7 +33,8 @@ use nitpick_agent_model::{
     Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, AgentProviderKind,
     AgentSession, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState,
     ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
-    ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, SessionStatus,
+    RemotePullRequestRef, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, SessionStatus,
+    StartReviewRequest,
 };
 use polling_state::PollingState;
 use review_intake::ReviewRequestIntake;
@@ -322,6 +323,27 @@ impl HostDaemon {
 
     pub fn with_provider(store: Arc<dyn ActivityStore>, provider: Arc<dyn AgentProvider>) -> Self {
         let config = AgentConfig::default();
+        let review_source = config.review_source();
+        let max_concurrent = config.max_concurrent_reviews;
+        Self {
+            config,
+            store: store.clone(),
+            processed_reviews: Arc::new(MemoryProcessedReviewStore::default()),
+            provider,
+            review_source,
+            clock: Arc::new(SystemClock),
+            automatic_checkout_cleanup: true,
+            data_dir: default_data_dir(),
+            polling_state: PollingState::new(),
+            review_queue: ReviewExecutionQueue::new(store, max_concurrent),
+        }
+    }
+
+    pub fn with_config_and_provider(
+        store: Arc<dyn ActivityStore>,
+        config: AgentConfig,
+        provider: Arc<dyn AgentProvider>,
+    ) -> Self {
         let review_source = config.review_source();
         let max_concurrent = config.max_concurrent_reviews;
         Self {
@@ -797,6 +819,17 @@ impl HostDaemon {
         self.runtime().start_review(input)
     }
 
+    pub fn start_review_request(&self, request: StartReviewRequest) -> AgentResult<Activity> {
+        match request {
+            StartReviewRequest::RemotePullRequest {
+                reference,
+                force,
+                disable_sandbox,
+            } => self.start_remote_pull_request_review(reference, force, disable_sandbox),
+            StartReviewRequest::Resolved { input } => self.enqueue_review(input),
+        }
+    }
+
     pub fn enqueue_review(&self, input: ReviewInput) -> AgentResult<Activity> {
         let input = self.config.apply_review_prompt(input)?;
         let daemon = self.clone();
@@ -809,6 +842,94 @@ impl HostDaemon {
                 post_review_daemon.sync_completed_enqueued_review(result, input);
             },
         )
+    }
+
+    fn start_remote_pull_request_review(
+        &self,
+        reference: RemotePullRequestRef,
+        force: bool,
+        disable_sandbox: bool,
+    ) -> AgentResult<Activity> {
+        let runtime = self.runtime();
+        let activity = runtime.create_queued_remote_review_activity(&reference, force)?;
+        let queued = activity.clone();
+        let daemon = self.clone();
+        thread::spawn(move || {
+            if let Err(error) = daemon.prepare_and_enqueue_remote_review(
+                activity,
+                reference,
+                force,
+                disable_sandbox,
+            ) {
+                tracing::warn!(error = %error, "remote review preparation failed");
+            }
+        });
+        Ok(queued)
+    }
+
+    fn prepare_and_enqueue_remote_review(
+        &self,
+        activity: Activity,
+        reference: RemotePullRequestRef,
+        force: bool,
+        disable_sandbox: bool,
+    ) -> AgentResult<()> {
+        match self.remote_pull_request_review_input(reference, force, disable_sandbox) {
+            Ok(input) => {
+                self.enqueue_prepared_review(activity, input)?;
+                Ok(())
+            }
+            Err(error) => self.mark_review_preparation_error(activity, error),
+        }
+    }
+
+    fn remote_pull_request_review_input(
+        &self,
+        reference: RemotePullRequestRef,
+        force: bool,
+        disable_sandbox: bool,
+    ) -> AgentResult<ReviewInput> {
+        let request = ReviewRequest {
+            source: "github".into(),
+            repository: reference.repository(),
+            number: Some(reference.number),
+            id: reference.number.to_string(),
+            head_sha: String::new(),
+        };
+        let mut input = self.review_source.review_input(&request)?;
+        input.force = force;
+        input.disable_sandbox = disable_sandbox;
+        self.config.apply_review_prompt(input)
+    }
+
+    fn enqueue_prepared_review(
+        &self,
+        activity: Activity,
+        input: ReviewInput,
+    ) -> AgentResult<Activity> {
+        let daemon = self.clone();
+        let post_review_daemon = self.clone();
+        self.review_queue.enqueue_existing(
+            activity,
+            input,
+            self.runtime(),
+            move |activity, input| daemon.run_enqueued_review(activity, input),
+            move |result, input| {
+                post_review_daemon.sync_completed_enqueued_review(result, input);
+            },
+        )
+    }
+
+    fn mark_review_preparation_error(
+        &self,
+        mut activity: Activity,
+        error: AgentError,
+    ) -> AgentResult<()> {
+        activity.status = ActivityStatus::Error;
+        activity.session.status = SessionStatus::Error(error.to_string());
+        activity.error = Some(error.to_string());
+        activity.touch();
+        self.store.save(&activity)
     }
 
     pub fn retry_failed_activities(

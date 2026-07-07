@@ -23,6 +23,6 @@ pub use pull_request::{
 };
 pub use review::{
     ChatInput, ProviderDiagnosticInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
-    ReviewRequest, ReviewSubject,
+    ReviewRequest, ReviewSubject, StartReviewRequest,
 };
 pub use session::{AgentMessage, AgentSession, SessionStatus};

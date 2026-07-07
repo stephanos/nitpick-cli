@@ -17,7 +17,7 @@ use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon, api_rou
 use nitpick_agent_model::{
     ActivityId, ActivityKind, ActivityStatus, AgentProviderKind, AgentSession, ArtifactContent,
     ArtifactKind, ArtifactSyncState, ChatInput, ReviewComment, ReviewInput, ReviewOutput,
-    ReviewRequest, ReviewSubject,
+    ReviewRequest, ReviewSubject, StartReviewRequest,
 };
 use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
@@ -1325,12 +1325,14 @@ async fn review_endpoint_runs_provider_and_stores_artifacts() {
     let response = app
         .oneshot(json_request(
             "/reviews",
-            &ReviewInput {
-                subject: ReviewSubject {
-                    repository: "acme/platform".into(),
-                    ..ReviewSubject::default()
+            &StartReviewRequest::Resolved {
+                input: ReviewInput {
+                    subject: ReviewSubject {
+                        repository: "acme/platform".into(),
+                        ..ReviewSubject::default()
+                    },
+                    ..ReviewInput::default()
                 },
-                ..ReviewInput::default()
             },
         ))
         .await
@@ -1348,6 +1350,68 @@ async fn review_endpoint_runs_provider_and_stores_artifacts() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn review_endpoint_rejects_raw_review_input() {
+    let app = api_router(HostDaemon::with_provider(
+        Arc::new(MemoryActivityStore::default()),
+        Arc::new(FakeProvider),
+    ));
+
+    let response = app
+        .oneshot(json_request(
+            "/reviews",
+            &ReviewInput {
+                subject: ReviewSubject {
+                    repository: "acme/platform".into(),
+                    ..ReviewSubject::default()
+                },
+                ..ReviewInput::default()
+            },
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn review_endpoint_remote_pull_request_returns_before_github_preparation() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let gh = tempfile::NamedTempFile::new().expect("gh").into_temp_path();
+    fs::write(&gh, "#!/bin/sh\nsleep 5\nexit 1\n").expect("write gh");
+    make_executable(&gh);
+    let app = api_router(HostDaemon::with_config_and_provider(
+        store,
+        AgentConfig {
+            github_command: Some(gh.display().to_string()),
+            ..AgentConfig::default()
+        },
+        Arc::new(FakeProvider),
+    ));
+
+    let started_at = Instant::now();
+    let response = app
+        .oneshot(json_request(
+            "/reviews",
+            &StartReviewRequest::RemotePullRequest {
+                reference: "acme/platform#42".parse().expect("pull request ref"),
+                force: false,
+                disable_sandbox: true,
+            },
+        ))
+        .await
+        .expect("response");
+
+    assert!(
+        started_at.elapsed() < Duration::from_secs(1),
+        "remote review start waited for GitHub preparation"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["status"], "Queued");
+    assert_eq!(body["label"], "review on acme/platform#42");
 }
 
 #[tokio::test]

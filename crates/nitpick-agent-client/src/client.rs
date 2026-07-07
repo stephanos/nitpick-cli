@@ -3,8 +3,8 @@ use std::time::Duration;
 use nitpick_agent_core::parse_json_str;
 use nitpick_agent_model::{
     Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult,
-    ProviderDiagnosticInput, RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewInput,
-    ReviewRequest,
+    ProviderDiagnosticInput, RetryFailedActivitiesInput, RetryFailedActivitiesResult,
+    ReviewRequest, StartReviewRequest,
 };
 
 use crate::{
@@ -129,7 +129,7 @@ impl HostClient {
         )
     }
 
-    pub fn review(&self, input: &ReviewInput) -> HostClientResult<Activity> {
+    pub fn review(&self, input: &StartReviewRequest) -> HostClientResult<Activity> {
         self.post_json("/reviews", input)
     }
 

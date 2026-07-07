@@ -1,7 +1,8 @@
 use clap::{Args, Subcommand, ValueEnum};
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityStatus, ReviewInput, ReviewMode, ReviewRequest, ReviewSubject,
+    Activity, ActivityKind, ActivityStatus, RemotePullRequestRef, ReviewInput, ReviewMode,
+    ReviewRequest, ReviewSubject, StartReviewRequest,
 };
 
 use crate::{CliError, CliOptions, CliRunContext};
@@ -89,9 +90,7 @@ pub fn run(
     let client = HostClient::new(&context.host_addr);
     match command {
         ReviewCommand::Start { subject, force } => {
-            let mut input = start_review_input(&subject, &context)?;
-            input.disable_sandbox = options.disable_sandbox;
-            input.force = force;
+            let input = start_review_request(&subject, &context, &options, force);
             let activity = client.review(&input)?;
             let output = format_review_started(&activity, &subject);
             if let Some(error) = activity.error {
@@ -162,23 +161,28 @@ pub fn run(
     }
 }
 
-fn start_review_input(subject: &str, context: &CliRunContext) -> Result<ReviewInput, CliError> {
-    if subject
-        .parse::<nitpick_agent_github::PullRequestRef>()
-        .is_ok()
-    {
-        return crate::support::github_review_input(
-            subject,
-            &context.config_path,
-            &context.data_dir,
-        )
-        .map_err(CliError::from);
+fn start_review_request(
+    subject: &str,
+    context: &CliRunContext,
+    options: &CliOptions,
+    force: bool,
+) -> StartReviewRequest {
+    if let Ok(reference) = subject.parse::<RemotePullRequestRef>() {
+        return StartReviewRequest::RemotePullRequest {
+            reference,
+            force,
+            disable_sandbox: options.disable_sandbox,
+        };
     }
-    Ok(review_input(
+
+    let mut input = review_input(
         subject.to_owned(),
         context.repo_dir.clone(),
         context.diff.clone(),
-    ))
+    );
+    input.disable_sandbox = options.disable_sandbox;
+    input.force = force;
+    StartReviewRequest::Resolved { input }
 }
 
 pub fn format_review_requests(requests: &[ReviewRequest]) -> String {

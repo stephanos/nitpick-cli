@@ -10,7 +10,7 @@ use nitpick_agent_github::DiscoveredPullRequest;
 use nitpick_agent_model::{
     Activity, ActivityId, ActivityKind, ActivityStatus, Artifact, ArtifactId, ArtifactSyncState,
     ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
-    RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewInput, ReviewRequest,
+    RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewRequest, StartReviewRequest,
 };
 use serde::Deserialize;
 
@@ -285,9 +285,9 @@ struct ResetLocalStateInput {
 
 async fn review(
     State(daemon): State<HostDaemon>,
-    Json(input): Json<ReviewInput>,
+    Json(input): Json<StartReviewRequest>,
 ) -> Result<Json<Activity>, ApiError> {
-    Ok(Json(daemon.enqueue_review(input)?))
+    Ok(Json(daemon.start_review_request(input)?))
 }
 
 async fn chat(

@@ -5,9 +5,9 @@ use std::{
 };
 
 use nitpick_agent_cli::{
-    CliCommand, CliOptions, CliRunContext, Confirmation, SystemCommand, config_path_from_env,
-    data_dir_from_env, format_error_message, host_addr_from_env, parse_invocation,
-    run_cli_command_with_options,
+    CliCommand, CliOptions, CliRunContext, Confirmation, ReviewCommand, SystemCommand,
+    config_path_from_env, data_dir_from_env, format_error_message, host_addr_from_env,
+    parse_invocation, run_cli_command_with_options,
 };
 use nitpick_agent_core::{NONO_SANDBOX_HELPER_ARG, run_nono_sandbox_helper};
 
@@ -28,11 +28,17 @@ fn run() -> Result<(), String> {
     let invocation = parse_invocation(env::args().skip(1))?;
     let addr = host_addr_from_env(env::var("NITPICK_AGENT_HOST_ADDR").ok());
     let repo_dir = current_dir()?;
-    let diff = git_output(&repo_dir, &["diff"]).unwrap_or_default();
-    let context = git_output(&repo_dir, &["status", "--short"]).unwrap_or_default();
     let config_path = config_path_from_env(env::var_os("NITPICK_AGENT_CONFIG"));
     let data_dir = data_dir_from_env(env::var_os("NITPICK_AGENT_DATA_DIR"));
     let command = invocation.command;
+    let (diff, context) = if command_needs_local_git_context(&command) {
+        (
+            git_output(&repo_dir, &["diff"]).unwrap_or_default(),
+            git_output(&repo_dir, &["status", "--short"]).unwrap_or_default(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     let options = options_for_command(&command, invocation.options)?;
     let output = run_cli_command_with_options(
         command,
@@ -60,6 +66,14 @@ fn options_for_command(
         options.reset_confirmation = prompt_reset_confirmation()?;
     }
     Ok(options)
+}
+
+fn command_needs_local_git_context(command: &CliCommand) -> bool {
+    !matches!(
+        command,
+        CliCommand::Review(ReviewCommand::Start { subject, .. })
+            if subject.parse::<nitpick_agent_core::RemotePullRequestRef>().is_ok()
+    )
 }
 
 fn prompt_reset_confirmation() -> Result<Option<Confirmation>, String> {
@@ -97,4 +111,35 @@ fn git_output(repo_dir: &std::path::Path, args: &[&str]) -> Result<String, Strin
         return Err(format!("git {} failed: {}", args.join(" "), output.status));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use nitpick_agent_cli::{CliCommand, ReviewCommand};
+
+    #[test]
+    fn remote_review_start_does_not_need_local_git_context() {
+        assert!(!super::command_needs_local_git_context(
+            &CliCommand::Review(ReviewCommand::Start {
+                subject: "https://github.com/acme/platform/pull/42".into(),
+                force: false,
+            })
+        ));
+        assert!(!super::command_needs_local_git_context(
+            &CliCommand::Review(ReviewCommand::Start {
+                subject: "acme/platform#42".into(),
+                force: false,
+            })
+        ));
+    }
+
+    #[test]
+    fn local_review_start_needs_local_git_context() {
+        assert!(super::command_needs_local_git_context(&CliCommand::Review(
+            ReviewCommand::Start {
+                subject: "local changes".into(),
+                force: false,
+            }
+        )));
+    }
 }

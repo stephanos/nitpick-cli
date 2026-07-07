@@ -302,6 +302,18 @@ impl GitHubCliDiscovery {
         )
     }
 
+    pub fn ensure_checkout_for(&self, pull_request: &PullRequestRef) -> AgentResult<PathBuf> {
+        let pull_request = DiscoveredPullRequest::from(pull_request);
+        let details = self.pull_request_details(&pull_request)?;
+        ensure_checkout(
+            &self.command,
+            &self.git_command,
+            &self.checkout_root,
+            &pull_request,
+            &details.head_ref_name,
+        )
+    }
+
     pub fn cleanup_checkout_for(
         &self,
         pull_request: &DiscoveredPullRequest,

@@ -34,9 +34,9 @@ impl ReviewExecutionQueue {
         after_slot_release: impl FnOnce(&AgentResult<Activity>, &ReviewInput) + Send + 'static,
     ) -> AgentResult<Activity> {
         if input.force {
-            self.cancel_active_reviews_for_same_pr(&input)?;
+            self.cancel_active_reviews_for_same_pr(&input, None)?;
         }
-        if let Some(activity) = self.active_review_for_input(&input)? {
+        if let Some(activity) = self.active_review_for_input(&input, None)? {
             if activity.status != ActivityStatus::Running
                 || self.activity_is_running_in_this_host(&activity)?
             {
@@ -44,8 +44,59 @@ impl ReviewExecutionQueue {
             }
             self.mark_stale_running_activity(activity)?;
         }
-        let same_pr_active = self.has_active_review_for_same_pr(&input)?;
-        let mut activity = runtime.create_queued_review_activity(&input)?;
+        let same_pr_active = self.has_active_review_for_same_pr(&input, None)?;
+        let activity = runtime.create_queued_review_activity(&input)?;
+        self.enqueue_activity(
+            activity,
+            input,
+            same_pr_active,
+            runtime,
+            run_review,
+            after_slot_release,
+        )
+    }
+
+    pub(crate) fn enqueue_existing(
+        &self,
+        activity: Activity,
+        input: ReviewInput,
+        runtime: AgentRuntime,
+        run_review: impl FnOnce(Activity, ReviewInput) -> AgentResult<Activity> + Send + 'static,
+        after_slot_release: impl FnOnce(&AgentResult<Activity>, &ReviewInput) + Send + 'static,
+    ) -> AgentResult<Activity> {
+        let activity = runtime.update_queued_review_activity(activity, &input)?;
+        if input.force {
+            self.cancel_active_reviews_for_same_pr(&input, Some(&activity.id))?;
+        }
+        if let Some(active) = self.active_review_for_input(&input, Some(&activity.id))? {
+            if active.status != ActivityStatus::Running
+                || self.activity_is_running_in_this_host(&active)?
+            {
+                self.mark_activity_reused(activity, &active)?;
+                return Ok(active);
+            }
+            self.mark_stale_running_activity(active)?;
+        }
+        let same_pr_active = self.has_active_review_for_same_pr(&input, Some(&activity.id))?;
+        self.enqueue_activity(
+            activity,
+            input,
+            same_pr_active,
+            runtime,
+            run_review,
+            after_slot_release,
+        )
+    }
+
+    fn enqueue_activity(
+        &self,
+        mut activity: Activity,
+        input: ReviewInput,
+        same_pr_active: bool,
+        runtime: AgentRuntime,
+        run_review: impl FnOnce(Activity, ReviewInput) -> AgentResult<Activity> + Send + 'static,
+        after_slot_release: impl FnOnce(&AgentResult<Activity>, &ReviewInput) + Send + 'static,
+    ) -> AgentResult<Activity> {
         let slot_acquired = !same_pr_active && self.slots.try_acquire()?;
         if slot_acquired {
             activity = runtime.mark_activity_running(activity)?;
@@ -87,19 +138,29 @@ impl ReviewExecutionQueue {
         result
     }
 
-    fn active_review_for_input(&self, input: &ReviewInput) -> AgentResult<Option<Activity>> {
+    fn active_review_for_input(
+        &self,
+        input: &ReviewInput,
+        except_activity_id: Option<&ActivityId>,
+    ) -> AgentResult<Option<Activity>> {
         Ok(self
             .store
             .list()?
             .into_iter()
+            .filter(|activity| except_activity_id != Some(&activity.id))
             .filter(|activity| ReviewActivityIdentity::new(activity).is_active_review())
             .find(|activity| ReviewActivityIdentity::new(activity).matches_input(input)))
     }
 
-    fn has_active_review_for_same_pr(&self, input: &ReviewInput) -> AgentResult<bool> {
+    fn has_active_review_for_same_pr(
+        &self,
+        input: &ReviewInput,
+        except_activity_id: Option<&ActivityId>,
+    ) -> AgentResult<bool> {
         Ok(self.store.list()?.into_iter().any(|activity| {
             let identity = ReviewActivityIdentity::new(&activity);
-            identity.is_active_review()
+            except_activity_id != Some(&activity.id)
+                && identity.is_active_review()
                 && identity.matches_target(&input.subject.repository, input.subject.number)
         }))
     }
@@ -121,10 +182,15 @@ impl ReviewExecutionQueue {
         }
     }
 
-    fn cancel_active_reviews_for_same_pr(&self, input: &ReviewInput) -> AgentResult<()> {
+    fn cancel_active_reviews_for_same_pr(
+        &self,
+        input: &ReviewInput,
+        except_activity_id: Option<&ActivityId>,
+    ) -> AgentResult<()> {
         for mut activity in self.store.list()?.into_iter().filter(|activity| {
             let identity = ReviewActivityIdentity::new(activity);
-            identity.is_active_review()
+            except_activity_id != Some(&activity.id)
+                && identity.is_active_review()
                 && identity.matches_target(&input.subject.repository, input.subject.number)
         }) {
             activity.status = ActivityStatus::Error;
@@ -169,6 +235,17 @@ impl ReviewExecutionQueue {
         activity.session.status =
             nitpick_agent_model::SessionStatus::Error("stale running review recovered".into());
         activity.error = Some("stale running review recovered".into());
+        activity.touch();
+        self.store.save(&activity)
+    }
+
+    fn mark_activity_reused(&self, mut activity: Activity, active: &Activity) -> AgentResult<()> {
+        activity.status = ActivityStatus::Cancelled;
+        activity.session.status = nitpick_agent_model::SessionStatus::Error(format!(
+            "reused active review {}",
+            active.id
+        ));
+        activity.error = Some(format!("reused active review {}", active.id));
         activity.touch();
         self.store.save(&activity)
     }

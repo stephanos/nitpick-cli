@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentSession, ReviewInput, ReviewMode, ReviewOutput};
+use crate::{AgentSession, RemotePullRequestRef, ReviewInput, ReviewMode, ReviewOutput};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ActivityId(String);
@@ -82,6 +82,24 @@ impl Activity {
                 number: input.subject.number,
                 head_sha: input.head_sha.clone(),
                 review_mode: input.review_mode.clone(),
+                force,
+            }),
+            resolved_by_activity: None,
+        });
+    }
+
+    pub fn label_remote_review(&mut self, reference: &RemotePullRequestRef) {
+        self.label = Some(format!("review on {reference}"));
+    }
+
+    pub fn set_remote_review_retry(&mut self, reference: &RemotePullRequestRef, force: bool) {
+        self.retry = Some(ActivityRetryMetadata {
+            review: Some(ReviewRetryMetadata {
+                source: "github".into(),
+                repository: reference.repository(),
+                number: Some(reference.number),
+                head_sha: String::new(),
+                review_mode: ReviewMode::Requested,
                 force,
             }),
             resolved_by_activity: None,

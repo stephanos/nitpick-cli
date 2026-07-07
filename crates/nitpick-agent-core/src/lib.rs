@@ -46,7 +46,7 @@ pub use host::{
 pub use json::{parse_json_bytes, parse_json_str, read_json, read_json_dir, write_json_atomic};
 pub use model::{
     ChatInput, ProviderDiagnosticInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
-    ReviewRequest, ReviewSubject,
+    ReviewRequest, ReviewSubject, StartReviewRequest,
 };
 pub use nitpick_agent_model::ProviderFailureKind;
 pub use nono_sandbox::{NONO_SANDBOX_HELPER_ARG, run_nono_sandbox_helper};

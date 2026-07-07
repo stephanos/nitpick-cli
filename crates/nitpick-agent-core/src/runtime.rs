@@ -6,7 +6,8 @@ use std::{
 use crate::{
     Activity, ActivityKind, ActivityOutput, ActivityStatus, ActivityStore, AgentProvider,
     AgentResult, ArtifactContent, ArtifactKind, ChatInput, ProviderReviewContext,
-    ProviderRunContext, ProviderRunSink, ReviewInput, ReviewOutput, SessionStatus, provider_log,
+    ProviderRunContext, ProviderRunSink, RemotePullRequestRef, ReviewInput, ReviewOutput,
+    SessionStatus, provider_log,
 };
 
 const PROVIDER_LOG_SAVE_INTERVAL: Duration = Duration::from_millis(250);
@@ -34,10 +35,34 @@ impl AgentRuntime {
     }
 
     pub fn create_queued_review_activity(&self, input: &ReviewInput) -> AgentResult<Activity> {
-        let mut activity = self.store.create(ActivityKind::Review)?;
+        let activity = self.store.create(ActivityKind::Review)?;
+        self.update_queued_review_activity(activity, input)
+    }
+
+    pub fn update_queued_review_activity(
+        &self,
+        mut activity: Activity,
+        input: &ReviewInput,
+    ) -> AgentResult<Activity> {
         activity.label_review(input);
         activity.set_review_retry(input, input.force);
         record_review_head_sha(&mut activity, input);
+        if activity.session.provider_session_id.is_none() {
+            activity.session.provider_session_id = Some(new_provider_session_id());
+        }
+        activity.touch();
+        self.store.save(&activity)?;
+        Ok(activity)
+    }
+
+    pub fn create_queued_remote_review_activity(
+        &self,
+        reference: &RemotePullRequestRef,
+        force: bool,
+    ) -> AgentResult<Activity> {
+        let mut activity = self.store.create(ActivityKind::Review)?;
+        activity.label_remote_review(reference);
+        activity.set_remote_review_retry(reference, force);
         if activity.session.provider_session_id.is_none() {
             activity.session.provider_session_id = Some(new_provider_session_id());
         }

@@ -9,7 +9,7 @@ mod support;
 mod system;
 
 use nitpick_agent_client::HostClientError;
-use nitpick_agent_core::AgentError;
+use nitpick_agent_core::{AgentError, ParseAgentProviderKindError};
 
 pub use activity::{
     daemon_log_path, ensure_resumable_activity, format_activities, format_activity,
@@ -52,6 +52,12 @@ impl From<String> for CliError {
 impl From<&str> for CliError {
     fn from(message: &str) -> Self {
         Self::Message(message.to_owned())
+    }
+}
+
+impl From<ParseAgentProviderKindError> for CliError {
+    fn from(error: ParseAgentProviderKindError) -> Self {
+        Self::Message(error.to_string())
     }
 }
 

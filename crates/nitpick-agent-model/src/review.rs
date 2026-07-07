@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::RemotePullRequestRef;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewInput {
     pub repo_dir: PathBuf,
@@ -67,6 +69,21 @@ impl ReviewRequest {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StartReviewRequest {
+    RemotePullRequest {
+        reference: RemotePullRequestRef,
+        #[serde(default)]
+        force: bool,
+        #[serde(default)]
+        disable_sandbox: bool,
+    },
+    Resolved {
+        input: ReviewInput,
+    },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewOutput {
     pub comments: Vec<ReviewComment>,
@@ -99,4 +116,53 @@ pub struct ProviderDiagnosticInput {
     pub model: Option<String>,
     #[serde(default)]
     pub disable_sandbox: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReviewInput, ReviewSubject, StartReviewRequest};
+    use crate::RemotePullRequestRef;
+
+    #[test]
+    fn remote_pull_request_start_request_uses_explicit_kind() {
+        let request = StartReviewRequest::RemotePullRequest {
+            reference: RemotePullRequestRef {
+                owner: "acme".into(),
+                repo: "platform".into(),
+                number: 42,
+            },
+            force: true,
+            disable_sandbox: true,
+        };
+
+        let json = serde_json::to_value(&request).expect("serialize request");
+
+        assert_eq!(json["kind"], "remote_pull_request");
+        assert_eq!(json["reference"]["owner"], "acme");
+        assert_eq!(json["reference"]["repo"], "platform");
+        assert_eq!(json["reference"]["number"], 42);
+        assert_eq!(json["force"], true);
+        assert_eq!(json["disable_sandbox"], true);
+    }
+
+    #[test]
+    fn resolved_start_request_carries_review_input() {
+        let input = ReviewInput {
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                ..ReviewSubject::default()
+            },
+            diff: "diff --git a/src/lib.rs b/src/lib.rs\n".into(),
+            ..ReviewInput::default()
+        };
+        let request = StartReviewRequest::Resolved {
+            input: input.clone(),
+        };
+
+        let json = serde_json::to_string(&request).expect("serialize request");
+        let decoded: StartReviewRequest = serde_json::from_str(&json).expect("deserialize request");
+
+        assert_eq!(decoded, StartReviewRequest::Resolved { input });
+    }
 }
