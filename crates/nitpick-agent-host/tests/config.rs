@@ -72,11 +72,11 @@ fn config_template_parses() {
 }
 
 #[test]
-fn init_review_prompt_file_overwrites_with_template() {
+fn init_review_prompt_file_preserves_existing_nonempty_prompt() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config_path = dir.path().join("config.toml");
     let prompt_path = dir.path().join("review-prompt.md");
-    std::fs::write(&prompt_path, "old prompt").expect("write old prompt");
+    std::fs::write(&prompt_path, "custom prompt").expect("write custom prompt");
 
     let initialized_path =
         AgentConfig::init_review_prompt_file(&config_path).expect("init review prompt");
@@ -84,7 +84,54 @@ fn init_review_prompt_file_overwrites_with_template() {
     assert_eq!(initialized_path, prompt_path);
     assert_eq!(
         std::fs::read_to_string(prompt_path).expect("review prompt"),
+        "custom prompt"
+    );
+}
+
+#[test]
+fn init_review_prompt_file_creates_missing_prompt_with_template() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("nested/config.toml");
+
+    let initialized_path =
+        AgentConfig::init_review_prompt_file(&config_path).expect("init review prompt");
+
+    assert_eq!(initialized_path, dir.path().join("nested/review-prompt.md"));
+    assert_eq!(
+        std::fs::read_to_string(initialized_path).expect("review prompt"),
         REVIEW_PROMPT_TEMPLATE
+    );
+}
+
+#[test]
+fn init_review_prompt_file_replaces_empty_prompt_with_template() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let prompt_path = dir.path().join("review-prompt.md");
+    std::fs::write(&prompt_path, "").expect("write empty prompt");
+
+    AgentConfig::init_review_prompt_file(&config_path).expect("init review prompt");
+
+    assert_eq!(
+        std::fs::read_to_string(prompt_path).expect("review prompt"),
+        REVIEW_PROMPT_TEMPLATE
+    );
+}
+
+#[test]
+fn init_review_prompt_file_rejects_existing_directory() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let prompt_path = dir.path().join("review-prompt.md");
+    std::fs::create_dir(&prompt_path).expect("create prompt directory");
+
+    let error =
+        AgentConfig::init_review_prompt_file(&config_path).expect_err("prompt directory fails");
+
+    assert!(
+        error
+            .to_string()
+            .contains("review prompt path is not a file")
     );
 }
 

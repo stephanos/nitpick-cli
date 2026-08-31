@@ -1350,6 +1350,23 @@ impl AgentConfig {
 
     pub fn init_review_prompt_file(config_path: impl AsRef<Path>) -> AgentResult<PathBuf> {
         let path = default_review_prompt_path(config_path.as_ref());
+        if path.exists() {
+            let metadata = fs::metadata(&path).map_err(|error| {
+                nitpick_agent_core::AgentError::config(format!(
+                    "failed to inspect review prompt {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if !metadata.is_file() {
+                return Err(nitpick_agent_core::AgentError::config(format!(
+                    "review prompt path is not a file: {}",
+                    path.display()
+                )));
+            }
+            if metadata.len() > 0 {
+                return Ok(path);
+            }
+        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
                 nitpick_agent_core::AgentError::config(format!(
