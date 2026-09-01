@@ -1,24 +1,53 @@
 use nitpick_agent_core::{AgentError, AgentResult};
-use nitpick_agent_model::{Artifact, ArtifactContent, ReviewComment};
+use nitpick_agent_model::{Artifact, ArtifactContent, ArtifactId, ReviewComment};
 
 pub struct GitHubReviewPayload;
 
 impl GitHubReviewPayload {
     pub fn comment(comment: ReviewComment) -> serde_json::Value {
+        Self::review_comment(&comment, None)
+    }
+
+    fn artifact_comment(artifact: &Artifact) -> AgentResult<serde_json::Value> {
+        let ArtifactContent::ReviewComment(comment) = &artifact.content else {
+            return Err(AgentError::invalid_input(
+                "github-review comment payload requires a review comment artifact",
+            ));
+        };
+        Ok(Self::review_comment(comment, Some(&artifact.id)))
+    }
+
+    fn review_comment(
+        comment: &ReviewComment,
+        artifact_id: Option<&ArtifactId>,
+    ) -> serde_json::Value {
+        let body = match artifact_id {
+            Some(artifact_id) => marked_robot_body(&comment.body, artifact_id),
+            None => robot_prefixed_body(&comment.body),
+        };
         if comment.line == 0 {
             serde_json::json!({
                 "path": comment.path,
                 "subject_type": "file",
-                "body": robot_prefixed_body(&comment.body),
+                "body": body,
             })
         } else {
             serde_json::json!({
                 "path": comment.path,
                 "line": comment.line,
                 "side": "RIGHT",
-                "body": robot_prefixed_body(&comment.body),
+                "body": body,
             })
         }
+    }
+
+    pub(crate) fn append_comment(
+        head_sha: String,
+        artifact: &Artifact,
+    ) -> AgentResult<serde_json::Value> {
+        let mut payload = Self::artifact_comment(artifact)?;
+        payload["commit_id"] = serde_json::Value::String(head_sha);
+        Ok(payload)
     }
 
     pub(crate) fn batch(
@@ -30,10 +59,10 @@ impl GitHubReviewPayload {
         for artifact in artifacts {
             match &artifact.content {
                 ArtifactContent::ReviewSummary(summary) => {
-                    body = Some(summary.clone());
+                    body = Some(marked_body(summary, &artifact.id));
                 }
-                ArtifactContent::ReviewComment(comment) => {
-                    comments.push(comment.clone());
+                ArtifactContent::ReviewComment(_) => {
+                    comments.push(Self::artifact_comment(artifact)?);
                 }
                 ArtifactContent::ChatResponse(_) => {
                     return Err(AgentError::invalid_input(
@@ -48,10 +77,9 @@ impl GitHubReviewPayload {
             ));
         }
 
-        let payload_comments = comments.into_iter().map(Self::comment).collect::<Vec<_>>();
         let mut payload = serde_json::json!({
             "commit_id": head_sha,
-            "comments": payload_comments,
+            "comments": comments,
         });
         if let Some(body) = body {
             payload["body"] = serde_json::Value::String(body);
@@ -66,4 +94,16 @@ pub(crate) fn robot_prefixed_body(body: &str) -> String {
     } else {
         format!("🤖 {body}")
     }
+}
+
+pub(crate) fn marked_body(body: &str, artifact_id: &ArtifactId) -> String {
+    format!("{}\n\n{}", body.trim_end(), artifact_marker(artifact_id))
+}
+
+pub(crate) fn marked_robot_body(body: &str, artifact_id: &ArtifactId) -> String {
+    marked_body(&robot_prefixed_body(body), artifact_id)
+}
+
+pub(crate) fn artifact_marker(artifact_id: &ArtifactId) -> String {
+    format!("<!-- nitpick-agent:{artifact_id} -->")
 }

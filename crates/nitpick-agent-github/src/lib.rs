@@ -33,7 +33,9 @@ pub use nitpick_agent_model::{
 pub use pull_request_client::GitHubPullRequestClient;
 pub use review_payload::GitHubReviewPayload;
 pub use review_request_preparation::prepare_github_review_input;
-pub use review_sync::{GitHubReviewWorkflowSync, NO_FINDINGS_REVIEW_COMMENT};
+pub use review_sync::{
+    GitHubReviewSyncCoordinator, GitHubReviewWorkflowSync, NO_FINDINGS_REVIEW_COMMENT,
+};
 
 pub struct GitHubDryRunSyncDestination;
 
@@ -911,55 +913,10 @@ impl ArtifactSyncDestination for GitHubCliReviewSyncDestination {
     }
 
     fn sync(&self, artifact: &Artifact) -> AgentResult<ArtifactSyncOutcome> {
-        match &artifact.content {
-            ArtifactContent::ReviewSummary(_) => sync_with_github_cli(
-                self.client.command(),
-                &[
-                    "pr",
-                    "review",
-                    &self.client.target().number.to_string(),
-                    "--repo",
-                    &format!(
-                        "{}/{}",
-                        self.client.target().owner,
-                        self.client.target().repo
-                    ),
-                    "--comment",
-                    "--body-file",
-                    "-",
-                ],
-                &github_comment_body(artifact),
-                self.name(),
-            ),
-            ArtifactContent::ReviewComment(comment) => {
-                let target = self.client.target();
-                let head_sha = self.client.head_sha()?;
-                let payload = serde_json::json!({
-                    "commit_id": head_sha,
-                    "event": "COMMENT",
-                    "comments": [GitHubReviewPayload::comment(comment.clone())],
-                });
-                sync_with_github_cli(
-                    self.client.command(),
-                    &[
-                        "api",
-                        &format!(
-                            "repos/{}/{}/pulls/{}/reviews",
-                            target.owner, target.repo, target.number
-                        ),
-                        "--method",
-                        "POST",
-                        "--input",
-                        "-",
-                    ],
-                    &payload.to_string(),
-                    self.name(),
-                )
-            }
-            ArtifactContent::ChatResponse(_) => Err(AgentError::invalid_input(
-                "github-review sync only supports review artifacts",
-            )),
-        }
+        self.create_pending_review_batch(std::slice::from_ref(artifact))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AgentError::invalid_input("github-review sync returned no outcome"))
     }
 
     fn sync_batch(&self, artifacts: &[Artifact]) -> AgentResult<Vec<ArtifactSyncOutcome>> {
@@ -1016,6 +973,15 @@ pub struct GitHubReviewResponse {
     pub html_url: Option<String>,
     pub state: String,
     pub commit_id: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub user: Option<GitHubUser>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct GitHubUser {
+    pub login: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1255,5 +1221,19 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_cli_status_error_preserves_http_validation_status() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"gh: Validation Failed (HTTP 422)".to_vec(),
+        };
+
+        let error = command_status_error("GitHub CLI", &output);
+
+        assert_eq!(error.github_http_status(), Some(422));
     }
 }

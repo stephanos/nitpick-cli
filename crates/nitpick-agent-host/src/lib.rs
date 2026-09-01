@@ -26,8 +26,8 @@ use nitpick_agent_core::{
 use nitpick_agent_github::{
     DiscoveredPullRequest, GitHubCliDiscovery, GitHubCliReviewSyncDestination,
     GitHubCliSyncDestination, GitHubDryRunSyncDestination, GitHubPullRequestContext,
-    GitHubPullRequestConversationComment, GitHubReviewComment, GitHubReviewWorkflowSync,
-    PullRequestRef,
+    GitHubPullRequestConversationComment, GitHubReviewComment, GitHubReviewSyncCoordinator,
+    GitHubReviewWorkflowSync, PullRequestRef,
 };
 use nitpick_agent_model::{
     Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, AgentProviderKind,
@@ -254,6 +254,7 @@ pub struct HostDaemon {
     data_dir: PathBuf,
     polling_state: PollingState,
     review_queue: ReviewExecutionQueue,
+    github_review_sync: GitHubReviewSyncCoordinator,
 }
 
 impl HostDaemon {
@@ -265,6 +266,7 @@ impl HostDaemon {
         let provider = config.provider();
         let review_source = config.review_source();
         let max_concurrent = config.max_concurrent_reviews;
+        let github_review_sync = config.github_review_sync_coordinator();
         Self {
             config,
             store: store.clone(),
@@ -276,6 +278,7 @@ impl HostDaemon {
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_queue: ReviewExecutionQueue::new(store, max_concurrent),
+            github_review_sync,
         }
     }
 
@@ -287,6 +290,7 @@ impl HostDaemon {
         let provider = config.provider();
         let review_source = config.review_source();
         let max_concurrent = config.max_concurrent_reviews;
+        let github_review_sync = config.github_review_sync_coordinator();
         Self {
             config,
             store: store.clone(),
@@ -298,6 +302,7 @@ impl HostDaemon {
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_queue: ReviewExecutionQueue::new(store, max_concurrent),
+            github_review_sync,
         }
     }
 
@@ -307,6 +312,7 @@ impl HostDaemon {
         let provider = config.provider();
         let review_source = config.review_source();
         let max_concurrent = config.max_concurrent_reviews;
+        let github_review_sync = config.github_review_sync_coordinator();
         Self {
             config,
             store: store.clone(),
@@ -318,6 +324,7 @@ impl HostDaemon {
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_queue: ReviewExecutionQueue::new(store, max_concurrent),
+            github_review_sync,
         }
     }
 
@@ -325,6 +332,7 @@ impl HostDaemon {
         let config = AgentConfig::default();
         let review_source = config.review_source();
         let max_concurrent = config.max_concurrent_reviews;
+        let github_review_sync = config.github_review_sync_coordinator();
         Self {
             config,
             store: store.clone(),
@@ -336,6 +344,7 @@ impl HostDaemon {
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_queue: ReviewExecutionQueue::new(store, max_concurrent),
+            github_review_sync,
         }
     }
 
@@ -346,6 +355,7 @@ impl HostDaemon {
     ) -> Self {
         let review_source = config.review_source();
         let max_concurrent = config.max_concurrent_reviews;
+        let github_review_sync = config.github_review_sync_coordinator();
         Self {
             config,
             store: store.clone(),
@@ -357,6 +367,7 @@ impl HostDaemon {
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_queue: ReviewExecutionQueue::new(store, max_concurrent),
+            github_review_sync,
         }
     }
 
@@ -369,6 +380,7 @@ impl HostDaemon {
         clock: Arc<dyn Clock>,
     ) -> Self {
         let max_concurrent = config.max_concurrent_reviews;
+        let github_review_sync = config.github_review_sync_coordinator();
         Self {
             config,
             store: store.clone(),
@@ -380,6 +392,7 @@ impl HostDaemon {
             data_dir: default_data_dir(),
             polling_state: PollingState::new(),
             review_queue: ReviewExecutionQueue::new(store, max_concurrent),
+            github_review_sync,
         }
     }
 
@@ -639,6 +652,12 @@ impl HostDaemon {
         let Some(artifact) = self.get_artifact(id)? else {
             return Ok(None);
         };
+        if destination == "github-review" {
+            return Ok(self
+                .sync_github_review_artifacts(std::slice::from_ref(&artifact), target)?
+                .into_iter()
+                .next());
+        }
         let sync_state = self
             .config
             .sync_destination(destination, target)?
@@ -657,10 +676,8 @@ impl HostDaemon {
             return Ok(None);
         }
         let artifacts = self.store.list_artifacts_for(id)?;
-        if destination == "github-review"
-            && let Some(updated) = self.reconcile_github_review_artifacts(&artifacts, target)?
-        {
-            return Ok(Some(updated));
+        if destination == "github-review" {
+            return Ok(Some(self.sync_github_review_artifacts(&artifacts, target)?));
         }
         let outcomes = self
             .config
@@ -680,22 +697,18 @@ impl HostDaemon {
         target: &str,
         input: &ReviewInput,
     ) -> AgentResult<()> {
-        self.sync_activity_artifacts(&activity.id, "github-review", Some(target))?;
         if self.completed_review_has_no_comments(activity)? {
             let sync = self.github_review_workflow_sync(target)?;
-            let Some(comment) = sync.no_findings_draft_file_comment(&input.diff)? else {
-                return Ok(());
-            };
-            let artifact = self.store.create_artifact(
-                activity.id.clone(),
-                ArtifactKind::ReviewComment,
-                ArtifactContent::ReviewComment(comment),
-            )?;
-            self.store.save_artifacts(std::slice::from_ref(&artifact))?;
-            let (artifact_id, sync_state) = sync.sync_no_findings_draft_file_comment(&artifact)?;
-            self.store
-                .update_artifact_sync_state(&artifact_id, sync_state)?;
+            if let Some(comment) = sync.no_findings_draft_file_comment(&input.diff)? {
+                let artifact = self.store.create_artifact(
+                    activity.id.clone(),
+                    ArtifactKind::ReviewComment,
+                    ArtifactContent::ReviewComment(comment),
+                )?;
+                self.store.save_artifacts(std::slice::from_ref(&artifact))?;
+            }
         }
+        self.sync_activity_artifacts(&activity.id, "github-review", Some(target))?;
         Ok(())
     }
 
@@ -712,28 +725,23 @@ impl HostDaemon {
             .any(|artifact| matches!(artifact.content, ArtifactContent::ReviewComment(_))))
     }
 
-    fn reconcile_github_review_artifacts(
+    fn sync_github_review_artifacts(
         &self,
         artifacts: &[Artifact],
         target: Option<&str>,
-    ) -> AgentResult<Option<Vec<Artifact>>> {
+    ) -> AgentResult<Vec<Artifact>> {
         let target = target.ok_or_else(|| {
             AgentError::invalid_input("github-review sync requires a pull request target")
         })?;
-        let updates = self
-            .github_review_workflow_sync(target)?
-            .reconcile_pending_artifact_states(artifacts)?;
-        let Some(updates) = updates else {
-            return Ok(None);
-        };
-        let mut updated = Vec::with_capacity(artifacts.len());
-        for (artifact_id, sync_state) in updates {
-            updated.push(
-                self.store
-                    .update_artifact_sync_state(&artifact_id, sync_state)?,
-            );
-        }
-        Ok(Some(updated))
+        let target = target.parse::<PullRequestRef>().map_err(|error| {
+            AgentError::invalid_input(format!("invalid GitHub sync target: {error}"))
+        })?;
+        let outcomes = self.github_review_sync.synchronize(&target, artifacts)?;
+        ArtifactSyncOrchestrator::new(self.store.clone()).apply_batch_outcomes(
+            "github-review",
+            artifacts,
+            outcomes,
+        )
     }
 
     fn github_review_workflow_sync(&self, target: &str) -> AgentResult<GitHubReviewWorkflowSync> {
@@ -1433,6 +1441,10 @@ impl AgentConfig {
             None => GitHubCliDiscovery::new(self.github_command.as_deref().unwrap_or("gh")),
         };
         client.with_allowlist(&self.github_discovery.allowlist)
+    }
+
+    fn github_review_sync_coordinator(&self) -> GitHubReviewSyncCoordinator {
+        GitHubReviewSyncCoordinator::new(self.github_command.as_deref().unwrap_or("gh"))
     }
 
     fn sync_destination(

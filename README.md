@@ -84,7 +84,7 @@ The older `[github.discovery]` config shape is still accepted for compatibility.
 
 When `allowlist` contains exact `owner/repo` entries or `owner/*`, nitpick scopes the underlying `gh search prs` queries to those repositories or owners before applying the local allowlist/denylist filters.
 
-`artifact sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to stage one review artifact into a pending GitHub draft review. Use `review sync <activity-id> <pr-ref>` to stage all review artifacts from an activity into one pending GitHub draft review. If a pending draft already exists, nitpick updates the draft summary when safe and refuses to add new inline comments until the existing draft is submitted or cleared manually.
+`artifact sync ... github` without a target uses the GitHub dry-run destination and records the local artifact as pending sync. Provide a target such as `acme/platform#42` to post through `gh pr comment`; the local artifact is then marked synced with the returned comment URL/text. Use `github-review` with a target to synchronize one review artifact into the authenticated user's pending GitHub review. Use `review sync <activity-id> <pr-ref>` to synchronize all review artifacts from an activity. Nitpick creates a pending review when necessary; otherwise it appends only findings not already present by artifact marker or normalized path, location, and body. It preserves nonempty manually authored draft summaries and never submits the review.
 
 GitHub token permissions:
 

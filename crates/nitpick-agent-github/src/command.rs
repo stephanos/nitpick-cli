@@ -173,10 +173,24 @@ pub(crate) fn command_status_error(command: &str, output: &std::process::Output)
                 retry_after_seconds,
             );
         }
-        AgentError::github_cli(message)
+        AgentError::github_cli_status(message, parse_github_http_status(&stderr))
     } else {
         AgentError::provider(message)
     }
+}
+
+pub(crate) fn parse_github_http_status(stderr: &str) -> Option<u16> {
+    let lower = stderr.to_ascii_lowercase();
+    for marker in ["http ", "status "] {
+        let Some(start) = lower.find(marker) else {
+            continue;
+        };
+        let status = first_number(&lower[start + marker.len()..])?;
+        if (100..=599).contains(&status) {
+            return u16::try_from(status).ok();
+        }
+    }
+    None
 }
 
 pub(crate) fn is_github_rate_limit_error(stderr: &str) -> bool {

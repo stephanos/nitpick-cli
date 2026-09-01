@@ -911,8 +911,7 @@ exit 1
 }
 
 #[test]
-fn enqueue_review_creates_no_findings_file_level_draft_comment_when_completed_review_has_no_comments()
- {
+fn enqueue_review_appends_no_findings_file_comment_to_existing_pending_review() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     let commands_file = dir.path().join("commands");
@@ -922,12 +921,28 @@ fn enqueue_review_creates_no_findings_file_level_draft_comment_when_completed_re
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> {commands}
-if [ "$1" = "pr" ]; then
+if [ "$*" = "api user" ]; then
+  printf '{{"login":"nitpick"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '[{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
+  printf '[]'
+  exit 0
+fi
+if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
   printf '{{"headRefOid":"abc123"}}\n'
   exit 0
 fi
-cat > {payload}
-printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+if [ "$*" = "api repos/acme/platform/pulls/42/comments --method POST --input -" ]; then
+  cat > {payload}
+  printf '{{"id":101,"pull_request_review_id":99,"path":"src/lib.rs","line":null,"body":"new","user":{{"login":"nitpick"}},"state":"PENDING"}}'
+  exit 0
+fi
+exit 1
 "#,
             commands = commands_file.display(),
             payload = payload_file.display()
@@ -980,24 +995,8 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     });
     assert_eq!(
         std::fs::read_to_string(commands_file).expect("commands"),
-        "pr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
+        "api user\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/reviews/99/comments\npr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/comments --method POST --input -\n"
     );
-    let payload: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(payload_file).expect("payload"))
-            .expect("payload json");
-    assert_eq!(payload["commit_id"], "abc123");
-    assert!(payload.get("body").is_none());
-    assert_eq!(payload["comments"].as_array().expect("comments").len(), 1);
-    assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
-    assert_eq!(payload["comments"][0]["subject_type"], "file");
-    assert_eq!(
-        payload["comments"][0]["body"],
-        "🤖 Review completed: no findings."
-    );
-    assert!(payload["comments"][0].get("line").is_none());
-    assert!(payload["comments"][0].get("side").is_none());
-    assert!(payload.get("event").is_none());
-
     let activity = store
         .list()
         .expect("activities")
@@ -1005,6 +1004,23 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
         .next()
         .expect("activity");
     let artifacts = store.list_artifacts_for(&activity.id).expect("artifacts");
+    let payload: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["commit_id"], "abc123");
+    assert_eq!(payload["path"], "src/lib.rs");
+    assert_eq!(payload["subject_type"], "file");
+    assert_eq!(
+        payload["body"],
+        format!(
+            "🤖 Review completed: no findings.\n\n<!-- nitpick-agent:{} -->",
+            artifacts[0].id
+        )
+    );
+    assert!(payload.get("line").is_none());
+    assert!(payload.get("side").is_none());
+    assert!(payload.get("event").is_none());
+
     assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0].kind, ArtifactKind::ReviewComment);
     assert_eq!(

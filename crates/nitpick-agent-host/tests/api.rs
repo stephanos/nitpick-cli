@@ -455,9 +455,33 @@ async fn artifact_sync_endpoint_posts_to_github_when_target_is_provided() {
 async fn artifact_sync_endpoint_posts_to_github_review_destination() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
     fs::write(
         &gh,
-        "#!/bin/sh\ncat >/dev/null\nprintf 'https://github.com/acme/platform/pull/42#pullrequestreview-99\\n'\n",
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$*" = "api user" ]; then
+  printf '{{"login":"nitpick"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '[]'
+  exit 0
+fi
+if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
+  printf '{{"headRefOid":"abc123"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
+  cat >/dev/null
+  printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}'
+  exit 0
+fi
+exit 1
+"#,
+            commands = commands_file.display(),
+        ),
     )
     .expect("write fake gh");
     let mut permissions = fs::metadata(&gh).expect("metadata").permissions();
@@ -498,13 +522,20 @@ async fn artifact_sync_endpoint_posts_to_github_review_destination() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
+        fs::read_to_string(commands_file).expect("commands"),
+        "api user\napi repos/acme/platform/pulls/42/reviews\npr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
+    );
+    assert_eq!(
         store
             .get_artifact(&artifact_id)
             .expect("artifact")
             .sync_state,
-        ArtifactSyncState::Synced {
+        ArtifactSyncState::Pending {
             destination: "github-review".into(),
-            remote_id: Some("https://github.com/acme/platform/pull/42#pullrequestreview-99".into())
+            remote_id: Some("99".into()),
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            ),
         }
     );
 }
@@ -520,6 +551,14 @@ async fn activity_artifact_sync_endpoint_stages_pending_github_review_draft() {
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> {commands}
+if [ "$*" = "api user" ]; then
+  printf '{{"login":"nitpick"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '[]'
+  exit 0
+fi
 if [ "$1" = "pr" ]; then
   printf '{{"headRefOid":"abc123"}}\n'
   exit 0
@@ -584,15 +623,21 @@ printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullreque
     assert_eq!(body.as_array().expect("array").len(), 2);
     assert_eq!(
         fs::read_to_string(commands_file).expect("commands"),
-        "pr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
+        "api user\napi repos/acme/platform/pulls/42/reviews\npr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/reviews --method POST --input -\n"
     );
     let payload: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
-    assert_eq!(payload["body"], "summary body");
+    assert_eq!(
+        payload["body"],
+        format!("summary body\n\n<!-- nitpick-agent:{} -->", summary.id)
+    );
     assert_eq!(payload["comments"].as_array().expect("comments").len(), 1);
     assert_eq!(payload["comments"][0]["path"], "src/lib.rs");
-    assert_eq!(payload["comments"][0]["body"], "🤖 Prefer this.");
+    assert_eq!(
+        payload["comments"][0]["body"],
+        format!("🤖 Prefer this.\n\n<!-- nitpick-agent:{} -->", comment.id)
+    );
     assert_eq!(
         store.get_artifact(&summary.id).expect("summary").sync_state,
         ArtifactSyncState::Pending {
@@ -622,6 +667,8 @@ async fn activity_artifact_sync_endpoint_marks_pending_artifacts_synced_after_ma
     fs::write(
         &gh,
         r#"#!/bin/sh
+if [ "$*" = "api user" ]; then printf '{"login":"nitpick"}'; exit 0; fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
 if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
   printf '{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"COMMENT","commit_id":"abc123"}'
   exit 0
@@ -691,7 +738,7 @@ printf '{"id":100,"html_url":"https://github.com/acme/platform/pull/42#pullreque
 }
 
 #[tokio::test]
-async fn activity_artifact_sync_endpoint_propagates_ambiguous_pending_review_404() {
+async fn activity_artifact_sync_endpoint_restages_when_pending_review_disappears() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     fs::write(
@@ -700,6 +747,23 @@ async fn activity_artifact_sync_endpoint_propagates_ambiguous_pending_review_404
 if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
   printf 'HTTP 404: Not Found' >&2
   exit 1
+fi
+if [ "$*" = "api user" ]; then
+  printf '{"login":"nitpick"}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '[]'
+  exit 0
+fi
+if [ "$1" = "pr" ]; then
+  printf '{"headRefOid":"abc123"}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
+  cat >/dev/null
+  printf '{"id":100,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-100","state":"PENDING","commit_id":"abc123","user":{"login":"nitpick"}}'
+  exit 0
 fi
 exit 1
 "#,
@@ -750,49 +814,66 @@ exit 1
         .await
         .expect("response");
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         store.get_artifact(&summary.id).expect("summary").sync_state,
         ArtifactSyncState::Pending {
             destination: "github-review".into(),
-            remote_id: Some("99".into()),
+            remote_id: Some("100".into()),
             remote_url: Some(
-                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+                "https://github.com/acme/platform/pull/42#pullrequestreview-100".into()
             )
         }
     );
 }
 
 #[tokio::test]
-async fn activity_artifact_sync_endpoint_refuses_new_inline_comments_when_pending_review_exists() {
+async fn activity_artifact_sync_endpoint_reuses_untracked_pending_review() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
+    let commands_file = dir.path().join("commands");
+    let payload_file = dir.path().join("payload");
     fs::write(
         &gh,
-        r#"#!/bin/sh
-if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
-  printf '{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}'
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {commands}
+if [ "$*" = "api user" ]; then
+  printf '{{"login":"nitpick"}}'
   exit 0
 fi
-if [ "$1" = "pr" ]; then
-  printf '{"headRefOid":"abc123"}'
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '[{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
   exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
+  printf '[]'
+  exit 0
+fi
+if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
+  printf '{{"headRefOid":"abc123"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/comments --method POST --input -" ]; then
+  cat > {payload}
+  printf '{{"id":101,"pull_request_review_id":99,"path":"src/lib.rs","line":12,"body":"new","user":{{"login":"nitpick"}},"state":"PENDING"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
+  printf 'HTTP 422: Validation Failed' >&2
+  exit 1
 fi
 exit 1
 "#,
+            commands = commands_file.display(),
+            payload = payload_file.display(),
+        ),
     )
     .expect("write fake gh");
     make_executable(&gh);
     let store = Arc::new(MemoryActivityStore::default());
     let activity = store.create(ActivityKind::Review).expect("activity");
     let activity_id = activity.id.clone();
-    let summary = store
-        .create_artifact(
-            activity_id.clone(),
-            ArtifactKind::ReviewSummary,
-            ArtifactContent::ReviewSummary("summary body".into()),
-        )
-        .expect("summary artifact");
     let comment = store
         .create_artifact(
             activity_id.clone(),
@@ -805,20 +886,8 @@ exit 1
         )
         .expect("comment artifact");
     store
-        .save_artifacts(&[summary.clone(), comment.clone()])
+        .save_artifacts(std::slice::from_ref(&comment))
         .expect("save artifacts");
-    store
-        .update_artifact_sync_state(
-            &summary.id,
-            ArtifactSyncState::Pending {
-                destination: "github-review".into(),
-                remote_id: Some("99".into()),
-                remote_url: Some(
-                    "https://github.com/acme/platform/pull/42#pullrequestreview-99".into(),
-                ),
-            },
-        )
-        .expect("mark pending");
     let app = api_router(HostDaemon::with_config(
         store.clone(),
         AgentConfig {
@@ -838,18 +907,43 @@ exit 1
         .await
         .expect("response");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = json_body(response).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let commands = fs::read_to_string(commands_file).expect("commands");
+    assert!(commands.contains("api user\n"));
+    assert!(commands.contains("api repos/acme/platform/pulls/42/reviews\n"));
+    assert!(commands.contains("api repos/acme/platform/pulls/42/reviews/99/comments\n"));
     assert!(
-        body["error"]
-            .as_str()
-            .expect("error text")
-            .contains("submit or clear the draft review")
+        commands.contains("api repos/acme/platform/pulls/42/comments --method POST --input -\n")
+    );
+    assert!(
+        !commands.contains("api repos/acme/platform/pulls/42/reviews --method POST --input -\n")
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
+            .expect("payload json");
+    assert_eq!(payload["commit_id"], "abc123");
+    assert_eq!(payload["path"], "src/lib.rs");
+    assert_eq!(payload["line"], 12);
+    assert_eq!(payload["side"], "RIGHT");
+    assert_eq!(
+        payload["body"],
+        format!("🤖 Prefer this.\n\n<!-- nitpick-agent:{} -->", comment.id)
+    );
+    assert!(payload.get("event").is_none());
+    assert_eq!(
+        store.get_artifact(&comment.id).expect("comment").sync_state,
+        ArtifactSyncState::Pending {
+            destination: "github-review".into(),
+            remote_id: Some("99".into()),
+            remote_url: Some(
+                "https://github.com/acme/platform/pull/42#pullrequestreview-99".into()
+            ),
+        }
     );
 }
 
 #[tokio::test]
-async fn activity_artifact_sync_endpoint_does_not_update_pending_body_for_local_comments() {
+async fn activity_artifact_sync_endpoint_appends_local_comments_without_updating_body() {
     let dir = tempfile::tempdir().expect("temp dir");
     let gh = dir.path().join("gh");
     let commands_file = dir.path().join("commands");
@@ -858,13 +952,25 @@ async fn activity_artifact_sync_endpoint_does_not_update_pending_body_for_local_
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> {commands}
-if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
-  if [ "$3" = "--method" ]; then
-    cat >/dev/null
-    printf 'unexpected pending body update' >&2
-    exit 1
-  fi
-  printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}'
+if [ "$*" = "api user" ]; then
+  printf '{{"login":"nitpick"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
+  printf '[{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
+  printf '[]'
+  exit 0
+fi
+if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
+  printf '{{"headRefOid":"abc123"}}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/pulls/42/comments --method POST --input -" ]; then
+  cat >/dev/null
+  printf '{{"id":101,"pull_request_review_id":99,"path":"src/main.rs","line":8,"body":"new","user":{{"login":"nitpick"}},"state":"PENDING"}}'
   exit 0
 fi
 exit 1
@@ -933,10 +1039,10 @@ exit 1
         .await
         .expect("response");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         fs::read_to_string(commands_file).expect("commands"),
-        "api repos/acme/platform/pulls/42/reviews/99\n"
+        "api user\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/reviews/99/comments\npr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/comments --method POST --input -\n"
     );
 }
 

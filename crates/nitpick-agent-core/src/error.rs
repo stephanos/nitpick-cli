@@ -23,7 +23,10 @@ pub enum AgentError {
     #[error("{message}")]
     Config { message: String },
     #[error("{message}")]
-    GitHubCli { message: String },
+    GitHubCli {
+        message: String,
+        http_status: Option<u16>,
+    },
     #[error("{message}")]
     GitHubRateLimited {
         message: String,
@@ -102,6 +105,21 @@ impl AgentError {
     pub fn github_cli(message: impl Into<String>) -> Self {
         Self::GitHubCli {
             message: message.into(),
+            http_status: None,
+        }
+    }
+
+    pub fn github_cli_status(message: impl Into<String>, http_status: Option<u16>) -> Self {
+        Self::GitHubCli {
+            message: message.into(),
+            http_status,
+        }
+    }
+
+    pub fn github_http_status(&self) -> Option<u16> {
+        match self {
+            Self::GitHubCli { http_status, .. } => *http_status,
+            _ => None,
         }
     }
 
@@ -112,6 +130,45 @@ impl AgentError {
         Self::GitHubRateLimited {
             message: message.into(),
             retry_after_seconds,
+        }
+    }
+
+    pub fn with_context(self, context: impl AsRef<str>) -> Self {
+        let context = context.as_ref();
+        match self {
+            Self::Message { message } => Self::new(format!("{context}: {message}")),
+            Self::Io {
+                context: inner,
+                error,
+            } => Self::Io {
+                context: format!("{context}: {inner}"),
+                error,
+            },
+            Self::Json {
+                context: inner,
+                path,
+                error,
+            } => Self::Json {
+                context: format!("{context}: {inner}"),
+                path,
+                error,
+            },
+            Self::NotFound { resource, id } => Self::NotFound {
+                resource: format!("{context}: {resource}"),
+                id,
+            },
+            Self::InvalidInput { message } => Self::invalid_input(format!("{context}: {message}")),
+            Self::Provider { message } => Self::provider(format!("{context}: {message}")),
+            Self::Sandbox { message } => Self::sandbox(format!("{context}: {message}")),
+            Self::Config { message } => Self::config(format!("{context}: {message}")),
+            Self::GitHubCli {
+                message,
+                http_status,
+            } => Self::github_cli_status(format!("{context}: {message}"), http_status),
+            Self::GitHubRateLimited {
+                message,
+                retry_after_seconds,
+            } => Self::github_rate_limited(format!("{context}: {message}"), retry_after_seconds),
         }
     }
 

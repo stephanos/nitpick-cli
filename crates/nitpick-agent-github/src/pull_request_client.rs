@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use nitpick_agent_core::AgentResult;
+use nitpick_agent_model::Artifact;
 
 use crate::{
-    GitHubPullRequestContext, GitHubReviewComment, GitHubReviewResponse, PullRequestDetails,
-    PullRequestRef, command::GitHubCommand, github_delete_from_cli,
+    GitHubPullRequestContext, GitHubReviewComment, GitHubReviewPayload, GitHubReviewResponse,
+    GitHubUser, PullRequestDetails, PullRequestRef, command::GitHubCommand, github_delete_from_cli,
     github_pull_request_conversation_comments_from_cli, github_review_comments_from_cli,
     github_review_from_cli, github_review_from_cli_with_input, github_reviews_from_cli,
     pull_request_details, pull_request_diff, pull_request_head_sha,
@@ -66,6 +67,85 @@ impl GitHubPullRequestClient {
                 self.target.owner, self.target.repo, self.target.number, review_id
             )],
         )
+    }
+
+    pub(crate) fn authenticated_login(&self) -> AgentResult<String> {
+        let user: GitHubUser = self
+            .command
+            .json(&["api", "user"], "GitHub authenticated user response")?;
+        Ok(user.login)
+    }
+
+    pub(crate) fn reviews(&self) -> AgentResult<Vec<GitHubReviewResponse>> {
+        github_reviews_from_cli(
+            &self.command,
+            &[&format!(
+                "repos/{}/{}/pulls/{}/reviews",
+                self.target.owner, self.target.repo, self.target.number
+            )],
+        )
+    }
+
+    pub(crate) fn review_comments_for(
+        &self,
+        review_id: &str,
+    ) -> AgentResult<Vec<GitHubReviewComment>> {
+        let mut comments = github_review_comments_from_cli(
+            &self.command,
+            &[&format!(
+                "repos/{}/{}/pulls/{}/reviews/{}/comments",
+                self.target.owner, self.target.repo, self.target.number, review_id
+            )],
+        )?;
+        for comment in &mut comments {
+            comment.draft = true;
+        }
+        Ok(comments)
+    }
+
+    pub(crate) fn create_pending_review(
+        &self,
+        head_sha: String,
+        artifacts: &[Artifact],
+    ) -> AgentResult<GitHubReviewResponse> {
+        let payload = GitHubReviewPayload::batch(head_sha, artifacts)?;
+        github_review_from_cli_with_input(
+            &self.command,
+            &[
+                &format!(
+                    "repos/{}/{}/pulls/{}/reviews",
+                    self.target.owner, self.target.repo, self.target.number
+                ),
+                "--method",
+                "POST",
+                "--input",
+                "-",
+            ],
+            &payload.to_string(),
+        )
+    }
+
+    pub(crate) fn append_review_comment(
+        &self,
+        head_sha: &str,
+        artifact: &Artifact,
+    ) -> AgentResult<()> {
+        let payload = GitHubReviewPayload::append_comment(head_sha.to_owned(), artifact)?;
+        self.command.output_with_input(
+            &[
+                "api",
+                &format!(
+                    "repos/{}/{}/pulls/{}/comments",
+                    self.target.owner, self.target.repo, self.target.number
+                ),
+                "--method",
+                "POST",
+                "--input",
+                "-",
+            ],
+            &payload.to_string(),
+        )?;
+        Ok(())
     }
 
     pub fn update_pending_review_body(

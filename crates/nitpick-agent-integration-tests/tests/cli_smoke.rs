@@ -51,6 +51,14 @@ if [ "$1 $2" = "pr view" ]; then
   printf '{{"headRefOid":"abc123"}}\n'
   exit 0
 fi
+if [ "$1 $2" = "api user" ]; then
+  printf '{{"login":"nitpick-smoke"}}\n'
+  exit 0
+fi
+if [ "$1 $2" = "api repos/stephanos/nitpick-agent/pulls/42/reviews" ] && [ -z "$3" ]; then
+  printf '[]\n'
+  exit 0
+fi
 cat >/dev/null
 printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
 "#,

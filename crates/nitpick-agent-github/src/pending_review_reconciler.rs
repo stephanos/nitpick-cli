@@ -1,253 +1,110 @@
-use nitpick_agent_core::{AgentError, AgentResult};
-use nitpick_agent_model::{Artifact, ArtifactContent, ArtifactId, ArtifactSyncState};
+use nitpick_agent_model::{Artifact, ArtifactContent};
 
-const GITHUB_REVIEW_DESTINATION: &str = "github-review";
+use crate::{GitHubReviewComment, review_payload::artifact_marker};
 
-pub(crate) enum PendingReviewRemote {
-    Missing,
-    Pending { remote_url: Option<String> },
-    Submitted { remote_url: Option<String> },
+pub(crate) fn remote_comment_matches(
+    remote_comments: &[GitHubReviewComment],
+    artifact: &Artifact,
+) -> bool {
+    let ArtifactContent::ReviewComment(local) = &artifact.content else {
+        return false;
+    };
+    let marker = artifact_marker(&artifact.id);
+    remote_comments.iter().any(|remote| {
+        remote.body.contains(&marker)
+            || (remote.path == local.path
+                && remote.line.unwrap_or(0) == local.line
+                && normalized_comment_body(&remote.body) == normalized_comment_body(&local.body))
+    })
 }
 
-pub(crate) struct PendingReviewReconciliation {
-    pub(crate) state_updates: Vec<(ArtifactId, ArtifactSyncState)>,
-    pub(crate) pending_body_update: Option<String>,
-}
-
-pub(crate) struct PendingReviewReconciler<'a> {
-    artifacts: &'a [Artifact],
-    review_id: Option<String>,
-}
-
-impl<'a> PendingReviewReconciler<'a> {
-    pub(crate) fn new(artifacts: &'a [Artifact]) -> Self {
-        Self {
-            artifacts,
-            review_id: artifacts
-                .iter()
-                .find_map(pending_github_review_id)
-                .map(str::to_owned),
+fn normalized_comment_body(body: &str) -> String {
+    let body = body.trim();
+    let body = body.strip_prefix('🤖').unwrap_or(body).trim_start();
+    let body = match body.rfind("<!-- nitpick-agent:") {
+        Some(marker_start)
+            if body[marker_start..].find("-->").is_some_and(|marker_end| {
+                body[marker_start + marker_end + 3..].trim().is_empty()
+            }) =>
+        {
+            &body[..marker_start]
         }
-    }
-
-    pub(crate) fn review_id(&self) -> Option<&str> {
-        self.review_id.as_deref()
-    }
-
-    pub(crate) fn reconcile(
-        &self,
-        remote: PendingReviewRemote,
-    ) -> AgentResult<PendingReviewReconciliation> {
-        let Some(review_id) = &self.review_id else {
-            return Ok(PendingReviewReconciliation {
-                state_updates: Vec::new(),
-                pending_body_update: None,
-            });
-        };
-        match remote {
-            PendingReviewRemote::Missing => Ok(PendingReviewReconciliation {
-                state_updates: self
-                    .artifacts
-                    .iter()
-                    .map(|artifact| {
-                        let next_state = if pending_review_id_matches(artifact, review_id) {
-                            ArtifactSyncState::LocalOnly
-                        } else {
-                            artifact.sync_state.clone()
-                        };
-                        (artifact.id.clone(), next_state)
-                    })
-                    .collect(),
-                pending_body_update: None,
-            }),
-            PendingReviewRemote::Pending { remote_url } => {
-                if self.artifacts.iter().any(is_local_inline_comment) {
-                    return Err(AgentError::invalid_input(
-                        "pending GitHub draft review already exists; submit or clear the draft review before staging new inline comments",
-                    ));
-                }
-
-                let remote_url = self.remote_url_for(review_id, remote_url);
-                let pending_body_update = self.local_summary();
-                Ok(PendingReviewReconciliation {
-                    state_updates: self
-                        .artifacts
-                        .iter()
-                        .map(|artifact| {
-                            let next_state = if artifact.sync_state == ArtifactSyncState::LocalOnly
-                            {
-                                match &artifact.content {
-                                    ArtifactContent::ReviewSummary(_) => {
-                                        ArtifactSyncState::Pending {
-                                            destination: GITHUB_REVIEW_DESTINATION.into(),
-                                            remote_id: Some(review_id.clone()),
-                                            remote_url: remote_url.clone(),
-                                        }
-                                    }
-                                    _ => artifact.sync_state.clone(),
-                                }
-                            } else {
-                                artifact.sync_state.clone()
-                            };
-                            (artifact.id.clone(), next_state)
-                        })
-                        .collect(),
-                    pending_body_update,
-                })
-            }
-            PendingReviewRemote::Submitted { remote_url } => {
-                let remote_id = self.remote_url_for(review_id, remote_url);
-                Ok(PendingReviewReconciliation {
-                    state_updates: self
-                        .artifacts
-                        .iter()
-                        .map(|artifact| {
-                            let next_state = if pending_review_id_matches(artifact, review_id) {
-                                ArtifactSyncState::Synced {
-                                    destination: GITHUB_REVIEW_DESTINATION.into(),
-                                    remote_id: remote_id.clone(),
-                                }
-                            } else {
-                                artifact.sync_state.clone()
-                            };
-                            (artifact.id.clone(), next_state)
-                        })
-                        .collect(),
-                    pending_body_update: None,
-                })
-            }
-        }
-    }
-
-    fn local_summary(&self) -> Option<String> {
-        self.artifacts.iter().find_map(|artifact| {
-            if artifact.sync_state != ArtifactSyncState::LocalOnly {
-                return None;
-            }
-            match &artifact.content {
-                ArtifactContent::ReviewSummary(summary) => Some(summary.clone()),
-                _ => None,
-            }
-        })
-    }
-
-    fn remote_url_for(&self, review_id: &str, remote_url: Option<String>) -> Option<String> {
-        remote_url.or_else(|| {
-            self.artifacts
-                .iter()
-                .find_map(|artifact| match &artifact.sync_state {
-                    ArtifactSyncState::Pending {
-                        destination,
-                        remote_id: Some(current_review_id),
-                        remote_url,
-                    } if destination == GITHUB_REVIEW_DESTINATION
-                        && current_review_id == review_id =>
-                    {
-                        remote_url.clone()
-                    }
-                    _ => None,
-                })
-        })
-    }
-}
-
-fn pending_github_review_id(artifact: &Artifact) -> Option<&str> {
-    match &artifact.sync_state {
-        ArtifactSyncState::Pending {
-            destination,
-            remote_id: Some(review_id),
-            ..
-        } if destination == GITHUB_REVIEW_DESTINATION => Some(review_id),
-        _ => None,
-    }
-}
-
-fn pending_review_id_matches(artifact: &Artifact, review_id: &str) -> bool {
-    pending_github_review_id(artifact) == Some(review_id)
-}
-
-fn is_local_inline_comment(artifact: &Artifact) -> bool {
-    artifact.sync_state == ArtifactSyncState::LocalOnly
-        && matches!(artifact.content, ArtifactContent::ReviewComment(_))
+        _ => body,
+    };
+    body.trim().to_owned()
 }
 
 #[cfg(test)]
 mod tests {
-    use nitpick_agent_model::{ActivityId, ArtifactKind, ReviewComment};
+    use nitpick_agent_model::{ActivityId, ArtifactId, ArtifactKind, ReviewComment};
 
     use super::*;
 
     #[test]
-    fn pending_remote_promotes_local_summary_and_requests_body_update() {
-        let mut pending_comment = review_comment_artifact("comment");
-        pending_comment.sync_state = ArtifactSyncState::Pending {
-            destination: GITHUB_REVIEW_DESTINATION.into(),
-            remote_id: Some("99".into()),
-            remote_url: Some("https://example.test/review-99".into()),
-        };
-        let summary = Artifact::local(
-            ArtifactId::new("summary"),
-            ActivityId::new("activity"),
-            ArtifactKind::ReviewSummary,
-            ArtifactContent::ReviewSummary("updated summary".into()),
+    fn exact_artifact_marker_matches_before_location_and_body() {
+        let artifact = review_comment_artifact("artifact-1", "new body");
+        let remote = remote_comment(
+            "different/path.rs",
+            Some(3),
+            "🤖 old body\n\n<!-- nitpick-agent:artifact-1 -->",
         );
-        let artifacts = [pending_comment.clone(), summary.clone()];
-        let reconciler = PendingReviewReconciler::new(&artifacts);
 
-        let reconciliation = reconciler
-            .reconcile(PendingReviewRemote::Pending { remote_url: None })
-            .expect("reconcile");
-
-        assert_eq!(reconciler.review_id(), Some("99"));
-        assert_eq!(
-            reconciliation.pending_body_update.as_deref(),
-            Some("updated summary")
-        );
-        assert_eq!(
-            reconciliation.state_updates,
-            vec![
-                (pending_comment.id, pending_comment.sync_state),
-                (
-                    summary.id,
-                    ArtifactSyncState::Pending {
-                        destination: GITHUB_REVIEW_DESTINATION.into(),
-                        remote_id: Some("99".into()),
-                        remote_url: Some("https://example.test/review-99".into()),
-                    },
-                ),
-            ]
-        );
+        assert!(remote_comment_matches(&[remote], &artifact));
     }
 
     #[test]
-    fn submitted_remote_marks_pending_review_artifacts_synced() {
-        let mut pending_comment = review_comment_artifact("comment");
-        pending_comment.sync_state = ArtifactSyncState::Pending {
-            destination: GITHUB_REVIEW_DESTINATION.into(),
-            remote_id: Some("99".into()),
-            remote_url: None,
-        };
-        let reconciler = PendingReviewReconciler::new(std::slice::from_ref(&pending_comment));
-
-        let reconciliation = reconciler
-            .reconcile(PendingReviewRemote::Submitted {
-                remote_url: Some("https://example.test/review-99".into()),
-            })
-            .expect("reconcile");
-
-        assert_eq!(
-            reconciliation.state_updates,
-            vec![(
-                pending_comment.id,
-                ArtifactSyncState::Synced {
-                    destination: GITHUB_REVIEW_DESTINATION.into(),
-                    remote_id: Some("https://example.test/review-99".into()),
-                },
-            )]
+    fn semantic_identity_matches_finding_from_another_activity() {
+        let artifact = review_comment_artifact("artifact-2", "Prefer this.");
+        let remote = remote_comment(
+            "src/lib.rs",
+            Some(12),
+            "🤖 Prefer this.\n\n<!-- nitpick-agent:artifact-1 -->",
         );
+
+        assert!(remote_comment_matches(&[remote], &artifact));
     }
 
-    fn review_comment_artifact(id: &str) -> Artifact {
+    #[test]
+    fn semantic_identity_normalizes_file_level_location() {
+        let mut artifact = review_comment_artifact("artifact-2", "No findings.");
+        let ArtifactContent::ReviewComment(comment) = &mut artifact.content else {
+            panic!("review comment artifact");
+        };
+        comment.line = 0;
+        let remote = remote_comment(
+            "src/lib.rs",
+            None,
+            "🤖 No findings.\n\n<!-- nitpick-agent:older-artifact -->",
+        );
+
+        assert!(remote_comment_matches(&[remote], &artifact));
+    }
+
+    #[test]
+    fn semantic_identity_keeps_different_findings_distinct() {
+        let artifact = review_comment_artifact("artifact-2", "Prefer this.");
+        let remote = remote_comment(
+            "src/lib.rs",
+            Some(13),
+            "🤖 Prefer this.\n\n<!-- nitpick-agent:artifact-1 -->",
+        );
+
+        assert!(!remote_comment_matches(&[remote], &artifact));
+    }
+
+    #[test]
+    fn semantic_identity_does_not_strip_marker_followed_by_prose() {
+        let artifact = review_comment_artifact("artifact-2", "Prefer this.");
+        let remote = remote_comment(
+            "src/lib.rs",
+            Some(12),
+            "🤖 Prefer this.\n\n<!-- nitpick-agent:artifact-1 -->\nExtra <!-- note -->",
+        );
+
+        assert!(!remote_comment_matches(&[remote], &artifact));
+    }
+
+    fn review_comment_artifact(id: &str, body: &str) -> Artifact {
         Artifact::local(
             ArtifactId::new(id),
             ActivityId::new("activity"),
@@ -255,8 +112,20 @@ mod tests {
             ArtifactContent::ReviewComment(ReviewComment {
                 path: "src/lib.rs".into(),
                 line: 12,
-                body: "body".into(),
+                body: body.into(),
             }),
         )
+    }
+
+    fn remote_comment(path: &str, line: Option<u32>, body: &str) -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: "101".into(),
+            review_id: Some("99".into()),
+            path: path.into(),
+            line,
+            body: body.into(),
+            author: Some("nitpick".into()),
+            draft: true,
+        }
     }
 }
