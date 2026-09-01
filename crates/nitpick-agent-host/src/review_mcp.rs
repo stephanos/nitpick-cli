@@ -10,8 +10,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{AgentError, AgentResult, ReviewCommentValidator, ReviewToolConfig};
-use nitpick_agent_model::{ReviewComment, ReviewInput};
+pub use nitpick_agent_model::{
+    ExistingReviewComment, PullRequestContext, PullRequestConversationComment,
+};
+use nitpick_agent_model::{
+    FinishReviewCommentBatchInput, FinishReviewCommentBatchResult, ReviewChatSessionSnapshot,
+    ReviewComment, ReviewCommentBatch, ReviewInput,
+};
 use rmcp::{
     Json, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -58,43 +65,9 @@ pub struct AddReviewCommentResult {
     pub accepted: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-pub struct ExistingReviewComment {
-    pub id: String,
-    pub review_id: Option<String>,
-    pub path: String,
-    pub line: Option<u32>,
-    pub body: String,
-    pub author: Option<String>,
-    pub draft: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ExistingReviewCommentsResult {
     pub comments: Vec<ExistingReviewComment>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-pub struct PullRequestContext {
-    pub title: String,
-    pub author: String,
-    pub url: String,
-    pub body: String,
-    pub head_sha: String,
-    pub head_ref_name: String,
-    pub state: String,
-    #[serde(default)]
-    pub conversation_comments: Vec<PullRequestConversationComment>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-pub struct PullRequestConversationComment {
-    pub id: String,
-    pub body: String,
-    pub author: Option<String>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
@@ -138,7 +111,20 @@ pub struct ReviewMcpSessionState {
     pub deleted_comment_ids: Vec<String>,
     #[serde(default)]
     pub github: Option<ReviewMcpGitHubTarget>,
+    #[serde(default)]
+    pub chat: Option<ReviewMcpChatState>,
     pub finished: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewMcpChatState {
+    pub host_addr: String,
+    pub activity_id: String,
+    pub repository: String,
+    pub number: u64,
+    pub pinned_head_sha: String,
+    pub batch: ReviewCommentBatch,
+    pub last_result: Option<FinishReviewCommentBatchResult>,
 }
 
 #[derive(Debug)]
@@ -220,7 +206,7 @@ impl ReviewMcpTools {
 
     #[tool(
         name = "finish_review",
-        description = "Finish the active review session without publishing comments"
+        description = "Commit the current review batch. Automated reviews finish once; review chat starts a new batch after each successful commit."
     )]
     async fn finish_review_tool(&self) -> Result<Json<FinishReviewResult>, String> {
         self.finish_review()
@@ -389,12 +375,61 @@ impl ReviewMcpServerHandle {
                 existing_comments,
                 deleted_comment_ids: Vec::new(),
                 github,
+                chat: None,
                 finished: false,
             },
         )?;
         let config_path = temp_dir.join("mcp.json");
-        fs_err::write(&config_path, review_mcp_config_json(&state_path))
-            .map_err(|error| AgentError::io_path("write review MCP config", &config_path, error))?;
+        fs_err::write(
+            &config_path,
+            review_mcp_config_json(&state_path, Path::new(&review_mcp_server_command())),
+        )
+        .map_err(|error| AgentError::io_path("write review MCP config", &config_path, error))?;
+        Ok(Self {
+            config_path,
+            state_path,
+            temp_dir,
+        })
+    }
+
+    pub fn start_chat(
+        host_addr: impl Into<String>,
+        snapshot: ReviewChatSessionSnapshot,
+    ) -> AgentResult<Self> {
+        let temp_dir = new_temp_config_dir()?;
+        let state_path = temp_dir.join("session.json");
+        write_review_mcp_session_state(
+            &state_path,
+            &ReviewMcpSessionState {
+                repo_dir: snapshot.repo_dir,
+                diff: snapshot.diff,
+                comments: Vec::new(),
+                pull_request_context: snapshot.pull_request_context,
+                existing_comments: snapshot.existing_comments,
+                deleted_comment_ids: Vec::new(),
+                github: None,
+                chat: Some(ReviewMcpChatState {
+                    host_addr: host_addr.into(),
+                    activity_id: snapshot.activity_id.to_string(),
+                    repository: snapshot.repository,
+                    number: snapshot.number,
+                    pinned_head_sha: snapshot.head_sha,
+                    batch: ReviewCommentBatch {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        additions: Vec::new(),
+                        deletion_ids: Vec::new(),
+                    },
+                    last_result: None,
+                }),
+                finished: false,
+            },
+        )?;
+        let config_path = temp_dir.join("mcp.json");
+        fs_err::write(
+            &config_path,
+            review_mcp_config_json(&state_path, &snapshot.mcp_server_command),
+        )
+        .map_err(|error| AgentError::io_path("write review MCP config", &config_path, error))?;
         Ok(Self {
             config_path,
             state_path,
@@ -411,6 +446,14 @@ impl ReviewMcpServerHandle {
 
     pub fn session_state(&self) -> AgentResult<ReviewMcpSessionState> {
         load_review_mcp_session_state(&self.state_path)
+    }
+
+    pub fn uncommitted_counts(&self) -> AgentResult<(usize, usize)> {
+        let state = self.session_state()?;
+        Ok(state
+            .chat
+            .map(|chat| (chat.batch.additions.len(), chat.batch.deletion_ids.len()))
+            .unwrap_or((state.comments.len(), state.deleted_comment_ids.len())))
     }
 }
 
@@ -457,17 +500,67 @@ pub(crate) fn add_review_comment_to_state_file(
         }
         let validator = ReviewCommentValidator::for_diff(&state.repo_dir, &state.diff)?;
         let comment = validator.validate_comment(path, line, body)?;
-        state.comments.push(comment.clone());
+        if let Some(chat) = &mut state.chat {
+            chat.batch.additions.push(comment.clone());
+        } else {
+            state.comments.push(comment.clone());
+        }
         Ok(comment)
     })
 }
 
 pub(crate) fn finish_review_in_state_file(state_path: &Path) -> AgentResult<FinishReviewResult> {
     update_review_mcp_session_state(state_path, |state| {
-        state.finished = true;
+        let Some(chat) = state.chat.as_ref() else {
+            state.finished = true;
+            return Ok(FinishReviewResult {
+                status: "completed".to_owned(),
+                comment_count: state.comments.len(),
+            });
+        };
+        if chat.batch.is_empty() {
+            return Ok(FinishReviewResult {
+                status: "completed".to_owned(),
+                comment_count: 0,
+            });
+        }
+
+        let host_addr = chat.host_addr.clone();
+        let activity_id = chat.activity_id.clone();
+        let pinned_head_sha = chat.pinned_head_sha.clone();
+        let batch = chat.batch.clone();
+        let result = HostClient::new(host_addr)
+            .finish_review_comment_batch(
+                &activity_id,
+                &FinishReviewCommentBatchInput {
+                    pinned_head_sha,
+                    batch: batch.clone(),
+                },
+            )
+            .map_err(|error| {
+                AgentError::provider(format!("finish review comment batch: {error}"))
+            })?;
+        if result.batch_id != batch.id
+            || result.committed_addition_count != batch.additions.len()
+            || result.committed_deletion_count != batch.deletion_ids.len()
+        {
+            return Err(AgentError::provider(format!(
+                "finish review comment batch returned an incomplete receipt for {}",
+                batch.id
+            )));
+        }
+        state.existing_comments = result.existing_comments.clone();
+        let comment_count = result.committed_addition_count;
+        let chat = state.chat.as_mut().expect("review chat state is present");
+        chat.last_result = Some(result);
+        chat.batch = ReviewCommentBatch {
+            id: uuid::Uuid::new_v4().to_string(),
+            additions: Vec::new(),
+            deletion_ids: Vec::new(),
+        };
         Ok(FinishReviewResult {
             status: "completed".to_owned(),
-            comment_count: state.comments.len(),
+            comment_count,
         })
     })
 }
@@ -505,7 +598,16 @@ pub(crate) fn delete_draft_comment_in_state_file(
 ) -> AgentResult<DeleteDraftCommentResult> {
     update_review_mcp_session_state(state_path, |state| {
         validate_deletable_comment(&state.existing_comments, id)?;
-        if !state
+        if let Some(chat) = &mut state.chat {
+            if !chat
+                .batch
+                .deletion_ids
+                .iter()
+                .any(|deleted_id| deleted_id == id)
+            {
+                chat.batch.deletion_ids.push(id.to_owned());
+            }
+        } else if !state
             .deleted_comment_ids
             .iter()
             .any(|deleted_id| deleted_id == id)
@@ -610,11 +712,11 @@ fn new_temp_config_dir() -> AgentResult<PathBuf> {
     Ok(dir)
 }
 
-fn review_mcp_config_json(state_path: &Path) -> String {
+fn review_mcp_config_json(state_path: &Path, command: &Path) -> String {
     serde_json::json!({
         "mcpServers": {
             "nitpick-review": {
-                "command": review_mcp_server_command(),
+                "command": command,
                 "args": ["review-mcp", state_path]
             }
         }

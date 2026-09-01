@@ -51,9 +51,15 @@ pub struct ReviewActivityIdentity<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ReviewActivityTarget {
+struct ReviewTarget {
     repository: String,
     number: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewActivityTarget {
+    pub repository: String,
+    pub number: u64,
 }
 
 impl<'a> ReviewActivityIdentity<'a> {
@@ -95,12 +101,23 @@ impl<'a> ReviewActivityIdentity<'a> {
             .map(|message| message.content.as_str())
     }
 
-    fn target(&self) -> Option<ReviewActivityTarget> {
+    pub fn pull_request_target(&self) -> Option<ReviewActivityTarget> {
+        if self.activity.kind != ActivityKind::Review {
+            return None;
+        }
+        let target = self.target()?;
+        Some(ReviewActivityTarget {
+            repository: target.repository,
+            number: target.number?,
+        })
+    }
+
+    fn target(&self) -> Option<ReviewTarget> {
         self.activity
             .retry
             .as_ref()
             .and_then(|retry| retry.review.as_ref())
-            .map(|review| ReviewActivityTarget {
+            .map(|review| ReviewTarget {
                 repository: review.repository.clone(),
                 number: review.number,
             })
@@ -113,7 +130,7 @@ impl<'a> ReviewActivityIdentity<'a> {
     }
 }
 
-fn review_activity_target_from_label(label: &str) -> Option<ReviewActivityTarget> {
+fn review_activity_target_from_label(label: &str) -> Option<ReviewTarget> {
     let reference = label.strip_prefix("review on ")?;
     let (repository, number) = match reference.rsplit_once('#') {
         Some((repository, number)) => {
@@ -122,12 +139,45 @@ fn review_activity_target_from_label(label: &str) -> Option<ReviewActivityTarget
         }
         None => (reference.to_owned(), None),
     };
-    Some(ReviewActivityTarget { repository, number })
+    Some(ReviewTarget { repository, number })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_identity_exposes_canonical_pull_request_target() {
+        let mut activity =
+            Activity::new(crate::ActivityId::new("activity-1"), ActivityKind::Review);
+        activity.label = Some("review on acme/platform#42".into());
+
+        assert_eq!(
+            ReviewActivityIdentity::new(&activity).pull_request_target(),
+            Some(ReviewActivityTarget {
+                repository: "acme/platform".into(),
+                number: 42,
+            })
+        );
+    }
+
+    #[test]
+    fn activity_identity_rejects_non_review_and_non_pull_request_targets() {
+        let mut chat = Activity::new(crate::ActivityId::new("activity-1"), ActivityKind::Chat);
+        chat.label = Some("review on acme/platform#42".into());
+        let mut local_review =
+            Activity::new(crate::ActivityId::new("activity-2"), ActivityKind::Review);
+        local_review.label = Some("review on local-checkout".into());
+
+        assert_eq!(
+            ReviewActivityIdentity::new(&chat).pull_request_target(),
+            None
+        );
+        assert_eq!(
+            ReviewActivityIdentity::new(&local_review).pull_request_target(),
+            None
+        );
+    }
 
     #[test]
     fn request_version_key_includes_head_sha_without_requiring_pr_number() {

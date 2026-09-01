@@ -2,6 +2,7 @@ mod api;
 mod artifact_sync_orchestrator;
 mod host_status_projection;
 mod polling_state;
+mod review_comment_batch_committer;
 mod review_intake;
 pub mod review_mcp;
 mod review_mcp_session_store;
@@ -32,9 +33,10 @@ use nitpick_agent_github::{
 use nitpick_agent_model::{
     Activity, ActivityId, ActivityKind, ActivityOutput, ActivityStatus, AgentProviderKind,
     AgentSession, Artifact, ArtifactContent, ArtifactId, ArtifactKind, ArtifactSyncState,
-    ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
-    RemotePullRequestRef, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest, SessionStatus,
-    StartReviewRequest,
+    ChatInput, CleanupCheckoutsResult, FinishReviewCommentBatchInput,
+    FinishReviewCommentBatchResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
+    RemotePullRequestRef, ReviewChatSessionInput, ReviewChatSessionSnapshot, ReviewInput,
+    ReviewMode, ReviewOutput, ReviewRequest, SessionStatus, StartReviewRequest,
 };
 use polling_state::PollingState;
 use review_intake::ReviewRequestIntake;
@@ -45,6 +47,7 @@ use serde::Deserialize;
 pub use api::api_router;
 pub use artifact_sync_orchestrator::ArtifactSyncOrchestrator;
 pub use host_status_projection::HostStatusProjection;
+pub use review_comment_batch_committer::ReviewCommentBatchCommitter;
 pub use review_retry_intake::ReviewRetryIntake;
 
 const ACTIVITY_PRUNE_AGE_SECS: u64 = 24 * 60 * 60;
@@ -403,6 +406,11 @@ impl HostDaemon {
         self
     }
 
+    pub fn with_data_dir_preserving_dependencies(mut self, data_dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = data_dir.into();
+        self
+    }
+
     pub fn status(&self) -> AgentResult<HostStatus> {
         let artifacts = self.store.list_artifacts()?;
         let activities = self.store.list()?;
@@ -422,6 +430,117 @@ impl HostDaemon {
 
     pub fn config(&self) -> &AgentConfig {
         &self.config
+    }
+
+    pub fn prepare_review_chat_session(
+        &self,
+        activity_id: &ActivityId,
+        request: &ReviewChatSessionInput,
+    ) -> AgentResult<ReviewChatSessionSnapshot> {
+        let activity = self.store.get(activity_id)?;
+        let target = ReviewActivityIdentity::new(&activity)
+            .pull_request_target()
+            .ok_or_else(|| {
+                AgentError::invalid_input(format!(
+                    "activity {activity_id} is not a pull request review"
+                ))
+            })?;
+        if target.repository != request.repository || target.number != request.number {
+            return Err(AgentError::invalid_input(format!(
+                "activity {activity_id} does not review {}#{}",
+                request.repository, request.number
+            )));
+        }
+        if matches!(
+            activity.status,
+            ActivityStatus::Queued | ActivityStatus::Running
+        ) {
+            return Err(AgentError::invalid_input(format!(
+                "activity {activity_id} is still active"
+            )));
+        }
+        if activity.session.provider_session_id.is_none() {
+            return Err(AgentError::invalid_input(format!(
+                "activity {activity_id} has no provider session to resume"
+            )));
+        }
+
+        let reference = remote_pull_request_ref(&target.repository, target.number)?;
+        let input = self.remote_pull_request_review_input(reference.clone(), false, false)?;
+        let destination = GitHubCliReviewSyncDestination::new(
+            PullRequestRef {
+                owner: reference.owner,
+                repo: reference.repo,
+                number: reference.number,
+            },
+            self.config.github_command.as_deref().unwrap_or("gh"),
+        );
+        let existing_comments = destination
+            .review_comments()?
+            .into_iter()
+            .map(existing_review_comment)
+            .collect();
+        let pull_request_context = pull_request_context(destination.pull_request_context()?);
+        let head_sha = if input.head_sha.is_empty() {
+            pull_request_context.head_sha.clone()
+        } else {
+            if input.head_sha != pull_request_context.head_sha {
+                return Err(AgentError::invalid_input(format!(
+                    "pull request head changed while preparing review chat from {} to {}; rerun nitpick review chat",
+                    input.head_sha, pull_request_context.head_sha
+                )));
+            }
+            input.head_sha
+        };
+        let mcp_server_command = std::env::current_exe()
+            .map_err(|error| AgentError::io("resolve host executable", error))?;
+
+        let snapshot = ReviewChatSessionSnapshot {
+            activity_id: activity.id,
+            repository: target.repository,
+            number: target.number,
+            repo_dir: input.repo_dir,
+            head_sha,
+            diff: input.diff,
+            pull_request_context,
+            existing_comments,
+            mcp_server_command,
+        };
+        self.review_comment_batch_committer()
+            .save_session_snapshot(&snapshot)?;
+        Ok(snapshot)
+    }
+
+    pub fn finish_review_comment_batch(
+        &self,
+        activity_id: &ActivityId,
+        input: &FinishReviewCommentBatchInput,
+    ) -> AgentResult<FinishReviewCommentBatchResult> {
+        let activity = self.store.get(activity_id)?;
+        let target = ReviewActivityIdentity::new(&activity)
+            .pull_request_target()
+            .ok_or_else(|| {
+                AgentError::invalid_input(format!(
+                    "activity {activity_id} is not a pull request review"
+                ))
+            })?;
+        let reference = remote_pull_request_ref(&target.repository, target.number)?;
+        let github_target = PullRequestRef {
+            owner: reference.owner.clone(),
+            repo: reference.repo.clone(),
+            number: reference.number,
+        };
+        self.review_comment_batch_committer()
+            .commit(activity_id, &github_target, input)
+    }
+
+    fn review_comment_batch_committer(&self) -> ReviewCommentBatchCommitter {
+        ReviewCommentBatchCommitter::with_sync_coordinator(
+            &self.data_dir,
+            self.store.clone(),
+            self.config.github_command.as_deref().unwrap_or("gh"),
+            self.github_review_sync.clone(),
+        )
     }
 
     pub fn recover_interrupted_activities(&self) -> AgentResult<usize> {
@@ -455,6 +574,7 @@ impl HostDaemon {
         let removed_activity_count = self.store.clear_activities()?;
         let removed_processed_review_count = self.processed_reviews.clear_processed()?;
         let removed_checkout_count = self.clear_checkouts()?;
+        self.clear_review_chat_state()?;
         self.polling_state.clear()?;
         let truncated_log = self.truncate_daemon_log()?;
 
@@ -500,6 +620,18 @@ impl HostDaemon {
             .as_ref()
             .map(PathBuf::from)
             .unwrap_or_else(|| self.data_dir.join("checkouts"))
+    }
+
+    fn clear_review_chat_state(&self) -> AgentResult<()> {
+        for directory in ["review-chat-sessions", "review-comment-batches"] {
+            let path = self.data_dir.join(directory);
+            if path.exists() {
+                fs::remove_dir_all(&path).map_err(|error| {
+                    AgentError::io_path("clear review chat state", &path, error)
+                })?;
+            }
+        }
+        Ok(())
     }
 
     fn truncate_daemon_log(&self) -> AgentResult<bool> {
@@ -1139,6 +1271,17 @@ fn github_review_sync_target(input: &ReviewInput) -> Option<String> {
         .subject
         .number
         .map(|number| format!("{}#{}", input.subject.repository, number))
+}
+
+fn remote_pull_request_ref(repository: &str, number: u64) -> AgentResult<RemotePullRequestRef> {
+    let (owner, repo) = repository.split_once('/').ok_or_else(|| {
+        AgentError::invalid_input(format!("invalid GitHub repository name `{repository}`"))
+    })?;
+    Ok(RemotePullRequestRef {
+        owner: owner.into(),
+        repo: repo.into(),
+        number,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

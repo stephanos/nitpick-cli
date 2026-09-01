@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::{path::PathBuf, sync::Mutex};
 
 use nitpick_agent_core::{
     AgentError, AgentResult, ReviewInput, ReviewRequest, ReviewSource, ReviewSubject,
@@ -23,6 +23,7 @@ pub struct StubDiscovery {
     calls: Mutex<usize>,
     error: Mutex<Option<String>>,
     already_reviewed_heads: Mutex<Vec<String>>,
+    repo_dir: Option<PathBuf>,
 }
 
 impl StubDiscovery {
@@ -32,7 +33,13 @@ impl StubDiscovery {
             calls: Mutex::new(0),
             error: Mutex::new(None),
             already_reviewed_heads: Mutex::new(Vec::new()),
+            repo_dir: None,
         }
+    }
+
+    pub fn with_repo_dir(mut self, repo_dir: impl Into<PathBuf>) -> Self {
+        self.repo_dir = Some(repo_dir.into());
+        self
     }
 
     pub fn set_pull_requests(&self, pull_requests: Vec<DiscoveredPullRequest>) {
@@ -64,7 +71,7 @@ impl ReviewRequestDiscovery for StubDiscovery {
     fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput> {
         let repository = format!("{}/{}", pull_request.owner, pull_request.repo);
         Ok(ReviewInput {
-            repo_dir: ".".into(),
+            repo_dir: self.repo_dir.clone().unwrap_or_else(|| ".".into()),
             instructions: format!(
                 "Review GitHub pull request {repository}#{} at head {}.",
                 pull_request.number, pull_request.head_sha

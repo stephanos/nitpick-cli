@@ -83,19 +83,40 @@ impl CommandAgentProvider {
         session: &AgentSession,
         repo_dir: &Path,
     ) -> AgentResult<()> {
+        self.attach_session_in_repo_with_optional_tools(session, repo_dir, None)
+    }
+
+    pub fn attach_session_in_repo_with_tools(
+        &self,
+        session: &AgentSession,
+        repo_dir: &Path,
+        tools: &ReviewToolConfig,
+    ) -> AgentResult<()> {
+        self.attach_session_in_repo_with_optional_tools(session, repo_dir, Some(tools))
+    }
+
+    fn attach_session_in_repo_with_optional_tools(
+        &self,
+        session: &AgentSession,
+        repo_dir: &Path,
+        tools: Option<&ReviewToolConfig>,
+    ) -> AgentResult<()> {
         let session_id = session
             .provider_session_id
             .as_deref()
             .ok_or_else(|| AgentError::invalid_input("activity has no provider session id"))?;
-        let repo_dir = self.sandbox_repo_dir(repo_dir, &self.sandbox)?;
-        match self.kind {
-            AgentProviderKind::Claude => self.run_interactive_in_dir(
-                &["--resume".into(), session_id.into()],
-                repo_dir.as_deref(),
-            ),
-            AgentProviderKind::Codex => self
-                .run_interactive_in_dir(&["resume".into(), session_id.into()], repo_dir.as_deref()),
-        }
+        let sandbox = tools
+            .map(|tools| self.sandbox.clone().with_review_tool_paths(tools))
+            .unwrap_or_else(|| self.sandbox.clone());
+        let repo_dir = self.sandbox_repo_dir(repo_dir, &sandbox)?;
+        let args = match self.kind {
+            AgentProviderKind::Claude => vec!["--resume".into(), session_id.into()],
+            AgentProviderKind::Codex => vec!["resume".into(), session_id.into()],
+        };
+        let args = tools
+            .map(|tools| self.with_review_tool_args(args.clone(), tools))
+            .unwrap_or(args);
+        self.run_interactive_in_dir_with_sandbox(&args, repo_dir.as_deref(), &sandbox)
     }
 
     pub fn start_interactive_session_in_repo(&self, repo_dir: &Path) -> AgentResult<()> {
@@ -240,7 +261,16 @@ impl CommandAgentProvider {
         args: &[String],
         current_dir: Option<&Path>,
     ) -> AgentResult<()> {
-        let mut command = self.command_for(current_dir, args)?;
+        self.run_interactive_in_dir_with_sandbox(args, current_dir, &self.sandbox)
+    }
+
+    fn run_interactive_in_dir_with_sandbox(
+        &self,
+        args: &[String],
+        current_dir: Option<&Path>,
+        sandbox: &CommandSandboxConfig,
+    ) -> AgentResult<()> {
+        let mut command = self.command_for_with_sandbox(current_dir, args, sandbox)?;
         if let Some(current_dir) = current_dir {
             command.current_dir(current_dir);
         }
@@ -561,7 +591,14 @@ impl CommandAgentProvider {
     }
 
     fn review_tool_args(&self, session: &AgentSession, tools: &ReviewToolConfig) -> Vec<String> {
-        let mut args = self.review_args(session);
+        self.with_review_tool_args(self.review_args(session), tools)
+    }
+
+    fn with_review_tool_args(
+        &self,
+        mut args: Vec<String>,
+        tools: &ReviewToolConfig,
+    ) -> Vec<String> {
         match self.kind {
             AgentProviderKind::Claude => {
                 args.push("--mcp-config".into());

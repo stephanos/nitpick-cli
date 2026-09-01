@@ -2,9 +2,10 @@ use std::time::Duration;
 
 use nitpick_agent_core::parse_json_str;
 use nitpick_agent_model::{
-    Activity, Artifact, ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult,
-    ProviderDiagnosticInput, RetryFailedActivitiesInput, RetryFailedActivitiesResult,
-    ReviewRequest, StartReviewRequest,
+    Activity, Artifact, ChatInput, CleanupCheckoutsResult, FinishReviewCommentBatchInput,
+    FinishReviewCommentBatchResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
+    RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewChatSessionInput,
+    ReviewChatSessionSnapshot, ReviewRequest, StartReviewRequest,
 };
 
 use crate::{
@@ -13,6 +14,7 @@ use crate::{
 };
 
 const HOST_CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
+const REVIEW_BATCH_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug)]
 pub struct HostClient {
@@ -22,13 +24,9 @@ pub struct HostClient {
 
 impl HostClient {
     pub fn new(addr: impl Into<String>) -> Self {
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(HOST_CLIENT_TIMEOUT))
-            .build();
         Self {
             addr: addr.into(),
-            agent: ureq::Agent::new_with_config(config),
+            agent: host_agent(HOST_CLIENT_TIMEOUT),
         }
     }
 
@@ -133,6 +131,32 @@ impl HostClient {
         self.post_json("/reviews", input)
     }
 
+    pub fn prepare_review_chat_session(
+        &self,
+        activity_id: &str,
+        input: &ReviewChatSessionInput,
+    ) -> HostClientResult<ReviewChatSessionSnapshot> {
+        self.post_json(
+            &format!("/activities/{activity_id}/review-chat-session"),
+            input,
+        )
+    }
+
+    pub fn finish_review_comment_batch(
+        &self,
+        activity_id: &str,
+        input: &FinishReviewCommentBatchInput,
+    ) -> HostClientResult<FinishReviewCommentBatchResult> {
+        self.post_json_with_agent(
+            &host_agent(REVIEW_BATCH_TIMEOUT),
+            &format!(
+                "/activities/{activity_id}/review-comment-batches/{}/finish",
+                input.batch.id
+            ),
+            input,
+        )
+    }
+
     pub fn chat(&self, input: &ChatInput) -> HostClientResult<Activity> {
         self.post_json("/chats", input)
     }
@@ -169,13 +193,30 @@ impl HostClient {
         path: &str,
         input: &impl serde::Serialize,
     ) -> HostClientResult<T> {
+        self.post_json_with_agent(&self.agent, path, input)
+    }
+
+    fn post_json_with_agent<T: serde::de::DeserializeOwned>(
+        &self,
+        agent: &ureq::Agent,
+        path: &str,
+        input: &impl serde::Serialize,
+    ) -> HostClientResult<T> {
         let body =
             serde_json::to_vec(input).map_err(|error| HostClientError::SerializeRequest {
                 message: error.to_string(),
             })?;
-        let response = request_host(&self.agent, &self.addr, "POST", path, Some(&body))?;
+        let response = request_host(agent, &self.addr, "POST", path, Some(&body))?;
         decode_response_json(&response)
     }
+}
+
+fn host_agent(timeout: Duration) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(timeout))
+        .build();
+    ureq::Agent::new_with_config(config)
 }
 
 fn decode_response_json<T: serde::de::DeserializeOwned>(body: &str) -> HostClientResult<T> {

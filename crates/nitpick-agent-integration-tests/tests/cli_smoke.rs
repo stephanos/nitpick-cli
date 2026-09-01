@@ -59,6 +59,14 @@ if [ "$1 $2" = "api repos/stephanos/nitpick-agent/pulls/42/reviews" ] && [ -z "$
   printf '[]\n'
   exit 0
 fi
+if [ "$1 $2" = "api repos/stephanos/nitpick-agent/pulls/42/comments" ]; then
+  printf '[]\n'
+  exit 0
+fi
+if [ "$1 $2" = "api repos/stephanos/nitpick-agent/issues/42/comments" ]; then
+  printf '[]\n'
+  exit 0
+fi
 cat >/dev/null
 printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
 "#,
@@ -130,9 +138,10 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
             FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
         ),
         Arc::new(RecordingProvider::default()),
-        Arc::new(StubDiscovery::new(vec![pull_request("sha-one")])),
+        Arc::new(StubDiscovery::new(vec![pull_request("sha-one")]).with_repo_dir(checkout.clone())),
         Arc::new(ManualClock::new(1_000)),
-    );
+    )
+    .with_data_dir_preserving_dependencies(&data_dir);
     let host_addr = serve_host(daemon.clone()).await;
     let repo_dir = temp.path().to_path_buf();
 
@@ -281,11 +290,15 @@ printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42
             .expect("canonical checkout")
             .display()
     );
-    let session_id = review_chat_log
+    let resume_args = review_chat_log
         .strip_prefix(&prefix)
         .and_then(|value| value.strip_suffix('\n'))
-        .expect("review chat session id");
+        .expect("review chat resume args");
+    let (session_id, mcp_config_path) = resume_args
+        .split_once(" --mcp-config ")
+        .expect("review chat MCP config");
     assert!(is_uuid_like(session_id), "{session_id}");
+    assert!(!std::path::Path::new(mcp_config_path).exists());
 
     let cleanup = run_cli_command(
         CliCommand::System(SystemCommand::CleanupCheckouts),
@@ -310,18 +323,35 @@ async fn review_chat_clears_missing_provider_session_id() {
     )
     .expect("fake claude");
     make_executable(&fake_claude);
+    let fake_gh = temp.path().join("gh");
+    fs::write(
+        &fake_gh,
+        r#"#!/bin/sh
+if [ "$*" = "api repos/stephanos/nitpick-agent/pulls/42/comments" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "api repos/stephanos/nitpick-agent/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "pr view 42 --repo stephanos/nitpick-agent --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/42","body":"Body","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+  exit 0
+fi
+if [ "$*" = "api repos/stephanos/nitpick-agent/issues/42/comments" ]; then printf '[]'; exit 0; fi
+exit 1
+"#,
+    )
+    .expect("fake gh");
+    make_executable(&fake_gh);
     let config_path = temp.path().join("config.toml");
     std::fs::write(
         &config_path,
         format!(
-            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n",
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n\n[github]\ncommand = \"{}\"\n",
             fake_claude.display(),
+            fake_gh.display(),
         ),
     )
     .expect("config");
     let data_dir = temp.path().join("data");
-    std::fs::create_dir_all(data_dir.join("checkouts/stephanos/nitpick-agent/pr-42/.git"))
-        .expect("checkout");
+    let checkout = data_dir.join("checkouts/stephanos/nitpick-agent/pr-42");
+    std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
     let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
     let processed = Arc::new(
         FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
@@ -335,14 +365,17 @@ async fn review_chat_clears_missing_provider_session_id() {
     activity.session.provider_session_id = Some("github:stephanos/nitpick-agent#42".into());
     activity.session.status = nitpick_agent_core::SessionStatus::Completed;
     store.save(&activity).expect("save activity");
+    let mut daemon_config = github_auto_review_config();
+    daemon_config.github_command = Some(fake_gh.display().to_string());
     let daemon = HostDaemon::with_dependencies(
         store.clone(),
-        github_auto_review_config(),
+        daemon_config,
         processed,
         Arc::new(RecordingProvider::default()),
-        Arc::new(StubDiscovery::new(vec![])),
+        Arc::new(StubDiscovery::new(vec![]).with_repo_dir(checkout)),
         Arc::new(ManualClock::new(1_000)),
-    );
+    )
+    .with_data_dir_preserving_dependencies(&data_dir);
     let host_addr = serve_host(daemon).await;
 
     let error = run_cli_command(
@@ -421,7 +454,8 @@ async fn review_chat_fails_fast_for_active_review() {
         Arc::new(RecordingProvider::default()),
         Arc::new(StubDiscovery::new(vec![])),
         Arc::new(ManualClock::new(1_000)),
-    );
+    )
+    .with_data_dir_preserving_dependencies(&data_dir);
     let host_addr = serve_host(daemon).await;
 
     let started = Instant::now();
@@ -484,7 +518,8 @@ async fn debug_provider_runs_diagnostic_and_persists_logs() {
         Arc::new(RecordingProvider::default()),
         Arc::new(StubDiscovery::new(vec![])),
         Arc::new(ManualClock::new(1_000)),
-    );
+    )
+    .with_data_dir_preserving_dependencies(&data_dir);
     let host_addr = serve_host(daemon).await;
 
     let output = run_cli_command(
@@ -528,12 +563,29 @@ async fn review_chat_resumes_with_activity_provider() {
     )
     .expect("fake provider");
     make_executable(&fake_provider);
+    let fake_gh = temp.path().join("gh");
+    fs::write(
+        &fake_gh,
+        r#"#!/bin/sh
+if [ "$*" = "api repos/stephanos/subvoc/pulls/1/comments" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "api repos/stephanos/subvoc/pulls/1/reviews" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "pr view 1 --repo stephanos/subvoc --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/1","body":"Body","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+  exit 0
+fi
+if [ "$*" = "api repos/stephanos/subvoc/issues/1/comments" ]; then printf '[]'; exit 0; fi
+exit 1
+"#,
+    )
+    .expect("fake gh");
+    make_executable(&fake_gh);
     let config_path = temp.path().join("config.toml");
     fs::write(
         &config_path,
         format!(
-            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n",
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n\n[github]\ncommand = \"{}\"\n",
             fake_provider.display(),
+            fake_gh.display(),
         ),
     )
     .expect("config");
@@ -553,14 +605,17 @@ async fn review_chat_resumes_with_activity_provider() {
     activity.session.provider_session_id = Some("codex-session-1".into());
     activity.session.status = nitpick_agent_core::SessionStatus::Completed;
     store.save(&activity).expect("save activity");
+    let mut daemon_config = github_disabled_config();
+    daemon_config.github_command = Some(fake_gh.display().to_string());
     let daemon = HostDaemon::with_dependencies(
         store,
-        github_disabled_config(),
+        daemon_config,
         processed,
         Arc::new(RecordingProvider::default()),
-        Arc::new(StubDiscovery::new(vec![])),
+        Arc::new(StubDiscovery::new(vec![]).with_repo_dir(checkout.clone())),
         Arc::new(ManualClock::new(1_000)),
-    );
+    )
+    .with_data_dir_preserving_dependencies(&data_dir);
     let host_addr = serve_host(daemon).await;
 
     let output = run_cli_command(
@@ -577,16 +632,123 @@ async fn review_chat_resumes_with_activity_provider() {
     .expect("review chat command");
 
     assert_eq!(output, "");
-    assert_eq!(
-        fs::read_to_string(resume_log).expect("review chat args"),
-        format!(
-            "pwd={} args=resume codex-session-1\n",
-            checkout
-                .canonicalize()
-                .expect("canonical checkout")
-                .display()
-        )
+    let resume = fs::read_to_string(resume_log).expect("review chat args");
+    let prefix = format!(
+        "pwd={} args=resume codex-session-1 -c mcp_servers.nitpick-review.command=",
+        checkout
+            .canonicalize()
+            .expect("canonical checkout")
+            .display()
     );
+    assert!(resume.starts_with(&prefix), "{resume}");
+    assert!(resume.contains(" -c mcp_servers.nitpick-review.args=[\"review-mcp\",\""));
+    let state_path = resume
+        .split("mcp_servers.nitpick-review.args=[\"review-mcp\",\"")
+        .nth(1)
+        .and_then(|value| value.strip_suffix("\"]\n"))
+        .expect("review MCP state path");
+    assert!(!std::path::Path::new(state_path).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_chat_reports_unfinished_batch_even_when_provider_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_provider = temp.path().join("provider");
+    let state_log = temp.path().join("state.log");
+    fs::write(
+        &fake_provider,
+        format!(
+            r#"#!/bin/sh
+config=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--mcp-config" ]; then config="$2"; shift 2; continue; fi
+  shift
+done
+state=$(sed -E 's/.*"args":\["review-mcp","([^"]+)"\].*/\1/' "$config")
+printf '%s' "$state" > '{}'
+perl -0pi -e 's/"additions": \[\]/"additions": [{{"path":"src.rs","line":1,"body":"unfinished"}}]/' "$state"
+exit 7
+"#,
+            state_log.display()
+        ),
+    )
+    .expect("fake provider");
+    make_executable(&fake_provider);
+    let fake_gh = temp.path().join("gh");
+    fs::write(
+        &fake_gh,
+        r#"#!/bin/sh
+if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/42","body":"Body","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then printf '[]'; exit 0; fi
+exit 1
+"#,
+    )
+    .expect("fake gh");
+    make_executable(&fake_gh);
+    let config_path = temp.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[agent]\nprovider = \"claude\"\ncommand = \"{}\"\nsandbox = \"none\"\n",
+            fake_provider.display()
+        ),
+    )
+    .expect("config");
+    let data_dir = temp.path().join("data");
+    let checkout = data_dir.join("checkouts/acme/platform/pr-42");
+    fs::create_dir_all(checkout.join(".git")).expect("checkout");
+    fs::write(checkout.join("src.rs"), "fn main() {}\n").expect("repo file");
+    let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
+    let mut activity = store
+        .create(nitpick_agent_core::ActivityKind::Review)
+        .expect("activity");
+    activity.label = Some("review on acme/platform#42".into());
+    activity.status = ActivityStatus::Completed;
+    activity.session.provider = Some(nitpick_agent_core::AgentProviderKind::Claude);
+    activity.session.provider_session_id = Some("session-1".into());
+    store.save(&activity).expect("save activity");
+    let mut daemon_config = github_disabled_config();
+    daemon_config.github_command = Some(fake_gh.display().to_string());
+    let daemon = HostDaemon::with_dependencies(
+        store,
+        daemon_config,
+        Arc::new(
+            FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
+        ),
+        Arc::new(RecordingProvider::default()),
+        Arc::new(StubDiscovery::new(vec![]).with_repo_dir(checkout)),
+        Arc::new(ManualClock::new(1_000)),
+    )
+    .with_data_dir_preserving_dependencies(&data_dir);
+    let host_addr = serve_host(daemon).await;
+
+    let error = run_cli_command(
+        CliCommand::Review(ReviewCommand::Chat {
+            target: "acme/platform#42".into(),
+        }),
+        &host_addr,
+        temp.path().to_path_buf(),
+        String::new(),
+        String::new(),
+        config_path,
+        data_dir,
+    )
+    .expect_err("dirty review chat");
+
+    assert!(error.contains("provider command"), "{error}");
+    assert!(
+        error.contains(
+            "review chat exited with 1 unpublished addition(s) and 0 unpublished deletion(s); call finish_review before exiting"
+        ),
+        "{error}"
+    );
+    let state_path = fs::read_to_string(state_log).expect("state path");
+    assert!(!std::path::Path::new(&state_path).exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -621,6 +783,7 @@ async fn review_start_uses_mcp_tools_for_local_smoke_comments() {
     .expect("changed repo file");
     let diff = run_git(&repo_dir, &["diff", "--", "src/lib.rs"]);
 
+    let data_dir = temp.path().join("data");
     let store = Arc::new(FsActivityStore::new(temp.path().join("store")).expect("store"));
     let daemon = HostDaemon::with_dependencies(
         store.clone(),
@@ -631,7 +794,8 @@ async fn review_start_uses_mcp_tools_for_local_smoke_comments() {
         Arc::new(McpSmokeProvider),
         Arc::new(StubDiscovery::new(vec![])),
         Arc::new(ManualClock::new(1_000)),
-    );
+    )
+    .with_data_dir_preserving_dependencies(&data_dir);
     let host_addr = serve_host(daemon).await;
 
     let review_start = run_cli_command(
@@ -644,7 +808,7 @@ async fn review_start_uses_mcp_tools_for_local_smoke_comments() {
         diff,
         String::new(),
         temp.path().join("config.toml"),
-        temp.path().join("data"),
+        data_dir,
     )
     .expect("review start command");
 

@@ -1,5 +1,8 @@
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -16,7 +19,8 @@ use nitpick_agent_core::{
 use nitpick_agent_host::{AgentConfig, GitHubDiscoveryConfig, HostDaemon, api_router};
 use nitpick_agent_model::{
     ActivityId, ActivityKind, ActivityStatus, AgentProviderKind, AgentSession, ArtifactContent,
-    ArtifactKind, ArtifactSyncState, ChatInput, ReviewComment, ReviewInput, ReviewOutput,
+    ArtifactKind, ArtifactSyncState, ChatInput, FinishReviewCommentBatchInput,
+    ReviewChatSessionInput, ReviewComment, ReviewCommentBatch, ReviewInput, ReviewOutput,
     ReviewRequest, ReviewSubject, StartReviewRequest,
 };
 use serde_json::Value;
@@ -183,6 +187,10 @@ async fn reset_endpoint_clears_local_state() {
     .expect("mark processed");
     let checkout_root = data_dir.path().join("checkouts");
     fs::create_dir_all(checkout_root.join("acme-platform-42")).expect("checkout dir");
+    let review_chat_sessions = data_dir.path().join("review-chat-sessions");
+    let review_comment_batches = data_dir.path().join("review-comment-batches");
+    fs::create_dir(&review_chat_sessions).expect("review chat sessions");
+    fs::create_dir(&review_comment_batches).expect("review comment batches");
     let log_path = data_dir.path().join("logs").join("daemon.log");
     fs::create_dir_all(log_path.parent().expect("log parent")).expect("log dir");
     fs::write(&log_path, "old log").expect("log");
@@ -214,6 +222,8 @@ async fn reset_endpoint_clears_local_state() {
     assert!(store.list_artifacts().expect("artifacts").is_empty());
     assert!(processed.list_processed().expect("processed").is_empty());
     assert!(checkout_root.exists());
+    assert!(!review_chat_sessions.exists());
+    assert!(!review_comment_batches.exists());
     assert_eq!(fs::read_to_string(&log_path).expect("log"), "");
 }
 
@@ -252,6 +262,179 @@ async fn missing_activity_returns_not_found() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn review_chat_session_endpoint_rejects_a_target_that_does_not_match_the_activity() {
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut activity = store.create(ActivityKind::Review).expect("activity");
+    activity.status = ActivityStatus::Completed;
+    activity.label = Some("review on acme/platform#42".into());
+    activity.session.provider_session_id = Some("session-1".into());
+    store.save(&activity).expect("save activity");
+    let app = api_router(HostDaemon::new(store));
+
+    let response = app
+        .oneshot(json_request(
+            &format!("/activities/{}/review-chat-session", activity.id),
+            &ReviewChatSessionInput {
+                repository: "acme/platform".into(),
+                number: 43,
+            },
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error")
+            .contains("does not review")
+    );
+}
+
+#[tokio::test]
+async fn review_chat_session_endpoint_returns_a_live_review_snapshot() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo_dir = dir.path().join("repo");
+    fs::create_dir(&repo_dir).expect("repo dir");
+    fs::write(repo_dir.join("src.rs"), "fn main() {}\n").expect("repo file");
+    let gh = dir.path().join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Change","author":{"login":"alice"},"url":"https://example.test/pr/42","body":"Please review.","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+  exit 0
+fi
+if [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then printf '[]'; exit 0; fi
+if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
+  printf '{"headRefOid":"def456"}'
+  exit 0
+fi
+exit 1
+"#,
+    )
+    .expect("gh script");
+    make_executable(&gh);
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut activity = store.create(ActivityKind::Review).expect("activity");
+    activity.status = ActivityStatus::Completed;
+    activity.label = Some("review on acme/platform#42".into());
+    activity.session.provider_session_id = Some("session-1".into());
+    store.save(&activity).expect("save activity");
+    let review_source_calls = Arc::new(AtomicUsize::new(0));
+    let review_source = Arc::new(SnapshotReviewSource {
+        input: ReviewInput {
+            repo_dir: repo_dir.clone(),
+            subject: ReviewSubject {
+                repository: "acme/platform".into(),
+                number: Some(42),
+                ..ReviewSubject::default()
+            },
+            head_sha: "abc123".into(),
+            diff: "diff --git a/src.rs b/src.rs\n--- a/src.rs\n+++ b/src.rs\n@@ -0,0 +1 @@\n+fn main() {}\n".into(),
+            ..ReviewInput::default()
+        },
+        calls: review_source_calls.clone(),
+    });
+    let app = api_router(
+        HostDaemon::with_dependencies(
+            store,
+            AgentConfig {
+                github_command: Some(gh.display().to_string()),
+                ..AgentConfig::default()
+            },
+            Arc::new(MemoryProcessedReviewStore::default()),
+            Arc::new(FakeProvider),
+            review_source,
+            Arc::new(SystemClock),
+        )
+        .with_data_dir(dir.path()),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            &format!("/activities/{}/review-chat-session", activity.id),
+            &ReviewChatSessionInput {
+                repository: "acme/platform".into(),
+                number: 42,
+            },
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["activity_id"], activity.id.to_string());
+    assert_eq!(body["repo_dir"], repo_dir.display().to_string());
+    assert_eq!(body["head_sha"], "abc123");
+    assert_eq!(body["pull_request_context"]["title"], "Change");
+
+    let response = app
+        .oneshot(json_request(
+            &format!(
+                "/activities/{}/review-comment-batches/batch-stale/finish",
+                activity.id
+            ),
+            &FinishReviewCommentBatchInput {
+                pinned_head_sha: "abc123".into(),
+                batch: ReviewCommentBatch {
+                    id: "batch-stale".into(),
+                    additions: vec![ReviewComment {
+                        path: "src.rs".into(),
+                        line: 1,
+                        body: "Stale finding.".into(),
+                    }],
+                    deletion_ids: Vec::new(),
+                },
+            },
+        ))
+        .await
+        .expect("stale finish response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(review_source_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn review_comment_batch_finish_endpoint_completes_an_empty_batch_without_github() {
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let store = Arc::new(MemoryActivityStore::default());
+    let mut activity = store.create(ActivityKind::Review).expect("activity");
+    activity.status = ActivityStatus::Completed;
+    activity.label = Some("review on acme/platform#42".into());
+    store.save(&activity).expect("save activity");
+    let app = api_router(HostDaemon::new(store).with_data_dir(data_dir.path()));
+    let input = FinishReviewCommentBatchInput {
+        pinned_head_sha: "abc123".into(),
+        batch: ReviewCommentBatch {
+            id: "batch-1".into(),
+            additions: Vec::new(),
+            deletion_ids: Vec::new(),
+        },
+    };
+
+    let response = app
+        .oneshot(json_request(
+            &format!(
+                "/activities/{}/review-comment-batches/batch-1/finish",
+                activity.id
+            ),
+            &input,
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["no_op"], true);
+    assert_eq!(body["committed_addition_count"], 0);
 }
 
 #[tokio::test]
@@ -1617,6 +1800,26 @@ impl AgentProvider for FakeProvider {
 }
 
 struct RateLimitedReviewSource;
+
+struct SnapshotReviewSource {
+    input: ReviewInput,
+    calls: Arc<AtomicUsize>,
+}
+
+impl ReviewSource for SnapshotReviewSource {
+    fn name(&self) -> &'static str {
+        "github"
+    }
+
+    fn requested_reviews(&self) -> AgentResult<Vec<ReviewRequest>> {
+        Ok(Vec::new())
+    }
+
+    fn review_input(&self, _request: &ReviewRequest) -> AgentResult<ReviewInput> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.input.clone())
+    }
+}
 
 impl ReviewSource for RateLimitedReviewSource {
     fn name(&self) -> &'static str {

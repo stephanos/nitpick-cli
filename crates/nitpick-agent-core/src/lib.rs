@@ -45,8 +45,11 @@ pub use host::{
 };
 pub use json::{parse_json_bytes, parse_json_str, read_json, read_json_dir, write_json_atomic};
 pub use model::{
-    ChatInput, ProviderDiagnosticInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
-    ReviewRequest, ReviewSubject, StartReviewRequest,
+    ChatInput, ExistingReviewComment, FinishReviewCommentBatchInput,
+    FinishReviewCommentBatchResult, ProviderDiagnosticInput, PullRequestContext,
+    PullRequestConversationComment, ReviewChatSessionInput, ReviewChatSessionSnapshot,
+    ReviewComment, ReviewCommentBatch, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest,
+    ReviewSubject, StartReviewRequest,
 };
 pub use nitpick_agent_model::ProviderFailureKind;
 pub use nono_sandbox::{NONO_SANDBOX_HELPER_ARG, run_nono_sandbox_helper};
@@ -63,7 +66,7 @@ pub use pull_request::{
     RemotePullRequestReviewer, RemotePullRequestReviewerState, RemotePullRequestState,
 };
 pub use repo_path::RepoPath;
-pub use review_identity::ReviewActivityIdentity;
+pub use review_identity::{ReviewActivityIdentity, ReviewActivityTarget};
 pub use review_output::{
     REVIEW_OUTPUT_RELATIVE_PATH, validate_review_output_file, validate_review_output_file_for_diff,
 };

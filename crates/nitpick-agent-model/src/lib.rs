@@ -22,7 +22,10 @@ pub use pull_request::{
     RemotePullRequestReviewer, RemotePullRequestReviewerState, RemotePullRequestState,
 };
 pub use review::{
-    ChatInput, ProviderDiagnosticInput, ReviewComment, ReviewInput, ReviewMode, ReviewOutput,
-    ReviewRequest, ReviewSubject, StartReviewRequest,
+    ChatInput, ExistingReviewComment, FinishReviewCommentBatchInput,
+    FinishReviewCommentBatchResult, ProviderDiagnosticInput, PullRequestContext,
+    PullRequestConversationComment, ReviewChatSessionInput, ReviewChatSessionSnapshot,
+    ReviewComment, ReviewCommentBatch, ReviewInput, ReviewMode, ReviewOutput, ReviewRequest,
+    ReviewSubject, StartReviewRequest,
 };
 pub use session::{AgentMessage, AgentSession, SessionStatus};

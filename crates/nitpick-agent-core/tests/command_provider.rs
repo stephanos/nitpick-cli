@@ -1076,6 +1076,24 @@ fn claude_command_provider_resumes_existing_session() {
 }
 
 #[test]
+fn claude_resume_registers_review_chat_mcp_tools() {
+    let fixture = ResumeWithToolsFixture::new(AgentProviderKind::Claude);
+
+    fixture
+        .provider
+        .attach_session_in_repo_with_tools(&fixture.session, &fixture.repo_dir, &fixture.tools)
+        .expect("attach with tools");
+
+    assert_eq!(
+        fs::read_to_string(&fixture.args_log).expect("args"),
+        format!(
+            "--resume github:acme/platform#42 --mcp-config {}\n",
+            fixture.tools.mcp_config_path.display()
+        )
+    );
+}
+
+#[test]
 fn attach_requires_provider_session_id() {
     let provider = CommandAgentProvider::for_kind(AgentProviderKind::Claude, None);
     let error = provider
@@ -1115,6 +1133,25 @@ fn codex_command_provider_resumes_existing_session() {
 }
 
 #[test]
+fn codex_resume_registers_review_chat_mcp_tools_without_exec() {
+    let fixture = ResumeWithToolsFixture::new(AgentProviderKind::Codex);
+
+    fixture
+        .provider
+        .attach_session_in_repo_with_tools(&fixture.session, &fixture.repo_dir, &fixture.tools)
+        .expect("attach with tools");
+
+    assert_eq!(
+        fs::read_to_string(&fixture.args_log).expect("args"),
+        format!(
+            "resume github:acme/platform#42 -c mcp_servers.nitpick-review.command=\"{}\" -c mcp_servers.nitpick-review.args=[\"review-mcp\",\"{}\"]\n",
+            fixture.mcp_command.display(),
+            fixture.state_path.display()
+        )
+    );
+}
+
+#[test]
 fn attach_session_includes_stderr_from_failed_resume_command() {
     let dir = tempfile::tempdir().expect("temp dir");
     let command = dir.path().join("provider");
@@ -1137,6 +1174,74 @@ fn attach_session_includes_stderr_from_failed_resume_command() {
         error.to_string(),
         "claude provider command failed with status exit status: 1: session not found"
     );
+}
+
+struct ResumeWithToolsFixture {
+    _dir: tempfile::TempDir,
+    provider: CommandAgentProvider,
+    session: AgentSession,
+    repo_dir: std::path::PathBuf,
+    tools: ReviewToolConfig,
+    args_log: std::path::PathBuf,
+    mcp_command: std::path::PathBuf,
+    state_path: std::path::PathBuf,
+}
+
+impl ResumeWithToolsFixture {
+    fn new(kind: AgentProviderKind) -> Self {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo_dir = dir.path().join("repo");
+        fs::create_dir(&repo_dir).expect("repo dir");
+        let command = dir.path().join("provider");
+        let args_log = dir.path().join("args.log");
+        fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
+                args_log.display()
+            ),
+        )
+        .expect("provider command");
+        make_executable(&command);
+        let mcp_command = dir.path().join("nitpick-agent-host");
+        fs::write(&mcp_command, "host").expect("MCP command");
+        let state_path = dir.path().join("session.json");
+        fs::write(&state_path, "{}").expect("MCP state");
+        let config_path = dir.path().join("mcp.json");
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "mcpServers": {
+                    "nitpick-review": {
+                        "command": mcp_command,
+                        "args": ["review-mcp", state_path]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("MCP config");
+        let provider = CommandAgentProvider::new(kind.clone(), None, &command);
+        let session = AgentSession {
+            provider: Some(kind),
+            provider_session_id: Some("github:acme/platform#42".into()),
+            ..AgentSession::default()
+        };
+
+        Self {
+            _dir: dir,
+            provider,
+            session,
+            repo_dir,
+            tools: ReviewToolConfig {
+                mcp_config_path: config_path,
+                instructions: String::new(),
+            },
+            args_log,
+            mcp_command,
+            state_path,
+        }
+    }
 }
 
 fn make_executable(command: &std::path::Path) {

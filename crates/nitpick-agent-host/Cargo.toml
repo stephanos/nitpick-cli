@@ -7,6 +7,7 @@ edition.workspace = true
 axum.workspace = true
 fs-err = "3.3.0"
 nitpick-agent-core.workspace = true
+nitpick-agent-client = { path = "../nitpick-agent-client" }
 nitpick-agent-model.workspace = true
 nitpick-agent-github = { path = "../nitpick-agent-github" }
 rmcp.workspace = true
@@ -17,6 +18,7 @@ tokio.workspace = true
 toml.workspace = true
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -1,8 +1,9 @@
 use clap::{Args, Subcommand, ValueEnum};
 use nitpick_agent_client::HostClient;
 use nitpick_agent_core::{
-    Activity, ActivityKind, ActivityStatus, RemotePullRequestRef, ReviewInput, ReviewMode,
-    ReviewRequest, ReviewSubject, StartReviewRequest,
+    Activity, ActivityKind, ActivityStatus, RemotePullRequestRef, ReviewActivityIdentity,
+    ReviewChatSessionInput, ReviewInput, ReviewMode, ReviewRequest, ReviewSubject,
+    StartReviewRequest,
 };
 
 use crate::{CliError, CliOptions, CliRunContext};
@@ -103,25 +104,54 @@ pub fn run(
             let activity = crate::activity::resolve_log_activity(&activities, &target)
                 .map_err(CliError::from)?;
             crate::activity::ensure_review_chat_available(activity).map_err(CliError::from)?;
+            let review_target = ReviewActivityIdentity::new(activity)
+                .pull_request_target()
+                .ok_or_else(|| {
+                    CliError::from(format!(
+                        "activity {} is not a pull request review",
+                        activity.id
+                    ))
+                })?;
+            let snapshot = client.prepare_review_chat_session(
+                activity.id.as_str(),
+                &ReviewChatSessionInput {
+                    repository: review_target.repository,
+                    number: review_target.number,
+                },
+            )?;
             let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
                 .map_err(CliError::from)?;
             crate::support::apply_sandbox_option(&mut config, &options);
             if let Some(provider) = activity.session.provider.clone() {
                 config.provider = provider;
             }
-            let checkout =
-                crate::support::ensure_cached_checkout(&target, &config, &context.data_dir)
-                    .map_err(CliError::from)?;
-            config
+            let repo_dir = snapshot.repo_dir.clone();
+            let handle = nitpick_agent_host::review_mcp::ReviewMcpServerHandle::start_chat(
+                &context.host_addr,
+                snapshot,
+            )
+            .map_err(CliError::from)?;
+            let tools = handle.tool_config();
+            let resume_result = config
                 .command_provider_with_data_dir(&context.data_dir)
-                .attach_session_in_repo(&activity.session, &checkout)
-                .map_err(|error| {
-                    CliError::from(crate::support::handle_resume_error(
-                        activity,
-                        &context.data_dir,
-                        error.to_string(),
-                    ))
-                })?;
+                .attach_session_in_repo_with_tools(&activity.session, &repo_dir, &tools);
+            let resume_error = resume_result.err().map(|error| {
+                crate::support::handle_resume_error(activity, &context.data_dir, error.to_string())
+            });
+            let (addition_count, deletion_count) =
+                handle.uncommitted_counts().map_err(CliError::from)?;
+            if addition_count > 0 || deletion_count > 0 {
+                let dirty_batch_error = format!(
+                    "review chat exited with {addition_count} unpublished addition(s) and {deletion_count} unpublished deletion(s); call finish_review before exiting"
+                );
+                return Err(CliError::from(match resume_error {
+                    Some(error) => format!("{error}; {dirty_batch_error}"),
+                    None => dirty_batch_error,
+                }));
+            }
+            if let Some(error) = resume_error {
+                return Err(CliError::from(error));
+            }
             Ok(String::new())
         }
         ReviewCommand::OpenEditor { target } => {

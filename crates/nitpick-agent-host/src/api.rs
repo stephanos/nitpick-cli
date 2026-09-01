@@ -9,8 +9,10 @@ use nitpick_agent_core::{AgentError, AgentResult};
 use nitpick_agent_github::DiscoveredPullRequest;
 use nitpick_agent_model::{
     Activity, ActivityId, ActivityKind, ActivityStatus, Artifact, ArtifactId, ArtifactSyncState,
-    ChatInput, CleanupCheckoutsResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
-    RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewRequest, StartReviewRequest,
+    ChatInput, CleanupCheckoutsResult, FinishReviewCommentBatchInput,
+    FinishReviewCommentBatchResult, HostStatus, LocalStateResetResult, ProviderDiagnosticInput,
+    RetryFailedActivitiesInput, RetryFailedActivitiesResult, ReviewChatSessionInput,
+    ReviewChatSessionSnapshot, ReviewRequest, StartReviewRequest,
 };
 use serde::Deserialize;
 
@@ -23,6 +25,14 @@ pub fn api_router(daemon: HostDaemon) -> Router {
         .route("/activities/retry-failed", post(retry_failed_activities))
         .route("/activities/{id}", get(activity))
         .route("/activities/{id}/artifacts", get(activity_artifacts))
+        .route(
+            "/activities/{id}/review-chat-session",
+            post(prepare_review_chat_session),
+        )
+        .route(
+            "/activities/{id}/review-comment-batches/{batch_id}/finish",
+            post(finish_review_comment_batch),
+        )
         .route(
             "/activities/{id}/artifact-sync",
             post(activity_artifact_sync),
@@ -95,6 +105,35 @@ async fn activity_artifacts(
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
     Ok(Json(daemon.list_artifacts_for(&id)?).into_response())
+}
+
+async fn prepare_review_chat_session(
+    State(daemon): State<HostDaemon>,
+    PathParam(id): PathParam<String>,
+    Json(input): Json<ReviewChatSessionInput>,
+) -> Result<Json<ReviewChatSessionSnapshot>, ApiError> {
+    Ok(Json(daemon.prepare_review_chat_session(
+        &ActivityId::new(id),
+        &input,
+    )?))
+}
+
+async fn finish_review_comment_batch(
+    State(daemon): State<HostDaemon>,
+    PathParam((id, batch_id)): PathParam<(String, String)>,
+    Json(input): Json<FinishReviewCommentBatchInput>,
+) -> Result<Json<FinishReviewCommentBatchResult>, ApiError> {
+    if input.batch.id != batch_id {
+        return Err(AgentError::invalid_input(format!(
+            "review comment batch ID `{}` does not match route batch ID `{batch_id}`",
+            input.batch.id
+        ))
+        .into());
+    }
+    Ok(Json(daemon.finish_review_comment_batch(
+        &ActivityId::new(id),
+        &input,
+    )?))
 }
 
 async fn pending_sync_artifacts(

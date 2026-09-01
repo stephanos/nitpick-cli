@@ -1,4 +1,9 @@
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    io::{Read, Write},
+    net::TcpListener,
+    sync::Arc,
+};
 
 use nitpick_agent_core::{
     AgentProvider, AgentResult, AgentRuntime, MemoryActivityStore, ProviderReviewContext,
@@ -8,12 +13,14 @@ use nitpick_agent_host::{
     HostDaemon, HostReviewProvider,
     review_mcp::{
         ActiveReviewSession, AddReviewCommentInput, DeleteDraftCommentInput, ExistingReviewComment,
-        PullRequestContext, PullRequestConversationComment, ReviewMcpSessionState, ReviewMcpTools,
+        PullRequestContext, PullRequestConversationComment, ReviewMcpChatState,
+        ReviewMcpServerHandle, ReviewMcpSessionState, ReviewMcpTools,
         load_review_mcp_session_state, write_review_mcp_session_state_for_test,
     },
 };
 use nitpick_agent_model::{
-    ActivityStatus, AgentSession, ChatInput, ReviewInput, ReviewOutput, ReviewSubject,
+    ActivityId, ActivityStatus, AgentSession, ChatInput, ReviewChatSessionSnapshot,
+    ReviewCommentBatch, ReviewInput, ReviewOutput, ReviewSubject,
 };
 
 #[test]
@@ -84,6 +91,218 @@ fn review_mcp_tools_add_review_comment_records_comment() {
 }
 
 #[test]
+fn review_chat_addition_is_staged_only_in_the_current_batch() {
+    let fixture = ReviewFixture::new();
+    let state = tempfile::NamedTempFile::new().expect("state file");
+    write_review_mcp_session_state_for_test(
+        state.path(),
+        &ReviewMcpSessionState {
+            repo_dir: fixture.repo_dir,
+            diff: DIFF.into(),
+            comments: Vec::new(),
+            pull_request_context: PullRequestContext::default(),
+            existing_comments: Vec::new(),
+            deleted_comment_ids: Vec::new(),
+            github: None,
+            chat: Some(ReviewMcpChatState {
+                host_addr: "127.0.0.1:1".into(),
+                activity_id: "activity-1".into(),
+                repository: "acme/platform".into(),
+                number: 42,
+                pinned_head_sha: "abc123".into(),
+                batch: ReviewCommentBatch {
+                    id: "batch-1".into(),
+                    additions: Vec::new(),
+                    deletion_ids: Vec::new(),
+                },
+                last_result: None,
+            }),
+            finished: false,
+        },
+    )
+    .expect("write state");
+    let tools = ReviewMcpTools::from_state_path(state.path());
+
+    tools
+        .add_review_comment(AddReviewCommentInput {
+            path: "src.rs".into(),
+            line: 1,
+            body: "use a clearer entry point".into(),
+        })
+        .expect("stage comment");
+
+    let state = load_review_mcp_session_state(state.path()).expect("state");
+    assert!(state.comments.is_empty());
+    assert_eq!(state.chat.expect("chat").batch.additions.len(), 1);
+}
+
+#[test]
+fn review_chat_deletion_is_staged_only_in_the_current_batch() {
+    let fixture = ReviewFixture::new();
+    let state = write_chat_state(&fixture, "127.0.0.1:1");
+    let mut session_state = load_review_mcp_session_state(state.path()).expect("state");
+    session_state.existing_comments = vec![existing_comment(
+        "11",
+        "nitpick",
+        "🤖 Old automated note.",
+        true,
+    )];
+    write_review_mcp_session_state_for_test(state.path(), &session_state).expect("write state");
+    let tools = ReviewMcpTools::from_state_path(state.path());
+
+    tools
+        .delete_draft_comment(DeleteDraftCommentInput { id: "11".into() })
+        .expect("stage deletion");
+
+    let state = load_review_mcp_session_state(state.path()).expect("state");
+    assert!(state.deleted_comment_ids.is_empty());
+    assert_eq!(state.chat.expect("chat").batch.deletion_ids, ["11"]);
+}
+
+#[test]
+fn review_chat_empty_finish_is_a_local_no_op() {
+    let fixture = ReviewFixture::new();
+    let state = write_chat_state(&fixture, "127.0.0.1:1");
+    let tools = ReviewMcpTools::from_state_path(state.path());
+
+    let result = tools.finish_review().expect("empty finish");
+
+    assert_eq!(result.status, "completed");
+    assert_eq!(result.comment_count, 0);
+    let state = load_review_mcp_session_state(state.path()).expect("state");
+    assert!(!state.finished);
+    assert_eq!(state.chat.expect("chat").batch.id, "batch-1");
+}
+
+#[test]
+fn review_chat_successful_finish_rotates_the_batch_and_allows_another_finish() {
+    let fixture = ReviewFixture::new();
+    let (host_addr, server) = serve_finish_results(2);
+    let state = write_chat_state(&fixture, &host_addr);
+    let tools = ReviewMcpTools::from_state_path(state.path());
+
+    for body in ["first finding", "second finding"] {
+        tools
+            .add_review_comment(AddReviewCommentInput {
+                path: "src.rs".into(),
+                line: 1,
+                body: body.into(),
+            })
+            .expect("stage comment");
+        let result = tools.finish_review().expect("finish batch");
+        assert_eq!(result.comment_count, 1);
+        let state_after_finish =
+            load_review_mcp_session_state(state.path()).expect("state after finish");
+        let chat = state_after_finish.chat.expect("chat");
+        assert!(chat.batch.is_empty());
+        assert_ne!(chat.batch.id, "batch-1");
+        assert!(!state_after_finish.finished);
+    }
+    server.join().expect("server");
+
+    let final_state = load_review_mcp_session_state(state.path()).expect("final state");
+    assert_eq!(final_state.existing_comments.len(), 2);
+    assert_eq!(final_state.existing_comments[0].id, "comment-1");
+    assert_eq!(final_state.existing_comments[1].id, "comment-2");
+    assert!(
+        final_state
+            .existing_comments
+            .iter()
+            .all(|comment| comment.draft)
+    );
+}
+
+#[test]
+fn review_chat_failed_finish_retains_the_batch_for_retry() {
+    let fixture = ReviewFixture::new();
+    let state = write_chat_state(&fixture, "127.0.0.1:1");
+    let tools = ReviewMcpTools::from_state_path(state.path());
+    tools
+        .add_review_comment(AddReviewCommentInput {
+            path: "src.rs".into(),
+            line: 1,
+            body: "keep this finding".into(),
+        })
+        .expect("stage comment");
+
+    tools.finish_review().expect_err("host unavailable");
+
+    let state = load_review_mcp_session_state(state.path()).expect("state");
+    let chat = state.chat.expect("chat");
+    assert_eq!(chat.batch.id, "batch-1");
+    assert_eq!(chat.batch.additions.len(), 1);
+    assert!(chat.last_result.is_none());
+}
+
+#[test]
+fn review_chat_can_delete_a_canonical_comment_from_an_earlier_batch() {
+    let fixture = ReviewFixture::new();
+    let (host_addr, server) = serve_finish_results(2);
+    let state = write_chat_state(&fixture, &host_addr);
+    let tools = ReviewMcpTools::from_state_path(state.path());
+    tools
+        .add_review_comment(AddReviewCommentInput {
+            path: "src.rs".into(),
+            line: 1,
+            body: "temporary finding".into(),
+        })
+        .expect("stage comment");
+    tools.finish_review().expect("finish addition");
+
+    let comments = tools.existing_review_comments().expect("existing comments");
+    assert_eq!(comments.comments[0].id, "comment-1");
+    assert!(comments.comments[0].draft);
+    tools
+        .delete_draft_comment(DeleteDraftCommentInput {
+            id: "comment-1".into(),
+        })
+        .expect("stage canonical deletion");
+    tools.finish_review().expect("finish deletion");
+    server.join().expect("server");
+
+    assert!(
+        tools
+            .existing_review_comments()
+            .expect("comments after deletion")
+            .comments
+            .is_empty()
+    );
+}
+
+#[test]
+fn review_chat_handle_uses_the_host_snapshot_executable_and_state() {
+    let fixture = ReviewFixture::new();
+    let host_executable = fixture._dir.path().join("nitpick-agent-host");
+    fs::write(&host_executable, "host").expect("host executable");
+    let handle = ReviewMcpServerHandle::start_chat(
+        "127.0.0.1:19783",
+        ReviewChatSessionSnapshot {
+            activity_id: ActivityId::new("activity-1"),
+            repository: "acme/platform".into(),
+            number: 42,
+            repo_dir: fixture.repo_dir.clone(),
+            head_sha: "abc123".into(),
+            diff: DIFF.into(),
+            pull_request_context: PullRequestContext::default(),
+            existing_comments: Vec::new(),
+            mcp_server_command: host_executable.clone(),
+        },
+    )
+    .expect("chat handle");
+
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&handle.tool_config().mcp_config_path).expect("config"))
+            .expect("config json");
+    assert_eq!(
+        config["mcpServers"]["nitpick-review"]["command"],
+        host_executable.display().to_string()
+    );
+    let state = handle.session_state().expect("state");
+    assert_eq!(state.repo_dir, fixture.repo_dir);
+    assert!(state.chat.expect("chat").batch.is_empty());
+}
+
+#[test]
 fn review_mcp_tools_finish_review_marks_session_finished() {
     let fixture = ReviewFixture::new();
     let session = ActiveReviewSession::new(&fixture.repo_dir, DIFF).expect("review session");
@@ -119,6 +338,7 @@ fn review_mcp_tools_lists_existing_comments() {
             ],
             deleted_comment_ids: Vec::new(),
             github: None,
+            chat: None,
             finished: false,
         },
     )
@@ -145,6 +365,7 @@ fn review_mcp_tools_returns_pull_request_context() {
             existing_comments: Vec::new(),
             deleted_comment_ids: Vec::new(),
             github: None,
+            chat: None,
             finished: false,
         },
     )
@@ -175,6 +396,7 @@ fn review_mcp_tools_returns_pull_request_conversation_comments() {
             existing_comments: Vec::new(),
             deleted_comment_ids: Vec::new(),
             github: None,
+            chat: None,
             finished: false,
         },
     )
@@ -208,6 +430,7 @@ fn review_mcp_tools_records_robot_draft_comment_deletion() {
             )],
             deleted_comment_ids: Vec::new(),
             github: None,
+            chat: None,
             finished: false,
         },
     )
@@ -239,6 +462,7 @@ fn review_mcp_tools_refuses_to_delete_user_or_submitted_comments() {
             ],
             deleted_comment_ids: Vec::new(),
             github: None,
+            chat: None,
             finished: false,
         },
     )
@@ -620,6 +844,121 @@ fn pull_request_context() -> PullRequestContext {
             url: Some("https://github.com/acme/platform/pull/42#issuecomment-100".into()),
         }],
     }
+}
+
+fn write_chat_state(fixture: &ReviewFixture, host_addr: &str) -> tempfile::NamedTempFile {
+    let state = tempfile::NamedTempFile::new().expect("state file");
+    write_review_mcp_session_state_for_test(
+        state.path(),
+        &ReviewMcpSessionState {
+            repo_dir: fixture.repo_dir.clone(),
+            diff: DIFF.into(),
+            comments: Vec::new(),
+            pull_request_context: PullRequestContext::default(),
+            existing_comments: Vec::new(),
+            deleted_comment_ids: Vec::new(),
+            github: None,
+            chat: Some(ReviewMcpChatState {
+                host_addr: host_addr.into(),
+                activity_id: "activity-1".into(),
+                repository: "acme/platform".into(),
+                number: 42,
+                pinned_head_sha: "abc123".into(),
+                batch: ReviewCommentBatch {
+                    id: "batch-1".into(),
+                    additions: Vec::new(),
+                    deletion_ids: Vec::new(),
+                },
+                last_result: None,
+            }),
+            finished: false,
+        },
+    )
+    .expect("write state");
+    state
+}
+
+fn serve_finish_results(request_count: usize) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = std::thread::spawn(move || {
+        let mut existing_comments: Vec<serde_json::Value> = Vec::new();
+        let mut next_comment_id = 1;
+        for _ in 0..request_count {
+            let (mut stream, _) = listener.accept().expect("request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let count = stream.read(&mut buffer).expect("read request");
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+                if request_body_is_complete(&request) {
+                    break;
+                }
+            }
+            let body_start = request
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .expect("request headers");
+            let input: serde_json::Value =
+                serde_json::from_slice(&request[body_start..]).expect("request json");
+            let batch_id = input["batch"]["id"].as_str().expect("batch id");
+            let additions = input["batch"]["additions"].as_array().expect("additions");
+            let deletion_ids = input["batch"]["deletion_ids"]
+                .as_array()
+                .expect("deletion IDs");
+            existing_comments.retain(|comment| !deletion_ids.iter().any(|id| id == &comment["id"]));
+            for addition in additions {
+                existing_comments.push(serde_json::json!({
+                    "id": format!("comment-{next_comment_id}"),
+                    "review_id": "99",
+                    "path": addition["path"],
+                    "line": addition["line"],
+                    "body": format!("🤖 {}", addition["body"].as_str().expect("body")),
+                    "author": "nitpick",
+                    "draft": true
+                }));
+                next_comment_id += 1;
+            }
+            let response_body = serde_json::json!({
+                "batch_id": batch_id,
+                "no_op": false,
+                "committed_addition_count": additions.len(),
+                "committed_deletion_count": deletion_ids.len(),
+                "pending_review_id": "99",
+                "pending_review_url": "https://example.test/review-99",
+                "existing_comments": existing_comments
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            )
+            .expect("write response");
+        }
+    });
+    (addr.to_string(), server)
+}
+
+fn request_body_is_complete(request: &[u8]) -> bool {
+    let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length: ")
+                .and_then(|length| length.parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+    request.len() >= header_end + 4 + content_length
 }
 
 fn make_executable(path: &std::path::Path) {

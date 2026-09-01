@@ -1534,6 +1534,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "fs-err",
+ "nitpick-agent-client",
  "nitpick-agent-core",
  "nitpick-agent-github",
  "nitpick-agent-model",
@@ -1547,6 +1548,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -1568,6 +1570,7 @@ dependencies = [
 name = "nitpick-agent-model"
 version = "0.1.0"
 dependencies = [
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "url",
