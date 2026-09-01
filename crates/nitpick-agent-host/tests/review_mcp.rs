@@ -237,7 +237,7 @@ fn review_chat_failed_finish_retains_the_batch_for_retry() {
 #[test]
 fn review_chat_can_delete_a_canonical_comment_from_an_earlier_batch() {
     let fixture = ReviewFixture::new();
-    let (host_addr, server) = serve_finish_results(2);
+    let (host_addr, server) = serve_finish_results(4);
     let state = write_chat_state(&fixture, &host_addr);
     let tools = ReviewMcpTools::from_state_path(state.path());
     tools
@@ -258,7 +258,6 @@ fn review_chat_can_delete_a_canonical_comment_from_an_earlier_batch() {
         })
         .expect("stage canonical deletion");
     tools.finish_review().expect("finish deletion");
-    server.join().expect("server");
 
     assert!(
         tools
@@ -267,6 +266,7 @@ fn review_chat_can_delete_a_canonical_comment_from_an_earlier_batch() {
             .comments
             .is_empty()
     );
+    server.join().expect("server");
 }
 
 #[test]
@@ -350,6 +350,67 @@ fn review_mcp_tools_lists_existing_comments() {
     assert_eq!(result.comments.len(), 2);
     assert_eq!(result.comments[0].id, "10");
     assert_eq!(result.comments[1].body, "🤖 Old automated note.");
+}
+
+#[test]
+fn review_chat_existing_comments_refreshes_the_host_snapshot() {
+    let fixture = ReviewFixture::new();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let count = stream.read(&mut buffer).expect("read request");
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if request_body_is_complete(&request) {
+                break;
+            }
+        }
+        assert!(request.starts_with(b"POST /activities/activity-1/review-chat-session HTTP/1.1"));
+        let response_body = serde_json::json!({
+            "activity_id": "activity-1",
+            "repository": "acme/platform",
+            "number": 42,
+            "repo_dir": ".",
+            "head_sha": "abc123",
+            "diff": DIFF,
+            "pull_request_context": PullRequestContext::default(),
+            "existing_comments": [{
+                "id": "comment-1",
+                "review_id": "99",
+                "path": "src.rs",
+                "line": 1,
+                "body": "🤖 Remotely staged finding.",
+                "author": "nitpick",
+                "draft": true
+            }],
+            "mcp_server_command": "/tmp/nitpick-agent-host"
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        )
+        .expect("write response");
+    });
+    let state = write_chat_state(&fixture, &addr.to_string());
+    let tools = ReviewMcpTools::from_state_path(state.path());
+
+    let result = tools.existing_review_comments().expect("existing comments");
+
+    assert_eq!(result.comments.len(), 1);
+    assert_eq!(result.comments[0].id, "comment-1");
+    assert!(result.comments[0].draft);
+    let state = load_review_mcp_session_state(state.path()).expect("state");
+    assert_eq!(state.existing_comments, result.comments);
+    server.join().expect("server");
 }
 
 #[test]
@@ -903,6 +964,28 @@ fn serve_finish_results(request_count: usize) -> (String, std::thread::JoinHandl
                 .position(|bytes| bytes == b"\r\n\r\n")
                 .map(|index| index + 4)
                 .expect("request headers");
+            if request.starts_with(b"POST /activities/activity-1/review-chat-session HTTP/1.1") {
+                let response_body = serde_json::json!({
+                    "activity_id": "activity-1",
+                    "repository": "acme/platform",
+                    "number": 42,
+                    "repo_dir": ".",
+                    "head_sha": "abc123",
+                    "diff": DIFF,
+                    "pull_request_context": PullRequestContext::default(),
+                    "existing_comments": existing_comments,
+                    "mcp_server_command": "/tmp/nitpick-agent-host"
+                })
+                .to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                )
+                .expect("write response");
+                continue;
+            }
             let input: serde_json::Value =
                 serde_json::from_slice(&request[body_start..]).expect("request json");
             let batch_id = input["batch"]["id"].as_str().expect("batch id");

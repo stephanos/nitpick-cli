@@ -68,7 +68,7 @@ if [ "$1 $2" = "api repos/stephanos/nitpick-agent/issues/42/comments" ]; then
   exit 0
 fi
 cat >/dev/null
-printf '{{"id":99,"html_url":"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+printf '{{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/stephanos/nitpick-agent/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
 "#,
             log = review_sync_log.display(),
         ),

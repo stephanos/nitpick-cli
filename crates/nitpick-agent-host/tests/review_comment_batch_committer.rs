@@ -89,7 +89,7 @@ if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
   cat >/dev/null
-  printf '{"id":99,"html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123"}'
+  printf '{"id":99,"node_id":"PRR_node_99","html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123"}'
   exit 0
 fi
 exit 1
@@ -242,7 +242,7 @@ if [ "$*" = "api user" ]; then
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
   if [ -f "$STATE_DIR/review" ]; then
-    printf '[{"id":99,"html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123","body":"","user":{"login":"nitpick"}}]'
+    printf '[{"id":99,"node_id":"PRR_node_99","html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123","body":"","user":{"login":"nitpick"}}]'
   else
     printf '[]'
   fi
@@ -251,7 +251,7 @@ fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
   cat >/dev/null
   touch "$STATE_DIR/review"
-  printf '{"id":99,"html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123"}'
+  printf '{"id":99,"node_id":"PRR_node_99","html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123"}'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
@@ -262,7 +262,7 @@ if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
   fi
   exit 0
 fi
-if [ "$*" = "api repos/acme/platform/pulls/42/comments --method POST --input -" ]; then
+if [ "$*" = "api graphql --input -" ]; then
   cat >/dev/null
   if [ ! -f "$STATE_DIR/failed" ]; then
     touch "$STATE_DIR/failed"
@@ -314,12 +314,7 @@ exit 1
             .count(),
         1
     );
-    assert_eq!(
-        calls
-            .matches("pulls/42/comments --method POST --input -")
-            .count(),
-        2
-    );
+    assert_eq!(calls.matches("api graphql --input -").count(), 2);
 }
 
 #[test]
@@ -337,7 +332,7 @@ if [ "$*" = "api user" ]; then
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
   if [ -f "$STATE_DIR/review" ]; then
-    printf '[{"id":99,"html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123","body":"","user":{"login":"nitpick"}}]'
+    printf '[{"id":99,"node_id":"PRR_node_99","html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123","body":"","user":{"login":"nitpick"}}]'
   else
     printf '[]'
   fi
@@ -346,7 +341,7 @@ fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
   cat >/dev/null
   touch "$STATE_DIR/review"
-  printf '{"id":99,"html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123"}'
+  printf '{"id":99,"node_id":"PRR_node_99","html_url":"https://example.test/review-99","state":"PENDING","commit_id":"abc123"}'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then

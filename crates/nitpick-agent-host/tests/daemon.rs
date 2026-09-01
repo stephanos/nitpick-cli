@@ -926,7 +926,7 @@ if [ "$*" = "api user" ]; then
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
-  printf '[{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
+  printf '[{{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
@@ -937,7 +937,7 @@ if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
   printf '{{"headRefOid":"abc123"}}\n'
   exit 0
 fi
-if [ "$*" = "api repos/acme/platform/pulls/42/comments --method POST --input -" ]; then
+if [ "$*" = "api graphql --input -" ]; then
   cat > {payload}
   printf '{{"id":101,"pull_request_review_id":99,"path":"src/lib.rs","line":null,"body":"new","user":{{"login":"nitpick"}},"state":"PENDING"}}'
   exit 0
@@ -995,7 +995,7 @@ exit 1
     });
     assert_eq!(
         std::fs::read_to_string(commands_file).expect("commands"),
-        "api user\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/reviews/99/comments\npr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/comments --method POST --input -\n"
+        "api user\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/reviews/99/comments\napi graphql --input -\n"
     );
     let activity = store
         .list()
@@ -1007,19 +1007,21 @@ exit 1
     let payload: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
-    assert_eq!(payload["commit_id"], "abc123");
-    assert_eq!(payload["path"], "src/lib.rs");
-    assert_eq!(payload["subject_type"], "file");
     assert_eq!(
-        payload["body"],
+        payload["variables"]["input"]["pullRequestReviewId"],
+        "PRR_node_99"
+    );
+    assert_eq!(payload["variables"]["input"]["path"], "src/lib.rs");
+    assert_eq!(payload["variables"]["input"]["subjectType"], "FILE");
+    assert_eq!(
+        payload["variables"]["input"]["body"],
         format!(
             "🤖 Review completed: no findings.\n\n<!-- nitpick-agent:{} -->",
             artifacts[0].id
         )
     );
-    assert!(payload.get("line").is_none());
-    assert!(payload.get("side").is_none());
-    assert!(payload.get("event").is_none());
+    assert!(payload["variables"]["input"].get("line").is_none());
+    assert!(payload["variables"]["input"].get("side").is_none());
 
     assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0].kind, ArtifactKind::ReviewComment);

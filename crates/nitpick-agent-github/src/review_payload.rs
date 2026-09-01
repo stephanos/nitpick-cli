@@ -41,13 +41,30 @@ impl GitHubReviewPayload {
         }
     }
 
-    pub(crate) fn append_comment(
-        head_sha: String,
+    pub(crate) fn append_comment_to_pending_review(
+        review_node_id: &str,
         artifact: &Artifact,
     ) -> AgentResult<serde_json::Value> {
-        let mut payload = Self::artifact_comment(artifact)?;
-        payload["commit_id"] = serde_json::Value::String(head_sha);
-        Ok(payload)
+        let ArtifactContent::ReviewComment(comment) = &artifact.content else {
+            return Err(AgentError::invalid_input(
+                "github-review comment payload requires a review comment artifact",
+            ));
+        };
+        let mut input = serde_json::json!({
+            "pullRequestReviewId": review_node_id,
+            "path": comment.path,
+            "body": marked_robot_body(&comment.body, &artifact.id),
+        });
+        if comment.line == 0 {
+            input["subjectType"] = serde_json::Value::String("FILE".into());
+        } else {
+            input["line"] = serde_json::Value::from(comment.line);
+            input["side"] = serde_json::Value::String("RIGHT".into());
+        }
+        Ok(serde_json::json!({
+            "query": "mutation AddPullRequestReviewThread($input: AddPullRequestReviewThreadInput!) { addPullRequestReviewThread(input: $input) { thread { id } } }",
+            "variables": { "input": input },
+        }))
     }
 
     pub(crate) fn batch(

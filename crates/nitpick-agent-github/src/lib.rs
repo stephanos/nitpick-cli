@@ -970,6 +970,7 @@ fn sync_review_batch_with_github_cli(
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct GitHubReviewResponse {
     pub id: u64,
+    pub node_id: String,
     pub html_url: Option<String>,
     pub state: String,
     pub commit_id: Option<String>,

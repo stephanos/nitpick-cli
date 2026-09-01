@@ -199,7 +199,6 @@ impl GitHubReviewSyncCoordinator {
         } else {
             Vec::new()
         };
-        let mut head_sha = None;
         let mut outcomes = Vec::with_capacity(artifacts.len());
 
         for artifact in artifacts {
@@ -208,21 +207,8 @@ impl GitHubReviewSyncCoordinator {
                     if !artifact_references_review(artifact, &review_id)
                         && !remote_comment_matches(&remote_comments, artifact)
                     {
-                        if head_sha.is_none() {
-                            head_sha = Some(client.head_sha().map_err(|error| {
-                                error.with_context(format!(
-                                    "resolve head SHA for artifact {} in pending review {review_id}",
-                                    artifact.id
-                                ))
-                            })?);
-                        }
                         client
-                            .append_review_comment(
-                                head_sha
-                                    .as_deref()
-                                    .expect("local comments require head SHA"),
-                                artifact,
-                            )
+                            .append_review_comment(review, artifact)
                             .map_err(|error| {
                                 error.with_context(format!(
                                     "append artifact {} to pending review {}",

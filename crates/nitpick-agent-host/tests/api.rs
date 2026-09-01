@@ -658,7 +658,7 @@ if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
   cat >/dev/null
-  printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}'
+  printf '{{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}'
   exit 0
 fi
 exit 1
@@ -747,7 +747,7 @@ if [ "$1" = "pr" ]; then
   exit 0
 fi
 cat > {payload}
-printf '{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
+printf '{{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123"}}\n'
 "#,
             commands = commands_file.display(),
             payload = payload_file.display(),
@@ -853,7 +853,7 @@ async fn activity_artifact_sync_endpoint_marks_pending_artifacts_synced_after_ma
 if [ "$*" = "api user" ]; then printf '{"login":"nitpick"}'; exit 0; fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
 if [ "$1" = "api" ] && [ "$2" = "repos/acme/platform/pulls/42/reviews/99" ]; then
-  printf '{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"COMMENT","commit_id":"abc123"}'
+  printf '{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"COMMENT","commit_id":"abc123"}'
   exit 0
 fi
 if [ "$1" = "pr" ]; then
@@ -861,7 +861,7 @@ if [ "$1" = "pr" ]; then
   exit 0
 fi
 cat >/dev/null
-printf '{"id":100,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-100","state":"PENDING","commit_id":"abc123"}'
+printf '{"id":100,"node_id":"PRR_node_100","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-100","state":"PENDING","commit_id":"abc123"}'
 "#,
     )
     .expect("write fake gh");
@@ -945,7 +945,7 @@ if [ "$1" = "pr" ]; then
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews --method POST --input -" ]; then
   cat >/dev/null
-  printf '{"id":100,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-100","state":"PENDING","commit_id":"abc123","user":{"login":"nitpick"}}'
+  printf '{"id":100,"node_id":"PRR_node_100","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-100","state":"PENDING","commit_id":"abc123","user":{"login":"nitpick"}}'
   exit 0
 fi
 exit 1
@@ -1026,7 +1026,7 @@ if [ "$*" = "api user" ]; then
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
-  printf '[{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
+  printf '[{{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
@@ -1037,7 +1037,7 @@ if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
   printf '{{"headRefOid":"abc123"}}'
   exit 0
 fi
-if [ "$*" = "api repos/acme/platform/pulls/42/comments --method POST --input -" ]; then
+if [ "$*" = "api graphql --input -" ]; then
   cat > {payload}
   printf '{{"id":101,"pull_request_review_id":99,"path":"src/lib.rs","line":12,"body":"new","user":{{"login":"nitpick"}},"state":"PENDING"}}'
   exit 0
@@ -1095,24 +1095,24 @@ exit 1
     assert!(commands.contains("api user\n"));
     assert!(commands.contains("api repos/acme/platform/pulls/42/reviews\n"));
     assert!(commands.contains("api repos/acme/platform/pulls/42/reviews/99/comments\n"));
-    assert!(
-        commands.contains("api repos/acme/platform/pulls/42/comments --method POST --input -\n")
-    );
+    assert!(commands.contains("api graphql --input -\n"));
     assert!(
         !commands.contains("api repos/acme/platform/pulls/42/reviews --method POST --input -\n")
     );
     let payload: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(payload_file).expect("payload"))
             .expect("payload json");
-    assert_eq!(payload["commit_id"], "abc123");
-    assert_eq!(payload["path"], "src/lib.rs");
-    assert_eq!(payload["line"], 12);
-    assert_eq!(payload["side"], "RIGHT");
     assert_eq!(
-        payload["body"],
+        payload["variables"]["input"]["pullRequestReviewId"],
+        "PRR_node_99"
+    );
+    assert_eq!(payload["variables"]["input"]["path"], "src/lib.rs");
+    assert_eq!(payload["variables"]["input"]["line"], 12);
+    assert_eq!(payload["variables"]["input"]["side"], "RIGHT");
+    assert_eq!(
+        payload["variables"]["input"]["body"],
         format!("🤖 Prefer this.\n\n<!-- nitpick-agent:{} -->", comment.id)
     );
-    assert!(payload.get("event").is_none());
     assert_eq!(
         store.get_artifact(&comment.id).expect("comment").sync_state,
         ArtifactSyncState::Pending {
@@ -1140,7 +1140,7 @@ if [ "$*" = "api user" ]; then
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
-  printf '[{{"id":99,"html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
+  printf '[{{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/acme/platform/pull/42#pullrequestreview-99","state":"PENDING","commit_id":"abc123","body":"","user":{{"login":"nitpick"}}}}]'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews/99/comments" ]; then
@@ -1151,7 +1151,7 @@ if [ "$*" = "pr view 42 --repo acme/platform --json headRefOid" ]; then
   printf '{{"headRefOid":"abc123"}}'
   exit 0
 fi
-if [ "$*" = "api repos/acme/platform/pulls/42/comments --method POST --input -" ]; then
+if [ "$*" = "api graphql --input -" ]; then
   cat >/dev/null
   printf '{{"id":101,"pull_request_review_id":99,"path":"src/main.rs","line":8,"body":"new","user":{{"login":"nitpick"}},"state":"PENDING"}}'
   exit 0
@@ -1225,7 +1225,7 @@ exit 1
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         fs::read_to_string(commands_file).expect("commands"),
-        "api user\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/reviews/99/comments\npr view 42 --repo acme/platform --json headRefOid\napi repos/acme/platform/pulls/42/comments --method POST --input -\n"
+        "api user\napi repos/acme/platform/pulls/42/reviews\napi repos/acme/platform/pulls/42/reviews/99/comments\napi graphql --input -\n"
     );
 }
 

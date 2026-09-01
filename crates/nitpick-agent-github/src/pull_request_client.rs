@@ -127,24 +127,13 @@ impl GitHubPullRequestClient {
 
     pub(crate) fn append_review_comment(
         &self,
-        head_sha: &str,
+        review: &GitHubReviewResponse,
         artifact: &Artifact,
     ) -> AgentResult<()> {
-        let payload = GitHubReviewPayload::append_comment(head_sha.to_owned(), artifact)?;
-        self.command.output_with_input(
-            &[
-                "api",
-                &format!(
-                    "repos/{}/{}/pulls/{}/comments",
-                    self.target.owner, self.target.repo, self.target.number
-                ),
-                "--method",
-                "POST",
-                "--input",
-                "-",
-            ],
-            &payload.to_string(),
-        )?;
+        let payload =
+            GitHubReviewPayload::append_comment_to_pending_review(&review.node_id, artifact)?;
+        self.command
+            .output_with_input(&["api", "graphql", "--input", "-"], &payload.to_string())?;
         Ok(())
     }
 

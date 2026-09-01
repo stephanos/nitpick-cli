@@ -16,8 +16,8 @@ pub use nitpick_agent_model::{
     ExistingReviewComment, PullRequestContext, PullRequestConversationComment,
 };
 use nitpick_agent_model::{
-    FinishReviewCommentBatchInput, FinishReviewCommentBatchResult, ReviewChatSessionSnapshot,
-    ReviewComment, ReviewCommentBatch, ReviewInput,
+    FinishReviewCommentBatchInput, FinishReviewCommentBatchResult, ReviewChatSessionInput,
+    ReviewChatSessionSnapshot, ReviewComment, ReviewCommentBatch, ReviewInput,
 };
 use rmcp::{
     Json, ServerHandler, ServiceExt,
@@ -568,9 +568,26 @@ pub(crate) fn finish_review_in_state_file(state_path: &Path) -> AgentResult<Fini
 pub(crate) fn existing_review_comments_in_state_file(
     state_path: &Path,
 ) -> AgentResult<ExistingReviewCommentsResult> {
-    let state = load_review_mcp_session_state(state_path)?;
-    Ok(ExistingReviewCommentsResult {
-        comments: state.existing_comments,
+    update_review_mcp_session_state(state_path, |state| {
+        if let Some(chat) = state.chat.clone() {
+            let snapshot = HostClient::new(chat.host_addr)
+                .prepare_review_chat_session(
+                    &chat.activity_id,
+                    &ReviewChatSessionInput {
+                        repository: chat.repository,
+                        number: chat.number,
+                    },
+                )
+                .map_err(|error| {
+                    AgentError::provider(format!(
+                        "refresh existing review comments from host: {error}"
+                    ))
+                })?;
+            state.existing_comments = snapshot.existing_comments;
+        }
+        Ok(ExistingReviewCommentsResult {
+            comments: state.existing_comments.clone(),
+        })
     })
 }
 
