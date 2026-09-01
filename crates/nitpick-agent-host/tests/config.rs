@@ -26,9 +26,9 @@ fn default_config_uses_claude_without_model_pin() {
         config.review_prompt_path,
         std::path::PathBuf::from("review-prompt.md")
     );
-    assert_eq!(config.review_extra_prompt_path, None);
-    assert_eq!(config.review_self_extra_prompt_path, None);
-    assert_eq!(config.review_requested_extra_prompt_path, None);
+    assert!(config.review_extra_prompt_paths.is_empty());
+    assert!(config.review_self_extra_prompt_paths.is_empty());
+    assert!(config.review_requested_extra_prompt_paths.is_empty());
 }
 
 #[test]
@@ -249,58 +249,41 @@ command = "/opt/bin/gh"
         }
     );
     assert_eq!(config.max_concurrent_reviews, 5);
-    assert_eq!(config.review_extra_prompt_path, None);
-    assert_eq!(config.review_self_extra_prompt_path, None);
-    assert_eq!(config.review_requested_extra_prompt_path, None);
+    assert!(config.review_extra_prompt_paths.is_empty());
+    assert!(config.review_self_extra_prompt_paths.is_empty());
+    assert!(config.review_requested_extra_prompt_paths.is_empty());
 }
 
 #[test]
-fn load_rejects_relative_review_extra_prompt_path() {
+fn load_resolves_review_extra_prompt_paths_in_order() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config_path = dir.path().join("config.toml");
-    std::fs::write(
-        &config_path,
-        r#"
-[reviews]
-extra_prompt_path = "extra.md"
-"#,
-    )
-    .expect("write config");
-
-    let error = AgentConfig::load(&config_path).expect_err("config fails");
-
-    assert!(
-        error
-            .to_string()
-            .contains("review extra prompt path must be absolute")
-    );
-}
-
-#[test]
-fn load_accepts_absolute_review_extra_prompt_path() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config_path = dir.path().join("config.toml");
-    let extra_prompt_path = dir.path().join("extra.md");
-    std::fs::write(&extra_prompt_path, "Prefer correctness.").expect("write extra prompt");
+    let relative_prompt_path = dir.path().join("relative.md");
+    let absolute_prompt_path = dir.path().join("absolute.md");
+    std::fs::write(&relative_prompt_path, "Relative guidance.").expect("write relative prompt");
+    std::fs::write(&absolute_prompt_path, "Absolute guidance.").expect("write absolute prompt");
     std::fs::write(
         &config_path,
         format!(
             r#"
 [reviews]
-extra_prompt_path = "{}"
+extra_prompt_paths = ["relative.md", "{}"]
 "#,
-            extra_prompt_path.display()
+            absolute_prompt_path.display()
         ),
     )
     .expect("write config");
 
     let config = AgentConfig::load(&config_path).expect("config loads");
 
-    assert_eq!(config.review_extra_prompt_path, Some(extra_prompt_path));
+    assert_eq!(
+        config.review_extra_prompt_paths,
+        vec![relative_prompt_path, absolute_prompt_path]
+    );
 }
 
 #[test]
-fn load_accepts_absolute_review_mode_extra_prompt_paths() {
+fn load_resolves_review_mode_extra_prompt_paths() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config_path = dir.path().join("config.toml");
     let self_prompt_path = dir.path().join("self.md");
@@ -313,10 +296,9 @@ fn load_accepts_absolute_review_mode_extra_prompt_paths() {
         format!(
             r#"
 [reviews]
-self_review_extra_prompt_path = "{}"
-requested_review_extra_prompt_path = "{}"
+self_review_extra_prompt_paths = ["self.md"]
+requested_review_extra_prompt_paths = ["{}"]
 "#,
-            self_prompt_path.display(),
             requested_prompt_path.display()
         ),
     )
@@ -324,49 +306,27 @@ requested_review_extra_prompt_path = "{}"
 
     let config = AgentConfig::load(&config_path).expect("config loads");
 
-    assert_eq!(config.review_self_extra_prompt_path, Some(self_prompt_path));
     assert_eq!(
-        config.review_requested_extra_prompt_path,
-        Some(requested_prompt_path)
+        config.review_self_extra_prompt_paths,
+        vec![self_prompt_path]
+    );
+    assert_eq!(
+        config.review_requested_extra_prompt_paths,
+        vec![requested_prompt_path]
     );
 }
 
 #[test]
-fn load_rejects_relative_review_mode_extra_prompt_path() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config_path = dir.path().join("config.toml");
-    std::fs::write(
-        &config_path,
-        r#"
-[reviews]
-self_review_extra_prompt_path = "self.md"
-"#,
-    )
-    .expect("write config");
-
-    let error = AgentConfig::load(&config_path).expect_err("config fails");
-
-    assert!(
-        error
-            .to_string()
-            .contains("self-review extra prompt path must be absolute")
-    );
-}
-
-#[test]
-fn load_rejects_missing_review_extra_prompt_path() {
+fn load_rejects_missing_review_extra_prompt_path_with_resolved_path() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config_path = dir.path().join("config.toml");
     let extra_prompt_path = dir.path().join("missing.md");
     std::fs::write(
         &config_path,
-        format!(
-            r#"
+        r#"
 [reviews]
-extra_prompt_path = "{}"
+extra_prompt_paths = ["missing.md"]
 "#,
-            extra_prompt_path.display()
-        ),
     )
     .expect("write config");
 
@@ -377,6 +337,79 @@ extra_prompt_path = "{}"
             .to_string()
             .contains("review extra prompt path is not a file")
     );
+    let extra_prompt_path = extra_prompt_path.to_string_lossy().to_string();
+    assert!(error.to_string().contains(&extra_prompt_path));
+}
+
+#[test]
+fn configured_review_extra_prompt_paths_are_appended_in_order() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config_path = dir.path().join("config.toml");
+    let first_prompt_path = dir.path().join("first.md");
+    let second_prompt_path = dir.path().join("second.md");
+    std::fs::write(dir.path().join("review-prompt.md"), "Base review prompt.")
+        .expect("write base prompt");
+    std::fs::write(&first_prompt_path, "First extra prompt.").expect("write first prompt");
+    std::fs::write(&second_prompt_path, "Second extra prompt.").expect("write second prompt");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[reviews]
+extra_prompt_paths = ["first.md", "{}"]
+"#,
+            second_prompt_path.display()
+        ),
+    )
+    .expect("write config");
+    let provider = Arc::new(RecordingReviewProvider::default());
+    let daemon = HostDaemon::with_dependencies(
+        Arc::new(MemoryActivityStore::default()),
+        AgentConfig::load(&config_path).expect("config loads"),
+        Arc::new(nitpick_agent_core::MemoryProcessedReviewStore::default()),
+        provider.clone(),
+        Arc::new(EmptyReviewSource),
+        Arc::new(nitpick_agent_core::SystemClock),
+    );
+
+    daemon.start_review(ReviewInput::default()).expect("review");
+
+    let prompt = provider.review_prompt();
+    let first_index = prompt.find("First extra prompt.").expect("first prompt");
+    let second_index = prompt.find("Second extra prompt.").expect("second prompt");
+    assert!(first_index < second_index);
+}
+
+#[test]
+fn rejects_singular_review_extra_prompt_path_keys() {
+    for key in [
+        "extra_prompt_path",
+        "self_review_extra_prompt_path",
+        "requested_review_extra_prompt_path",
+    ] {
+        let error = AgentConfig::from_toml(&format!(
+            r#"
+[reviews]
+{key} = "/tmp/prompt.md"
+"#
+        ))
+        .expect_err("singular key is rejected");
+
+        assert!(error.to_string().contains(key));
+    }
+}
+
+#[test]
+fn rejects_scalar_review_extra_prompt_paths() {
+    let error = AgentConfig::from_toml(
+        r#"
+[reviews]
+extra_prompt_paths = "/tmp/prompt.md"
+"#,
+    )
+    .expect_err("scalar paths are rejected");
+
+    assert!(error.to_string().contains("invalid type"));
 }
 
 #[test]
@@ -393,7 +426,7 @@ prompt_path = "review-prompt.md"
 }
 
 #[test]
-fn configured_review_extra_prompt_file_is_appended_to_review_prompt() {
+fn configured_review_extra_prompt_files_are_appended_to_review_prompt() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_path = dir.path().join("review.md");
     let extra_prompt_path = dir.path().join("extra.md");
@@ -402,7 +435,7 @@ fn configured_review_extra_prompt_file_is_appended_to_review_prompt() {
         .expect("write extra prompt");
     let config = AgentConfig {
         review_prompt_path: prompt_path,
-        review_extra_prompt_path: Some(extra_prompt_path),
+        review_extra_prompt_paths: vec![extra_prompt_path],
         ..AgentConfig::default()
     };
     let provider = Arc::new(RecordingReviewProvider::default());
@@ -424,7 +457,7 @@ fn configured_review_extra_prompt_file_is_appended_to_review_prompt() {
 }
 
 #[test]
-fn configured_review_mode_extra_prompt_file_is_appended_for_matching_mode() {
+fn configured_review_mode_extra_prompt_files_are_appended_for_matching_mode() {
     let dir = tempfile::tempdir().expect("temp dir");
     let prompt_path = dir.path().join("review.md");
     let self_prompt_path = dir.path().join("self.md");
@@ -438,8 +471,8 @@ fn configured_review_mode_extra_prompt_file_is_appended_for_matching_mode() {
         Arc::new(MemoryActivityStore::default()),
         AgentConfig {
             review_prompt_path: prompt_path,
-            review_self_extra_prompt_path: Some(self_prompt_path),
-            review_requested_extra_prompt_path: Some(requested_prompt_path),
+            review_self_extra_prompt_paths: vec![self_prompt_path],
+            review_requested_extra_prompt_paths: vec![requested_prompt_path],
             ..AgentConfig::default()
         },
         Arc::new(nitpick_agent_core::MemoryProcessedReviewStore::default()),
@@ -505,9 +538,9 @@ provider = "claude"
 command = "/bin/sh"
 
 [reviews]
-extra_prompt_path = "{}"
-self_review_extra_prompt_path = "{}"
-requested_review_extra_prompt_path = "{}"
+extra_prompt_paths = ["{}"]
+self_review_extra_prompt_paths = ["{}"]
+requested_review_extra_prompt_paths = ["{}"]
 "#,
             extra_prompt_path.display(),
             self_prompt_path.display(),

@@ -11,12 +11,13 @@ sandbox = "nono"
 
 [reviews]
 max_concurrent = 3
-# Optional absolute path to a file with user guidance appended to every review prompt.
-extra_prompt_path = ""
-# Optional absolute path to guidance appended only to local self-review prompts.
-self_review_extra_prompt_path = ""
-# Optional absolute path to guidance appended only to requested-review prompts.
-requested_review_extra_prompt_path = ""
+# Paths may be relative to this config file or absolute.
+# Optional paths to files with user guidance appended to every review prompt.
+extra_prompt_paths = []
+# Optional paths to guidance appended only to local self-review prompts.
+self_review_extra_prompt_paths = []
+# Optional paths to guidance appended only to requested-review prompts.
+requested_review_extra_prompt_paths = []
 
 [github]
 command = "gh"

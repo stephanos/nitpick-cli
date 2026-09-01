@@ -1345,9 +1345,9 @@ pub struct AgentConfig {
     pub checkout_dir: Option<String>,
     pub max_concurrent_reviews: usize,
     pub review_prompt_path: PathBuf,
-    pub review_extra_prompt_path: Option<PathBuf>,
-    pub review_self_extra_prompt_path: Option<PathBuf>,
-    pub review_requested_extra_prompt_path: Option<PathBuf>,
+    pub review_extra_prompt_paths: Vec<PathBuf>,
+    pub review_self_extra_prompt_paths: Vec<PathBuf>,
+    pub review_requested_extra_prompt_paths: Vec<PathBuf>,
     pub sandbox: AgentSandboxConfig,
     pub github_discovery: GitHubDiscoveryConfig,
 }
@@ -1362,9 +1362,9 @@ impl Default for AgentConfig {
             checkout_dir: None,
             max_concurrent_reviews: DEFAULT_MAX_CONCURRENT_REVIEWS,
             review_prompt_path: PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME),
-            review_extra_prompt_path: None,
-            review_self_extra_prompt_path: None,
-            review_requested_extra_prompt_path: None,
+            review_extra_prompt_paths: Vec::new(),
+            review_self_extra_prompt_paths: Vec::new(),
+            review_requested_extra_prompt_paths: Vec::new(),
             sandbox: AgentSandboxConfig::default(),
             github_discovery: GitHubDiscoveryConfig::default(),
         }
@@ -1408,17 +1408,20 @@ impl AgentConfig {
             .unwrap_or(DEFAULT_MAX_CONCURRENT_REVIEWS)
             .max(1);
         let review_prompt_path = review_prompt_path(config_dir);
-        let review_extra_prompt_path = parse_review_extra_prompt_path(
+        let review_extra_prompt_paths = parse_review_extra_prompt_paths(
             "review extra prompt",
-            reviews.extra_prompt_path.as_deref(),
+            reviews.extra_prompt_paths.as_deref(),
+            config_dir,
         )?;
-        let review_self_extra_prompt_path = parse_review_extra_prompt_path(
+        let review_self_extra_prompt_paths = parse_review_extra_prompt_paths(
             "self-review extra prompt",
-            reviews.self_review_extra_prompt_path.as_deref(),
+            reviews.self_review_extra_prompt_paths.as_deref(),
+            config_dir,
         )?;
-        let review_requested_extra_prompt_path = parse_review_extra_prompt_path(
+        let review_requested_extra_prompt_paths = parse_review_extra_prompt_paths(
             "requested-review extra prompt",
-            reviews.requested_review_extra_prompt_path.as_deref(),
+            reviews.requested_review_extra_prompt_paths.as_deref(),
+            config_dir,
         )?;
         let sandbox = AgentSandboxConfig::from_mode(agent.sandbox)?;
 
@@ -1430,9 +1433,9 @@ impl AgentConfig {
             checkout_dir: None,
             max_concurrent_reviews,
             review_prompt_path,
-            review_extra_prompt_path,
-            review_self_extra_prompt_path,
-            review_requested_extra_prompt_path,
+            review_extra_prompt_paths,
+            review_self_extra_prompt_paths,
+            review_requested_extra_prompt_paths,
             sandbox,
             github_discovery,
         })
@@ -1647,16 +1650,16 @@ impl AgentConfig {
                 )));
             }
         };
-        if let Some(path) = &self.review_extra_prompt_path {
+        for path in &self.review_extra_prompt_paths {
             append_prompt_file(&mut prompt, "Configured extra review prompt", path)?;
         }
         prompt.push_str("\n\n");
         prompt.push_str(review_mode_prompt(&input.review_mode));
-        let mode_prompt_path = match input.review_mode {
-            ReviewMode::Requested => &self.review_requested_extra_prompt_path,
-            ReviewMode::SelfReview => &self.review_self_extra_prompt_path,
+        let mode_prompt_paths = match input.review_mode {
+            ReviewMode::Requested => &self.review_requested_extra_prompt_paths,
+            ReviewMode::SelfReview => &self.review_self_extra_prompt_paths,
         };
-        if let Some(path) = mode_prompt_path {
+        for path in mode_prompt_paths {
             let label = match input.review_mode {
                 ReviewMode::Requested => "Configured requested-review extra prompt",
                 ReviewMode::SelfReview => "Configured self-review extra prompt",
@@ -1669,9 +1672,9 @@ impl AgentConfig {
 
     fn review_prompt_sandbox_read_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.review_prompt_path.clone()];
-        paths.extend(self.review_extra_prompt_path.iter().cloned());
-        paths.extend(self.review_self_extra_prompt_path.iter().cloned());
-        paths.extend(self.review_requested_extra_prompt_path.iter().cloned());
+        paths.extend(self.review_extra_prompt_paths.iter().cloned());
+        paths.extend(self.review_self_extra_prompt_paths.iter().cloned());
+        paths.extend(self.review_requested_extra_prompt_paths.iter().cloned());
         paths
     }
 }
@@ -1736,31 +1739,28 @@ fn review_prompt_path(config_dir: Option<&Path>) -> PathBuf {
     resolve_config_path(PathBuf::from(DEFAULT_REVIEW_PROMPT_FILENAME), config_dir)
 }
 
-fn parse_review_extra_prompt_path(
+fn parse_review_extra_prompt_paths(
     label: &str,
-    raw_path: Option<&str>,
-) -> AgentResult<Option<PathBuf>> {
-    let path = raw_path
-        .map(str::trim)
+    raw_paths: Option<&[String]>,
+    config_dir: Option<&Path>,
+) -> AgentResult<Vec<PathBuf>> {
+    raw_paths
+        .unwrap_or_default()
+        .iter()
+        .map(|path| path.trim())
         .filter(|path| !path.is_empty())
-        .map(PathBuf::from);
-    if let Some(path) = &path
-        && !path.is_absolute()
-    {
-        return Err(AgentError::config(format!(
-            "{label} path must be absolute: {}",
-            path.display()
-        )));
-    }
-    if let Some(path) = &path
-        && !path.is_file()
-    {
-        return Err(AgentError::config(format!(
-            "{label} path is not a file: {}",
-            path.display()
-        )));
-    }
-    Ok(path)
+        .map(PathBuf::from)
+        .map(|path| resolve_config_path(path, config_dir))
+        .map(|path| {
+            if !path.is_file() {
+                return Err(AgentError::config(format!(
+                    "{label} path is not a file: {}",
+                    path.display()
+                )));
+            }
+            Ok(path)
+        })
+        .collect()
 }
 
 fn resolve_config_path(path: PathBuf, config_dir: Option<&Path>) -> PathBuf {
@@ -1817,9 +1817,9 @@ struct RawAgentConfig {
 #[serde(deny_unknown_fields)]
 struct RawReviewsConfig {
     max_concurrent: Option<usize>,
-    extra_prompt_path: Option<String>,
-    self_review_extra_prompt_path: Option<String>,
-    requested_review_extra_prompt_path: Option<String>,
+    extra_prompt_paths: Option<Vec<String>>,
+    self_review_extra_prompt_paths: Option<Vec<String>>,
+    requested_review_extra_prompt_paths: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
