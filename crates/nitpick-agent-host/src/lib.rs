@@ -1484,7 +1484,7 @@ impl AgentConfig {
 
     pub fn write_config_example_file(config_path: impl AsRef<Path>) -> AgentResult<PathBuf> {
         let config_path = config_path.as_ref();
-        let path = config_example_path(config_path);
+        let path = example_path(config_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
                 nitpick_agent_core::AgentError::config(format!(
@@ -1504,7 +1504,7 @@ impl AgentConfig {
 
     pub fn init_review_prompt_file(config_path: impl AsRef<Path>) -> AgentResult<PathBuf> {
         let path = default_review_prompt_path(config_path.as_ref());
-        if path.exists() {
+        let initialize_prompt = if path.exists() {
             let metadata = fs::metadata(&path).map_err(|error| {
                 nitpick_agent_core::AgentError::config(format!(
                     "failed to inspect review prompt {}: {error}",
@@ -1517,10 +1517,10 @@ impl AgentConfig {
                     path.display()
                 )));
             }
-            if metadata.len() > 0 {
-                return Ok(path);
-            }
-        }
+            metadata.len() == 0
+        } else {
+            true
+        };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
                 nitpick_agent_core::AgentError::config(format!(
@@ -1529,12 +1529,21 @@ impl AgentConfig {
                 ))
             })?;
         }
-        fs::write(&path, REVIEW_PROMPT_TEMPLATE).map_err(|error| {
+        let example_path = example_path(&path);
+        fs::write(&example_path, REVIEW_PROMPT_TEMPLATE).map_err(|error| {
             nitpick_agent_core::AgentError::config(format!(
-                "failed to write review prompt template {}: {error}",
-                path.display()
+                "failed to write review prompt example {}: {error}",
+                example_path.display()
             ))
         })?;
+        if initialize_prompt {
+            fs::write(&path, REVIEW_PROMPT_TEMPLATE).map_err(|error| {
+                nitpick_agent_core::AgentError::config(format!(
+                    "failed to write review prompt template {}: {error}",
+                    path.display()
+                ))
+            })?;
+        }
         Ok(path)
     }
 
@@ -1715,24 +1724,15 @@ fn default_review_prompt_path(config_path: &Path) -> PathBuf {
         .join(DEFAULT_REVIEW_PROMPT_FILENAME)
 }
 
-fn config_example_path(config_path: &Path) -> PathBuf {
-    let stem = config_path
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let ext = config_path
-        .extension()
-        .unwrap_or_default()
-        .to_string_lossy();
+fn example_path(path: &Path) -> PathBuf {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path.extension().unwrap_or_default().to_string_lossy();
     let name = if ext.is_empty() {
         format!("{stem}.example")
     } else {
         format!("{stem}.example.{ext}")
     };
-    config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(name)
+    path.parent().unwrap_or_else(|| Path::new(".")).join(name)
 }
 
 fn review_prompt_path(config_dir: Option<&Path>) -> PathBuf {

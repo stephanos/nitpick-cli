@@ -39,11 +39,9 @@ fn default_review_prompt_includes_feedback_format_contract() {
         },
     );
 
-    assert!(
-        prompt.contains(
-            "<details>\n<summary><strong>SEVERITY</strong> — One-line summary.</summary>"
-        )
-    );
+    assert!(prompt.contains(
+        "🤖\n\n<details>\n<summary><strong>SEVERITY</strong> — One-line summary.</summary>"
+    ));
     let details_end = prompt.find("</details>").expect("details closing tag");
     let suggestion = prompt.find("**Suggestion:**").expect("suggestion guidance");
     assert!(suggestion > details_end);

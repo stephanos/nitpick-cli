@@ -12,6 +12,8 @@ Use this core structure for every actionable finding.
 Replace `SEVERITY` with `nit`, `small`, `med`, or `high`:
 
 ```markdown
+🤖
+
 <details>
 <summary><strong>SEVERITY</strong> — One-line summary.</summary>
 
@@ -23,6 +25,7 @@ supporting evidence, examples, or implementation notes.
 **Suggestion:** Concrete fix or alternative.
 ```
 
+Put `🤖` on its own line and leave a blank line before `<details>` so GitHub recognizes the summary.
 Use HTML tags rather than Markdown inside `<summary>`.
 The summary line is all a reader sees before expanding, so it must state the problem on its own.
 Keep the suggestion outside the collapsible block, as a code suggestion wherever the fix is a concrete edit.
