@@ -646,8 +646,8 @@ if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then
   printf '[{{"id":10,"pull_request_review_id":98,"path":"src.rs","line":1,"body":"Please adjust this.","user":{{"login":"alice"}},"state":"SUBMITTED"}},{{"id":11,"pull_request_review_id":99,"path":"src.rs","line":1,"body":"🤖 Old automated note.","user":{{"login":"nitpick"}},"state":"PENDING"}}]\n'
 elif [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then
   printf '[]\n'
-elif [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}\n'
+elif [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}\n'
 elif [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then
   printf '[{{"id":100,"body":"Can you explain the retry behavior?","user":{{"login":"alice"}},"created_at":"2026-05-30T12:00:00Z","updated_at":"2026-05-30T12:30:00Z","html_url":"https://github.com/acme/platform/pull/42#issuecomment-100"}}]\n'
 fi
@@ -680,7 +680,7 @@ fi
     assert_eq!(activity.status, ActivityStatus::Completed);
     assert_eq!(
         fs::read_to_string(commands).expect("commands"),
-        "api repos/acme/platform/pulls/42/comments\napi repos/acme/platform/pulls/42/reviews\npr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\napi repos/acme/platform/issues/42/comments\napi repos/acme/platform/pulls/comments/11 --method DELETE\n"
+        "api repos/acme/platform/pulls/42/comments\napi repos/acme/platform/pulls/42/reviews\npr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt\napi repos/acme/platform/issues/42/comments\napi repos/acme/platform/pulls/comments/11 --method DELETE\n"
     );
 }
 

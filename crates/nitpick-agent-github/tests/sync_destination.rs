@@ -251,8 +251,8 @@ fn github_cli_review_destination_reads_pull_request_context() {
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> {commands}
-if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}\n'
+if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}\n'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then
@@ -298,7 +298,7 @@ exit 1
     );
     assert_eq!(
         fs::read_to_string(commands_file).expect("commands"),
-        "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\napi repos/acme/platform/issues/42/comments\n"
+        "pr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt\napi repos/acme/platform/issues/42/comments\n"
     );
 }
 

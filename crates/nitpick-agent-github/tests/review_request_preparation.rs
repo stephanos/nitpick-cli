@@ -16,6 +16,7 @@ fn github_review_request_preparation_builds_review_input_from_pr_data() {
             author: "alice".into(),
             url: "https://github.com/acme/platform/pull/42".into(),
             body: "Body".into(),
+            base_sha: "base123".into(),
             head_sha: "abc123".into(),
             head_ref_name: "feature".into(),
             state: PullRequestState::Open,

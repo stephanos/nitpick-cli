@@ -307,8 +307,8 @@ async fn review_chat_session_endpoint_returns_a_live_review_snapshot() {
         r#"#!/bin/sh
 if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then printf '[]'; exit 0; fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
-if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{"title":"Change","author":{"login":"alice"},"url":"https://example.test/pr/42","body":"Please review.","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Change","author":{"login":"alice"},"url":"https://example.test/pr/42","body":"Please review.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then printf '[]'; exit 0; fi
@@ -1295,11 +1295,11 @@ async fn cleanup_checkouts_endpoint_removes_closed_checkouts_and_records_activit
             r#"#!/bin/sh
 echo "$*" >> '{}'
 if [ "$1 $2" = "pr view" ] && [ "$3" = "42" ]; then
-  printf '{{"title":"Closed PR","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Closed PR body.","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}}'
+  printf '{{"title":"Closed PR","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Closed PR body.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr view" ] && [ "$3" = "7" ]; then
-  printf '{{"title":"Open PR","author":{{"login":"octo"}},"url":"https://github.com/octo/widgets/pull/7","body":"Open PR body.","headRefOid":"def456","headRefName":"open-branch","state":"OPEN","mergedAt":null}}'
+  printf '{{"title":"Open PR","author":{{"login":"octo"}},"url":"https://github.com/octo/widgets/pull/7","body":"Open PR body.","baseRefOid":"base456","headRefOid":"def456","headRefName":"open-branch","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 exit 1
@@ -1369,7 +1369,7 @@ if [ "$1 $2" = "search prs" ]; then
   exit 0
 fi
 if [ "$1 $2" = "pr view" ] && [ "$3" = "42" ]; then
-  printf '{"title":"Closed PR","author":{"login":"stephan"},"url":"https://github.com/acme/platform/pull/42","body":"Closed PR body.","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}'
+  printf '{"title":"Closed PR","author":{"login":"stephan"},"url":"https://github.com/acme/platform/pull/42","body":"Closed PR body.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"closed-branch","state":"CLOSED","mergedAt":null}'
   exit 0
 fi
 exit 1

@@ -43,8 +43,8 @@ async fn cli_commands_talk_to_the_host_api() {
         format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> {log}
-if [ "$1 $2" = "pr view" ] && [ "$6" = "--json" ] && [ "$7" = "title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{{"title":"Stub PR","author":{{"login":"stub-author"}},"url":"https://github.com/stephanos/nitpick-agent/pull/42","body":"Please review the stub changes.","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}}\n'
+if [ "$1 $2" = "pr view" ] && [ "$6" = "--json" ] && [ "$7" = "title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{{"title":"Stub PR","author":{{"login":"stub-author"}},"url":"https://github.com/stephanos/nitpick-agent/pull/42","body":"Please review the stub changes.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}}\n'
   exit 0
 fi
 if [ "$1 $2" = "pr view" ]; then
@@ -329,8 +329,8 @@ async fn review_chat_clears_missing_provider_session_id() {
         r#"#!/bin/sh
 if [ "$*" = "api repos/stephanos/nitpick-agent/pulls/42/comments" ]; then printf '[]'; exit 0; fi
 if [ "$*" = "api repos/stephanos/nitpick-agent/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
-if [ "$*" = "pr view 42 --repo stephanos/nitpick-agent --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/42","body":"Body","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+if [ "$*" = "pr view 42 --repo stephanos/nitpick-agent --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/42","body":"Body","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
   exit 0
 fi
 if [ "$*" = "api repos/stephanos/nitpick-agent/issues/42/comments" ]; then printf '[]'; exit 0; fi
@@ -569,8 +569,8 @@ async fn review_chat_resumes_with_activity_provider() {
         r#"#!/bin/sh
 if [ "$*" = "api repos/stephanos/subvoc/pulls/1/comments" ]; then printf '[]'; exit 0; fi
 if [ "$*" = "api repos/stephanos/subvoc/pulls/1/reviews" ]; then printf '[]'; exit 0; fi
-if [ "$*" = "pr view 1 --repo stephanos/subvoc --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/1","body":"Body","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+if [ "$*" = "pr view 1 --repo stephanos/subvoc --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/1","body":"Body","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
   exit 0
 fi
 if [ "$*" = "api repos/stephanos/subvoc/issues/1/comments" ]; then printf '[]'; exit 0; fi
@@ -680,8 +680,8 @@ exit 7
         r#"#!/bin/sh
 if [ "$*" = "api repos/acme/platform/pulls/42/comments" ]; then printf '[]'; exit 0; fi
 if [ "$*" = "api repos/acme/platform/pulls/42/reviews" ]; then printf '[]'; exit 0; fi
-if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt" ]; then
-  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/42","body":"Body","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
+if [ "$*" = "pr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt" ]; then
+  printf '{"title":"Stub PR","author":{"login":"stub"},"url":"https://example.test/pr/42","body":"Body","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature","state":"OPEN","mergedAt":null}'
   exit 0
 fi
 if [ "$*" = "api repos/acme/platform/issues/42/comments" ]; then printf '[]'; exit 0; fi

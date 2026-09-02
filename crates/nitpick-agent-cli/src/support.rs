@@ -231,7 +231,7 @@ mod tests {
                 r#"#!/bin/sh
 printf 'gh %s\n' "$*" >> '{}'
 if [ "$1 $2" = "pr view" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr diff" ]; then
@@ -285,10 +285,10 @@ exit 1
         assert_eq!(
             std::fs::read_to_string(log).expect("log"),
             format!(
-                "gh pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\n\
+                "gh pr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt\n\
 gh repo clone acme/platform {} -- --quiet\n\
-git -C {} fetch origin refs/pull/42/head --quiet\n\
-git -C {} checkout -B feature/watcher FETCH_HEAD --quiet\n\
+git -C {} fetch origin base123 refs/pull/42/head --quiet\n\
+git -C {} checkout -B feature/watcher abc123 --quiet\n\
 editor {}\n",
                 checkout.display(),
                 checkout.display(),
@@ -312,7 +312,7 @@ editor {}\n",
                 r#"#!/bin/sh
 printf 'gh %s\n' "$*" >> '{}'
 if [ "$1 $2" = "pr view" ]; then
-  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
+  printf '{{"title":"Add watcher","author":{{"login":"stephan"}},"url":"https://github.com/acme/platform/pull/42","body":"Please review the watcher changes.","baseRefOid":"base123","headRefOid":"abc123","headRefName":"feature/watcher","state":"OPEN","mergedAt":null}}'
   exit 0
 fi
 if [ "$1 $2" = "pr diff" ]; then
@@ -355,10 +355,10 @@ exit 1
         assert_eq!(
             std::fs::read_to_string(log).expect("log"),
             format!(
-                "gh pr view 42 --repo acme/platform --json title,author,url,body,headRefOid,headRefName,state,mergedAt\n\
+                "gh pr view 42 --repo acme/platform --json title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt\n\
 gh repo clone acme/platform {} -- --quiet\n\
-git -C {} fetch origin refs/pull/42/head --quiet\n\
-git -C {} checkout -B feature/watcher FETCH_HEAD --quiet\n",
+git -C {} fetch origin base123 refs/pull/42/head --quiet\n\
+git -C {} checkout -B feature/watcher abc123 --quiet\n",
                 checkout.display(),
                 checkout.display(),
                 checkout.display()

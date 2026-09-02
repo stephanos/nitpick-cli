@@ -203,6 +203,7 @@ pub struct PullRequestDetails {
     pub author: String,
     pub url: String,
     pub body: String,
+    pub base_sha: String,
     pub head_sha: String,
     pub head_ref_name: String,
     pub state: PullRequestState,
@@ -313,6 +314,8 @@ impl GitHubCliDiscovery {
             &self.checkout_root,
             &pull_request,
             &details.head_ref_name,
+            &details.base_sha,
+            &details.head_sha,
         )
     }
 
@@ -484,18 +487,20 @@ impl ReviewRequestDiscovery for GitHubCliDiscovery {
     #[tracing::instrument(skip_all, fields(repository = %pull_request.repository(), number = pull_request.number))]
     fn review_input(&self, pull_request: &DiscoveredPullRequest) -> AgentResult<ReviewInput> {
         let details = self.pull_request_details(pull_request)?;
-        let diff = pull_request_diff(
-            &self.command,
-            &pull_request.owner,
-            &pull_request.repo,
-            pull_request.number,
-        )?;
         let repo_dir = ensure_checkout(
             &self.command,
             &self.git_command,
             &self.checkout_root,
             pull_request,
             &details.head_ref_name,
+            &details.base_sha,
+            &details.head_sha,
+        )?;
+        let diff = pull_request_checkout_diff(
+            &self.git_command,
+            &repo_dir,
+            &details.base_sha,
+            &details.head_sha,
         )?;
         Ok(prepare_github_review_input(
             pull_request,
@@ -578,6 +583,8 @@ fn ensure_checkout(
     checkout_root: &Path,
     pull_request: &DiscoveredPullRequest,
     head_ref: &str,
+    base_sha: &str,
+    head_sha: &str,
 ) -> AgentResult<PathBuf> {
     let repo_dir = checkout_path(checkout_root, pull_request);
 
@@ -612,6 +619,7 @@ fn ensure_checkout(
             repo_dir.to_string_lossy().as_ref(),
             "fetch",
             "origin",
+            base_sha,
             &format!("refs/pull/{}/head", pull_request.number),
             "--quiet",
         ],
@@ -624,7 +632,7 @@ fn ensure_checkout(
             "checkout",
             "-B",
             head_ref,
-            "FETCH_HEAD",
+            head_sha,
             "--quiet",
         ],
     )?;
@@ -639,7 +647,33 @@ fn checkout_path(checkout_root: &Path, pull_request: &DiscoveredPullRequest) -> 
         .join(format!("pr-{}", pull_request.number))
 }
 
+fn pull_request_checkout_diff(
+    git_command: &Path,
+    repo_dir: &Path,
+    base_sha: &str,
+    head_sha: &str,
+) -> AgentResult<String> {
+    let output = run_git_output(
+        git_command,
+        &[
+            "-C",
+            repo_dir.to_string_lossy().as_ref(),
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            &format!("{base_sha}...{head_sha}"),
+            "--",
+        ],
+    )?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 fn run_git(command: &Path, args: &[&str]) -> AgentResult<()> {
+    run_git_output(command, args).map(|_| ())
+}
+
+fn run_git_output(command: &Path, args: &[&str]) -> AgentResult<std::process::Output> {
     tracing::debug!(command = %command.display(), args = ?args, "running git command");
     let started = Instant::now();
     let output = Command::new(command).args(args).output().map_err(|error| {
@@ -657,7 +691,7 @@ fn run_git(command: &Path, args: &[&str]) -> AgentResult<()> {
     if !output.status.success() {
         return Err(command_status_error("git", &output));
     }
-    Ok(())
+    Ok(output)
 }
 
 impl GitHubCliDiscovery {
@@ -765,7 +799,7 @@ fn pull_request_details(
             "--repo",
             &format!("{owner}/{repo}"),
             "--json",
-            "title,author,url,body,headRefOid,headRefName,state,mergedAt",
+            "title,author,url,body,baseRefOid,headRefOid,headRefName,state,mergedAt",
         ],
         "GitHub PR response",
     )?;
@@ -778,6 +812,8 @@ struct PullRequestDetailsResponse {
     author: PullRequestAuthor,
     url: String,
     body: String,
+    #[serde(rename = "baseRefOid")]
+    base_ref_oid: String,
     #[serde(rename = "headRefOid")]
     head_ref_oid: String,
     #[serde(rename = "headRefName")]
@@ -794,6 +830,7 @@ impl PullRequestDetailsResponse {
             author: self.author.login,
             url: self.url,
             body: self.body,
+            base_sha: self.base_ref_oid,
             head_sha: self.head_ref_oid,
             head_ref_name: self.head_ref_name,
             state: if self.merged_at.is_some() {
