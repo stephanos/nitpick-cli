@@ -586,6 +586,53 @@ fn github_cli_discovery_resolves_checkout_path_for_pr_ref() {
     );
 }
 
+#[test]
+fn github_cli_discovery_resolves_pull_request_for_checkout_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let checkout_root = dir.path().join("checkouts");
+    let checkout = checkout_root.join("acme/platform/pr-42");
+    let nested = checkout.join("src/review");
+    let lookalike = checkout_root.join("octo/widgets/pr-7/src");
+    let outside = dir.path().join("outside");
+    fs::create_dir_all(checkout.join(".git")).expect("checkout");
+    fs::create_dir_all(&nested).expect("nested checkout path");
+    fs::create_dir_all(&lookalike).expect("lookalike");
+    fs::create_dir_all(&outside).expect("outside");
+    let discovery = GitHubCliDiscovery::with_checkout_commands(
+        dir.path().join("gh"),
+        dir.path().join("git"),
+        &checkout_root,
+    );
+    let expected = "acme/platform#42"
+        .parse::<nitpick_agent_github::PullRequestRef>()
+        .expect("reference");
+
+    assert_eq!(
+        discovery
+            .pull_request_for_checkout_path(&checkout)
+            .expect("checkout root"),
+        Some(expected.clone())
+    );
+    assert_eq!(
+        discovery
+            .pull_request_for_checkout_path(&nested)
+            .expect("nested checkout path"),
+        Some(expected)
+    );
+    assert_eq!(
+        discovery
+            .pull_request_for_checkout_path(&lookalike)
+            .expect("lookalike result"),
+        None
+    );
+    assert_eq!(
+        discovery
+            .pull_request_for_checkout_path(&outside)
+            .expect("outside result"),
+        None
+    );
+}
+
 fn pull_request_details_for_state(
     state: PullRequestState,
 ) -> nitpick_agent_github::PullRequestDetails {

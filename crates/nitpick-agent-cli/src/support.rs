@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command};
+use std::{ffi::OsString, path::Path, process::Command};
 
 use nitpick_agent_core::{Activity, ActivityStore, FsActivityStore};
 use nitpick_agent_github::{GitHubCliDiscovery, PullRequestRef};
@@ -9,14 +9,30 @@ pub(crate) struct ReviewWorkspace<'a> {
     config: nitpick_agent_host::AgentConfig,
     data_dir: &'a Path,
     git_command: &'a Path,
+    checkout_dir_env: Option<OsString>,
 }
 
 impl<'a> ReviewWorkspace<'a> {
     pub(crate) fn new(config: nitpick_agent_host::AgentConfig, data_dir: &'a Path) -> Self {
+        Self::with_dependencies(
+            config,
+            data_dir,
+            Path::new("git"),
+            std::env::var_os("NITPICK_AGENT_CHECKOUT_DIR"),
+        )
+    }
+
+    fn with_dependencies(
+        config: nitpick_agent_host::AgentConfig,
+        data_dir: &'a Path,
+        git_command: &'a Path,
+        checkout_dir_env: Option<OsString>,
+    ) -> Self {
         Self {
             config,
             data_dir,
-            git_command: Path::new("git"),
+            git_command,
+            checkout_dir_env,
         }
     }
 
@@ -26,15 +42,29 @@ impl<'a> ReviewWorkspace<'a> {
         data_dir: &'a Path,
         git_command: &'a Path,
     ) -> Self {
-        Self {
-            config,
-            data_dir,
-            git_command,
-        }
+        Self::with_dependencies(config, data_dir, git_command, None)
+    }
+
+    #[cfg(test)]
+    fn with_checkout_dir_env(
+        config: nitpick_agent_host::AgentConfig,
+        data_dir: &'a Path,
+        checkout_dir_env: Option<OsString>,
+    ) -> Self {
+        Self::with_dependencies(config, data_dir, Path::new("git"), checkout_dir_env)
     }
 
     pub(crate) fn checkout_path_for(&self, pull_request: &PullRequestRef) -> std::path::PathBuf {
         self.discovery().checkout_path_for(pull_request)
+    }
+
+    pub(crate) fn pull_request_for_path(
+        &self,
+        path: &Path,
+    ) -> Result<Option<PullRequestRef>, String> {
+        self.discovery()
+            .pull_request_for_checkout_path(path)
+            .map_err(|error| error.to_string())
     }
 
     fn ensure_checkout(&self, target: &str) -> Result<std::path::PathBuf, String> {
@@ -57,11 +87,17 @@ impl<'a> ReviewWorkspace<'a> {
                 self.git_command,
                 checkout_dir,
             ),
-            None => GitHubCliDiscovery::with_checkout_commands(
-                self.config.github_command.as_deref().unwrap_or("gh"),
-                self.git_command,
-                self.data_dir.join("checkouts"),
-            ),
+            None => {
+                let checkout_root = nitpick_agent_core::checkout_root_from_env_values(
+                    self.checkout_dir_env.clone(),
+                    Some(self.data_dir.as_os_str().to_os_string()),
+                );
+                GitHubCliDiscovery::with_checkout_commands(
+                    self.config.github_command.as_deref().unwrap_or("gh"),
+                    self.git_command,
+                    checkout_root,
+                )
+            }
         }
     }
 }
@@ -214,6 +250,113 @@ mod tests {
         assert_eq!(
             workspace.checkout_path_for(&reference),
             checkout_root.join("acme/platform/pr-42")
+        );
+    }
+
+    #[test]
+    fn review_workspace_resolves_nested_configured_checkout_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let checkout_root = dir.path().join("configured-checkouts");
+        let checkout = checkout_root.join("acme/platform/pr-42");
+        let nested = checkout.join("src/review");
+        std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
+        std::fs::create_dir_all(&nested).expect("nested checkout path");
+        let workspace = super::ReviewWorkspace::with_checkout_dir_env(
+            nitpick_agent_host::AgentConfig {
+                checkout_dir: Some(checkout_root.display().to_string()),
+                ..nitpick_agent_host::AgentConfig::default()
+            },
+            &data_dir,
+            Some(dir.path().join("ignored-env-checkouts").into_os_string()),
+        );
+
+        assert_eq!(
+            workspace
+                .pull_request_for_path(&nested)
+                .expect("pull request"),
+            Some(nitpick_agent_github::PullRequestRef {
+                owner: "acme".into(),
+                repo: "platform".into(),
+                number: 42,
+            })
+        );
+    }
+
+    #[test]
+    fn review_workspace_resolves_registered_checkout_root() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let checkout = data_dir.join("checkouts/acme/platform/pr-42");
+        std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
+        let workspace = super::ReviewWorkspace::with_checkout_dir_env(
+            nitpick_agent_host::AgentConfig::default(),
+            &data_dir,
+            None,
+        );
+
+        assert_eq!(
+            workspace
+                .pull_request_for_path(&checkout)
+                .expect("pull request"),
+            Some(nitpick_agent_github::PullRequestRef {
+                owner: "acme".into(),
+                repo: "platform".into(),
+                number: 42,
+            })
+        );
+    }
+
+    #[test]
+    fn review_workspace_uses_checkout_dir_environment_value() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let checkout_root = dir.path().join("env-checkouts");
+        let checkout = checkout_root.join("acme/platform/pr-42");
+        std::fs::create_dir_all(checkout.join(".git")).expect("checkout");
+        let workspace = super::ReviewWorkspace::with_checkout_dir_env(
+            nitpick_agent_host::AgentConfig::default(),
+            &data_dir,
+            Some(checkout_root.into_os_string()),
+        );
+
+        assert_eq!(
+            workspace
+                .pull_request_for_path(&checkout)
+                .expect("pull request"),
+            Some(nitpick_agent_github::PullRequestRef {
+                owner: "acme".into(),
+                repo: "platform".into(),
+                number: 42,
+            })
+        );
+    }
+
+    #[test]
+    fn review_workspace_ignores_paths_outside_registered_checkouts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().join("data");
+        let lookalike = data_dir.join("checkouts/acme/platform/pr-42/src");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&lookalike).expect("lookalike");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let workspace = super::ReviewWorkspace::with_checkout_dir_env(
+            nitpick_agent_host::AgentConfig::default(),
+            &data_dir,
+            None,
+        );
+
+        assert_eq!(
+            workspace
+                .pull_request_for_path(&lookalike)
+                .expect("lookalike result"),
+            None
+        );
+        assert_eq!(
+            workspace
+                .pull_request_for_path(&outside)
+                .expect("outside result"),
+            None
         );
     }
 

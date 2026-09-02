@@ -15,7 +15,7 @@ pub enum ReviewCommand {
         force: bool,
     },
     Chat {
-        target: String,
+        target: Option<String>,
     },
     OpenEditor {
         target: String,
@@ -44,7 +44,7 @@ pub enum ReviewSubcommand {
         subject: String,
     },
     Chat {
-        target: String,
+        target: Option<String>,
     },
     OpenEditor {
         target: String,
@@ -100,6 +100,25 @@ pub fn run(
             Ok(output)
         }
         ReviewCommand::Chat { target } => {
+            let (target, preloaded_config) = match target {
+                Some(target) => (target, None),
+                None => {
+                    let config =
+                        nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
+                            .map_err(CliError::from)?;
+                    let target =
+                        crate::support::ReviewWorkspace::new(config.clone(), &context.data_dir)
+                            .pull_request_for_path(&context.repo_dir)
+                            .map_err(CliError::from)?
+                            .map(|pull_request| pull_request.to_string())
+                            .ok_or_else(|| {
+                                CliError::from(
+                                    "review target is required unless run inside a Nitpick pull request checkout",
+                                )
+                            })?;
+                    (target, Some(config))
+                }
+            };
             let activities = client.activities()?;
             let activity = crate::activity::resolve_log_activity(&activities, &target)
                 .map_err(CliError::from)?;
@@ -119,8 +138,11 @@ pub fn run(
                     number: review_target.number,
                 },
             )?;
-            let mut config = nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
-                .map_err(CliError::from)?;
+            let mut config = match preloaded_config {
+                Some(config) => config,
+                None => nitpick_agent_host::AgentConfig::load_or_default(&context.config_path)
+                    .map_err(CliError::from)?,
+            };
             crate::support::apply_sandbox_option(&mut config, &options);
             if let Some(provider) = activity.session.provider.clone() {
                 config.provider = provider;
@@ -476,7 +498,7 @@ mod tests {
         assert_eq!(
             command,
             CliCommand::Review(ReviewCommand::Chat {
-                target: "acme/platform#42".into(),
+                target: Some("acme/platform#42".into()),
             })
         );
     }
@@ -536,11 +558,40 @@ mod tests {
     }
 
     #[test]
-    fn rejects_review_chat_without_target() {
-        let error =
-            parse_command(["review".to_owned(), "chat".to_owned()]).expect_err("command fails");
+    fn parses_review_chat_without_target() {
+        let command =
+            parse_command(["review".to_owned(), "chat".to_owned()]).expect("command parses");
 
-        assert!(error.contains("Usage: nitpick review chat <TARGET>"));
+        assert_eq!(
+            command,
+            CliCommand::Review(ReviewCommand::Chat { target: None })
+        );
+    }
+
+    #[test]
+    fn review_chat_without_target_outside_checkout_reports_target_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).expect("outside dir");
+
+        let error = super::run(
+            ReviewCommand::Chat { target: None },
+            crate::CliRunContext {
+                host_addr: "127.0.0.1:1".into(),
+                repo_dir: outside,
+                diff: String::new(),
+                context: String::new(),
+                config_path: dir.path().join("config.toml"),
+                data_dir: dir.path().join("data"),
+            },
+            crate::CliOptions::default(),
+        )
+        .expect_err("review target");
+
+        assert_eq!(
+            error.to_string(),
+            "review target is required unless run inside a Nitpick pull request checkout"
+        );
     }
 
     #[test]

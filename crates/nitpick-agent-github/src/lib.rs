@@ -305,6 +305,30 @@ impl GitHubCliDiscovery {
         )
     }
 
+    pub fn pull_request_for_checkout_path(
+        &self,
+        path: &Path,
+    ) -> AgentResult<Option<PullRequestRef>> {
+        let path = path
+            .canonicalize()
+            .map_err(|error| AgentError::io_path("canonicalize current directory", path, error))?;
+        for checkout in self.list_checkouts()? {
+            let pull_request = PullRequestRef {
+                owner: checkout.owner,
+                repo: checkout.repo,
+                number: checkout.number,
+            };
+            let checkout_path = self.checkout_path_for(&pull_request);
+            let checkout_path = checkout_path.canonicalize().map_err(|error| {
+                AgentError::io_path("canonicalize pull request checkout", &checkout_path, error)
+            })?;
+            if path.starts_with(checkout_path) {
+                return Ok(Some(pull_request));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn ensure_checkout_for(&self, pull_request: &PullRequestRef) -> AgentResult<PathBuf> {
         let pull_request = DiscoveredPullRequest::from(pull_request);
         let details = self.pull_request_details(&pull_request)?;

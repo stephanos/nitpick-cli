@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(
             invocation.command,
             CliCommand::Review(crate::ReviewCommand::Chat {
-                target: "acme/platform#42".into(),
+                target: Some("acme/platform#42".into()),
             })
         );
     }

@@ -271,7 +271,7 @@ printf '{{"id":99,"node_id":"PRR_node_99","html_url":"https://github.com/stephan
 
     let review_chat = run_cli_command(
         CliCommand::Review(ReviewCommand::Chat {
-            target: "https://github.com/stephanos/nitpick-agent/pull/42".into(),
+            target: Some("https://github.com/stephanos/nitpick-agent/pull/42".into()),
         }),
         &host_addr,
         temp.path().to_path_buf(),
@@ -380,7 +380,7 @@ exit 1
 
     let error = run_cli_command(
         CliCommand::Review(ReviewCommand::Chat {
-            target: "stephanos/nitpick-agent#42".into(),
+            target: Some("stephanos/nitpick-agent#42".into()),
         }),
         &host_addr,
         temp.path().to_path_buf(),
@@ -461,7 +461,7 @@ async fn review_chat_fails_fast_for_active_review() {
     let started = Instant::now();
     let error = run_cli_command(
         CliCommand::Review(ReviewCommand::Chat {
-            target: "temporalio/temporal#10384".into(),
+            target: Some("temporalio/temporal#10384".into()),
         }),
         &host_addr,
         temp.path().to_path_buf(),
@@ -592,6 +592,8 @@ exit 1
     let data_dir = temp.path().join("data");
     let checkout = data_dir.join("checkouts/stephanos/subvoc/pr-1");
     fs::create_dir_all(checkout.join(".git")).expect("checkout");
+    let nested_checkout_dir = checkout.join("src/review");
+    fs::create_dir_all(&nested_checkout_dir).expect("nested checkout dir");
     let store = Arc::new(FsActivityStore::new(&data_dir).expect("store"));
     let processed = Arc::new(
         FsProcessedReviewStore::new(temp.path().join("processed-reviews")).expect("processed"),
@@ -619,11 +621,9 @@ exit 1
     let host_addr = serve_host(daemon).await;
 
     let output = run_cli_command(
-        CliCommand::Review(ReviewCommand::Chat {
-            target: "https://github.com/stephanos/subvoc/pull/1".into(),
-        }),
+        CliCommand::Review(ReviewCommand::Chat { target: None }),
         &host_addr,
-        temp.path().to_path_buf(),
+        nested_checkout_dir,
         String::new(),
         String::new(),
         config_path,
@@ -729,7 +729,7 @@ exit 1
 
     let error = run_cli_command(
         CliCommand::Review(ReviewCommand::Chat {
-            target: "acme/platform#42".into(),
+            target: Some("acme/platform#42".into()),
         }),
         &host_addr,
         temp.path().to_path_buf(),
