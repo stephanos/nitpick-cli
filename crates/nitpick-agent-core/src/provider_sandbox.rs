@@ -160,7 +160,7 @@ fn nono_sandbox_spec(
 
     let mut read_write_paths = provider_runtime_read_write_paths(sandbox);
     read_write_paths.extend(nono_system_read_write_paths());
-    read_write_paths.extend(provider_config_read_write_paths());
+    read_write_paths.extend(provider_config_read_write_paths(provider));
     let provider_config_literal_read_write_paths = provider_config_literal_read_write_paths();
     let provider_config_pattern_read_write_rules = provider_config_pattern_read_write_rules();
     read_write_paths.extend(provider_config_literal_read_write_paths.iter().cloned());
@@ -371,7 +371,7 @@ fn provider_config_read_paths() -> Vec<PathBuf> {
     paths
 }
 
-fn provider_config_read_write_paths() -> Vec<PathBuf> {
+fn provider_config_read_write_paths(provider: &AgentProviderKind) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         paths.extend([
@@ -390,6 +390,9 @@ fn provider_config_read_write_paths() -> Vec<PathBuf> {
                 .join("Caches")
                 .join("claude-cli-nodejs"),
         ]);
+        if *provider == AgentProviderKind::Claude {
+            paths.push(home.join(".config").join("anthropic"));
+        }
     }
     paths
 }
