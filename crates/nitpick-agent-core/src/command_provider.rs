@@ -362,8 +362,9 @@ impl CommandAgentProvider {
 }
 
 fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
+    // Shims such as mise dispatch by executable name, so preserve the symlink.
     if command.components().count() > 1 || command.is_absolute() {
-        return command.canonicalize().map_err(|error| {
+        return std::path::absolute(command).map_err(|error| {
             AgentError::provider(format!(
                 "resolve provider command `{}`: {error}",
                 command.display()
@@ -371,20 +372,12 @@ fn resolve_command_path(command: &Path) -> AgentResult<PathBuf> {
         });
     }
 
-    which::which(command)
-        .map_err(|_| {
-            AgentError::provider(format!(
-                "provider command `{}` not found on PATH",
-                command.display()
-            ))
-        })?
-        .canonicalize()
-        .map_err(|error| {
-            AgentError::provider(format!(
-                "resolve provider command `{}`: {error}",
-                command.display()
-            ))
-        })
+    which::which(command).map_err(|_| {
+        AgentError::provider(format!(
+            "provider command `{}` not found on PATH",
+            command.display()
+        ))
+    })
 }
 
 fn record_provider_logs(session: &mut AgentSession, stdout: &[u8], stderr: &[u8]) {

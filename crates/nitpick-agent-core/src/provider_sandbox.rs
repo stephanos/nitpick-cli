@@ -233,6 +233,9 @@ fn nono_system_read_write_paths() -> Vec<PathBuf> {
 }
 
 fn provider_dependency_read_paths(provider_command: &Path) -> Vec<PathBuf> {
+    let provider_command = provider_command
+        .canonicalize()
+        .unwrap_or_else(|_| provider_command.to_path_buf());
     provider_command
         .ancestors()
         .skip(1)

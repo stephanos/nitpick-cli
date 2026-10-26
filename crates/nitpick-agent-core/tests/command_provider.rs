@@ -1,6 +1,6 @@
 use std::{
     env, fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{PermissionsExt, symlink},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -808,8 +808,10 @@ fn command_provider_resolves_bare_provider_command_from_path() {
     let bin_dir = dir.path().join("bin");
     fs::create_dir(&bin_dir).expect("bin dir");
     let command = bin_dir.join("fake-provider");
-    fs::write(&command, "#!/bin/sh\nexit 0\n").expect("write command");
-    make_executable(&command);
+    let shim_target = bin_dir.join("mise");
+    fs::write(&shim_target, "#!/bin/sh\nprintf '%s' \"${0##*/}\"\n").expect("write command");
+    make_executable(&shim_target);
+    symlink(&shim_target, &command).expect("provider shim");
     let old_path = env::var_os("PATH");
     let path = match old_path.as_deref() {
         Some(old_path) => {
@@ -828,14 +830,21 @@ fn command_provider_resolves_bare_provider_command_from_path() {
         .resolved_command()
         .expect("provider command resolves from PATH");
 
-    assert_eq!(resolved, command.canonicalize().expect("canonical command"));
-
     unsafe {
         match old_path {
             Some(old_path) => env::set_var("PATH", old_path),
             None => env::remove_var("PATH"),
         }
     }
+
+    let output = std::process::Command::new(resolved)
+        .output()
+        .expect("run provider shim");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout"),
+        "fake-provider"
+    );
 }
 
 #[test]
@@ -869,11 +878,7 @@ fn nono_sandboxed_provider_command_uses_current_executable_helper() {
         vec![
             "__nitpick-nono-sandbox".to_owned(),
             "--".to_owned(),
-            provider_command
-                .canonicalize()
-                .expect("canonical provider")
-                .to_string_lossy()
-                .into_owned(),
+            provider_command.to_string_lossy().into_owned(),
             "--version".to_owned(),
         ]
     );
@@ -898,7 +903,9 @@ fn nono_sandbox_spec_allows_node_package_root_for_provider_command() {
     let helper_command = dir.path().join("nitpick");
     fs::write(&helper_command, "#!/bin/sh\n").expect("write helper command");
     make_executable(&helper_command);
-    let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &provider_command)
+    let provider_shim = dir.path().join("codex");
+    symlink(&provider_command, &provider_shim).expect("provider shim");
+    let provider = CommandAgentProvider::new(AgentProviderKind::Codex, None, &provider_shim)
         .with_sandbox(
             CommandSandboxConfig::nono()
                 .with_helper_command(&helper_command)
@@ -1072,6 +1079,39 @@ fn claude_command_provider_resumes_existing_session() {
     assert_eq!(
         fs::read_to_string(args_log).expect("args"),
         "--resume github:acme/platform#42\n"
+    );
+}
+
+#[test]
+fn claude_resume_preserves_provider_shim_name() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let shim_target = dir.path().join("mise");
+    let command = dir.path().join("claude");
+    let args_log = dir.path().join("args.log");
+    fs::write(
+        &shim_target,
+        format!(
+            "#!/bin/sh\nif [ \"${{0##*/}}\" != claude ]; then\n  echo \"error: unexpected argument '--resume' found\" >&2\n  exit 2\nfi\nprintf '%s\\n' \"$*\" > '{}'\n",
+            args_log.display()
+        ),
+    )
+    .expect("write shim target");
+    make_executable(&shim_target);
+    symlink(&shim_target, &command).expect("provider shim");
+    let provider = CommandAgentProvider::new(AgentProviderKind::Claude, None, &command);
+    let session = AgentSession {
+        provider: Some(AgentProviderKind::Claude),
+        provider_session_id: Some("session-42".into()),
+        ..AgentSession::default()
+    };
+
+    provider
+        .attach_session_in_repo(&session, dir.path())
+        .expect("resume through provider shim");
+
+    assert_eq!(
+        fs::read_to_string(args_log).expect("args"),
+        "--resume session-42\n"
     );
 }
 
