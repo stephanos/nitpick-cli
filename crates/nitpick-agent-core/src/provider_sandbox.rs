@@ -354,6 +354,9 @@ fn review_tool_sandbox_paths(config_path: &Path) -> ReviewToolSandboxPaths {
 
 fn provider_runtime_read_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        paths.push(home.join(".local").join("bin"));
+    }
     for path in [Path::new("/opt/homebrew"), Path::new("/usr/local")] {
         if path.exists() {
             paths.push(path.to_path_buf());

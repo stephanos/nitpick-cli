@@ -5,6 +5,71 @@ use std::{env, fs, process::Command};
 use nitpick_agent_core::{AgentProviderKind, CommandAgentProvider, CommandSandboxConfig};
 
 #[test]
+fn sandboxed_provider_shim_can_execute_local_claude() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    const CHILD_ENV: &str = "NITPICK_TEST_LOCAL_CLAUDE_SANDBOX_CHILD";
+    if env::var_os(CHILD_ENV).is_none() {
+        let home = tempfile::tempdir_in(env::var_os("HOME").expect("HOME")).expect("home");
+        let data = tempfile::tempdir().expect("data");
+        let bin_dir = home.path().join(".local/bin");
+        let versions = home.path().join(".local/share/claude/versions");
+        fs::create_dir_all(&bin_dir).expect("bin directory");
+        fs::create_dir_all(&versions).expect("versions directory");
+        let executable = versions.join("test-version");
+        fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n").expect("provider");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).expect("permissions");
+        symlink(&executable, bin_dir.join("claude")).expect("local claude");
+
+        let output = Command::new(env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "sandboxed_provider_shim_can_execute_local_claude",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("HOME", home.path())
+            .env("NITPICK_AGENT_DATA_DIR", data.path())
+            .output()
+            .expect("child test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let repo = tempfile::tempdir().expect("repo");
+    let provider = CommandAgentProvider::new(AgentProviderKind::Claude, None, "/bin/sh")
+        .with_sandbox(
+            CommandSandboxConfig::nono()
+                .with_helper_command(env!("CARGO_BIN_EXE_nitpick-agent-host"))
+                .without_nono_profile_updates(),
+        );
+    let script = r#"
+set -eu
+"$HOME/.local/bin/claude" --resume session-42
+if (printf forbidden > "$HOME/.local/bin/claude-new") 2>/dev/null; then
+    exit 2
+fi
+"#;
+    let output = provider
+        .command_for_testing(Some(repo.path()), &["-c".into(), script.into()])
+        .expect("sandboxed command")
+        .current_dir(repo.path())
+        .output()
+        .expect("provider output");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"--resume session-42\n");
+}
+
+#[test]
 fn sandboxed_claude_can_read_and_refresh_anthropic_credentials() {
     const CHILD_ENV: &str = "NITPICK_TEST_ANTHROPIC_SANDBOX_CHILD";
     if env::var_os(CHILD_ENV).is_none() {
